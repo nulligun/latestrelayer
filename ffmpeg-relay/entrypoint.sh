@@ -63,9 +63,10 @@ fi
 # Input 0: Live RTMP stream
 # Input 1: Offline MP4 loop
 # Input 2: Silent audio (if needed)
-# ZMQ socket on tcp://127.0.0.1:5559 for control commands
+# ZMQ socket on tcp://0.0.0.0:5559 for control commands
+# The zmq filter listens for commands to control streamselect/aselect dynamically
 
-log "Launching FFmpeg with ZMQ control socket on tcp://127.0.0.1:5559"
+log "Launching FFmpeg with ZMQ control socket on tcp://0.0.0.0:5559"
 log "Starting in OFFLINE mode (will switch to live when supervisor signals)"
 
 exec ffmpeg -hide_banner -loglevel warning \
@@ -75,13 +76,13 @@ exec ffmpeg -hide_banner -loglevel warning \
     -stream_loop -1 -re -i "$OFFLINE_MP4" \
     ${AUDIO_INPUT} \
     -filter_complex "\
+zmq=bind_address=tcp\\://0.0.0.0\\:5559; \
 [0:v]fifo,format=yuv420p,scale=-2:${OUT_RES},fps=${OUT_FPS}[live_v]; \
 [1:v]fifo,format=yuv420p,scale=-2:${OUT_RES},fps=${OUT_FPS}[offline_v]; \
 ${LIVE_AUDIO_MAP}afifo,aresample=async=1:first_pts=0[live_a]; \
 [1:a]afifo,aresample=async=1:first_pts=0[offline_a]; \
 [live_v][offline_v]streamselect=inputs=2:map=1[v]; \
-[live_a][offline_a]aselect=inputs=2:map=1[a]; \
-zmq=bind_address=tcp\\://127.0.0.1\\:5559[v][a]" \
+[live_a][offline_a]aselect=inputs=2:map=1[a]" \
     -map "[v]" -map "[a]" \
     -c:v libx264 -preset veryfast -profile:v high \
     -g $((OUT_FPS*2)) -keyint_min $((OUT_FPS*2)) -sc_threshold 0 \
