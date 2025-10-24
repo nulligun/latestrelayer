@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 RTMP Relay Supervisor
-Monitors nginx-rtmp stats and controls FFmpeg stream switching via ZMQ
+Monitors nginx-rtmp stats and manages switcher FFmpeg process lifecycle
 """
 
 import os
@@ -9,7 +9,8 @@ import sys
 import time
 import logging
 import requests
-import zmq
+import subprocess
+import signal
 from lxml import etree
 from datetime import datetime
 
@@ -26,13 +27,25 @@ RTMP_APP = os.getenv('RTMP_APP', 'live')
 RTMP_STREAM_NAME = os.getenv('RTMP_STREAM_NAME', 'mystream')
 POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', '1'))
 CRASH_BACKOFF = int(os.getenv('CRASH_BACKOFF', '2'))
+OUT_RES = os.getenv('OUT_RES', '1080')
+OUT_FPS = os.getenv('OUT_FPS', '30')
+VID_BITRATE = os.getenv('VID_BITRATE', '6000k')
+MAX_BITRATE = os.getenv('MAX_BITRATE', '6000k')
+BUFFER_SIZE = os.getenv('BUFFER_SIZE', '12M')
+AUDIO_BITRATE = os.getenv('AUDIO_BITRATE', '160k')
+AUDIO_SAMPLERATE = os.getenv('AUDIO_SAMPLERATE', '48000')
+
+# Paths
+OFFLINE_MP4 = "/opt/offline.mp4"
+LIVE_RTMP = f"rtmp://nginx-rtmp:1935/{RTMP_APP}/{RTMP_STREAM_NAME}"
+SWITCH_OUT = "rtmp://nginx-rtmp:1935/switch/out"
 
 # Service endpoints
 NGINX_STATS_URL = 'http://nginx-rtmp:8080/rtmp_stat'
-FFMPEG_ZMQ_ENDPOINT = 'tcp://ffmpeg-relay:5559'
 
 # State tracking
 current_mode = None
+switcher_process = None
 last_check_time = None
 error_count = 0
 MAX_ERRORS = 10
@@ -128,61 +141,135 @@ def check_live_stream():
         return False, f"Unexpected error: {e}"
 
 
-def send_zmq_command(command):
-    """
-    Send ZMQ command to FFmpeg
-    Commands: 
-      - "streamselect map 0" - switch video to live (input 0)
-      - "streamselect map 1" - switch video to offline (input 1)
-      - "aselect map 0" - switch audio to live
-      - "aselect map 1" - switch audio to offline
-    """
+def stop_switcher():
+    """Stop the current switcher process"""
+    global switcher_process
+    
+    if switcher_process is None:
+        return
+    
     try:
-        context = zmq.Context()
-        socket = context.socket(zmq.REQ)
-        socket.setsockopt(zmq.LINGER, 0)
-        socket.connect(FFMPEG_ZMQ_ENDPOINT)
+        logger.info("Stopping switcher process...")
+        switcher_process.terminate()
         
-        # Send command with timeout
-        socket.send_string(command)
+        # Wait up to 3 seconds for graceful shutdown
+        try:
+            switcher_process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            logger.warning("Switcher did not stop gracefully, killing...")
+            switcher_process.kill()
+            switcher_process.wait()
         
-        # Wait for response with timeout
-        if socket.poll(timeout=2000):  # 2 second timeout
-            response = socket.recv_string()
-            logger.debug(f"ZMQ command '{command}' response: {response}")
-        else:
-            logger.warning(f"ZMQ command '{command}' timed out")
-        
-        socket.close()
-        context.term()
-        return True
+        logger.info("Switcher process stopped")
+        switcher_process = None
         
     except Exception as e:
-        logger.error(f"Failed to send ZMQ command '{command}': {e}")
+        logger.error(f"Error stopping switcher: {e}")
+        switcher_process = None
+
+
+def start_switcher_live():
+    """Start switcher publishing live stream"""
+    global switcher_process
+    
+    logger.info("Starting switcher in LIVE mode")
+    
+    # Build FFmpeg command for live mode
+    venc = f"-c:v libx264 -preset veryfast -profile:v high -tune zerolatency -b:v {VID_BITRATE} -maxrate {MAX_BITRATE} -bufsize {BUFFER_SIZE} -pix_fmt yuv420p -g 120 -keyint_min 120 -sc_threshold 0 -r {OUT_FPS}"
+    aenc = f"-c:a aac -b:a {AUDIO_BITRATE} -ar {AUDIO_SAMPLERATE} -ac 2"
+    
+    cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'warning',
+        '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1',
+        '-rtmp_live', 'live', '-i', LIVE_RTMP,
+        '-filter_complex', f'[0:v]scale=1280:720:flags=bicubic,fps={OUT_FPS}[v];[0:a]aresample={AUDIO_SAMPLERATE},adelay=0|0[a]',
+        '-map', '[v]', '-map', '[a]'
+    ]
+    cmd.extend(venc.split())
+    cmd.extend(aenc.split())
+    cmd.extend(['-f', 'flv', SWITCH_OUT])
+    
+    try:
+        switcher_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            preexec_fn=os.setsid  # Create new process group
+        )
+        logger.info(f"Switcher LIVE process started (PID: {switcher_process.pid})")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to start switcher LIVE: {e}")
+        return False
+
+
+def start_switcher_offline():
+    """Start switcher publishing offline video loop"""
+    global switcher_process
+    
+    logger.info("Starting switcher in OFFLINE mode")
+    
+    # Check offline file exists
+    if not os.path.exists(OFFLINE_MP4):
+        logger.error(f"Offline file not found: {OFFLINE_MP4}")
+        return False
+    
+    # Build FFmpeg command for offline mode
+    venc = f"-c:v libx264 -preset veryfast -profile:v high -tune zerolatency -b:v {VID_BITRATE} -maxrate {MAX_BITRATE} -bufsize {BUFFER_SIZE} -pix_fmt yuv420p -g 120 -keyint_min 120 -sc_threshold 0 -r {OUT_FPS}"
+    aenc = f"-c:a aac -b:a {AUDIO_BITRATE} -ar {AUDIO_SAMPLERATE} -ac 2"
+    
+    cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'warning',
+        '-stream_loop', '-1', '-re', '-i', OFFLINE_MP4,
+        '-filter_complex', f'[0:v]scale=1280:720:flags=bicubic,fps={OUT_FPS}[v];[0:a]aresample={AUDIO_SAMPLERATE}[a]',
+        '-map', '[v]', '-map', '[a]'
+    ]
+    cmd.extend(venc.split())
+    cmd.extend(aenc.split())
+    cmd.extend(['-f', 'flv', SWITCH_OUT])
+    
+    try:
+        switcher_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            preexec_fn=os.setsid  # Create new process group
+        )
+        logger.info(f"Switcher OFFLINE process started (PID: {switcher_process.pid})")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to start switcher OFFLINE: {e}")
         return False
 
 
 def switch_to_live():
-    """Switch FFmpeg to live stream input"""
-    logger.info("Switching to LIVE stream")
-    success = True
-    success &= send_zmq_command("streamselect map 0")
-    success &= send_zmq_command("aselect map 0")
-    return success
+    """Switch to live stream by restarting switcher process"""
+    stop_switcher()
+    time.sleep(0.5)  # Brief pause like the bash script
+    return start_switcher_live()
 
 
 def switch_to_offline():
-    """Switch FFmpeg to offline video input"""
-    logger.info("Switching to OFFLINE video")
-    success = True
-    success &= send_zmq_command("streamselect map 1")
-    success &= send_zmq_command("aselect map 1")
-    return success
+    """Switch to offline video by restarting switcher process"""
+    stop_switcher()
+    time.sleep(0.5)  # Brief pause like the bash script
+    return start_switcher_offline()
+
+
+def cleanup_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"Received signal {signum}, cleaning up...")
+    stop_switcher()
+    sys.exit(0)
 
 
 def main():
     """Main supervisor loop"""
     global current_mode, last_check_time, error_count
+    
+    # Register signal handlers
+    signal.signal(signal.SIGTERM, cleanup_handler)
+    signal.signal(signal.SIGINT, cleanup_handler)
     
     logger.info("="*60)
     logger.info("RTMP Relay Supervisor Starting")
@@ -190,7 +277,7 @@ def main():
     logger.info(f"Stream: {RTMP_APP}/{RTMP_STREAM_NAME}")
     logger.info(f"Poll interval: {POLL_INTERVAL}s")
     logger.info(f"nginx-rtmp stats: {NGINX_STATS_URL}")
-    logger.info(f"FFmpeg ZMQ: {FFMPEG_ZMQ_ENDPOINT}")
+    logger.info(f"Switcher output: {SWITCH_OUT}")
     logger.info("="*60)
     
     # Wait for services to be ready
@@ -201,20 +288,26 @@ def main():
     is_live, details = check_live_stream()
     if is_live:
         logger.info(f"Initial check: Stream is LIVE - {details}")
-        current_mode = 'offline'  # Set to opposite so first switch works
-        switch_to_live()
-        current_mode = 'live'
+        if switch_to_live():
+            current_mode = 'live'
     else:
         logger.info(f"Initial check: Stream is OFFLINE - {details}")
-        current_mode = 'live'  # Set to opposite so first switch works
-        switch_to_offline()
-        current_mode = 'offline'
+        if switch_to_offline():
+            current_mode = 'offline'
     
     # Main monitoring loop
     while True:
         try:
             time.sleep(POLL_INTERVAL)
             last_check_time = datetime.now()
+            
+            # Check if switcher process is still running
+            if switcher_process and switcher_process.poll() is not None:
+                logger.warning(f"Switcher process died unexpectedly! Restarting in {current_mode} mode...")
+                if current_mode == 'live':
+                    start_switcher_live()
+                else:
+                    start_switcher_offline()
             
             is_live, details = check_live_stream()
             
@@ -253,6 +346,7 @@ def main():
                 time.sleep(CRASH_BACKOFF)
                 error_count = 0
     
+    stop_switcher()
     logger.info("Supervisor shutting down")
 
 
@@ -261,4 +355,5 @@ if __name__ == '__main__':
         main()
     except Exception as e:
         logger.critical(f"Fatal error: {e}", exc_info=True)
+        stop_switcher()
         sys.exit(1)

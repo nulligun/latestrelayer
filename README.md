@@ -1,17 +1,17 @@
 # RTMP Relay System with Persistent Connection
 
-A Docker Compose-based RTMP relay system that maintains a continuous connection to Kick.com (IVS) while seamlessly switching between live camera feed and offline video without stream interruption.
+A Docker Compose-based RTMP relay system that maintains a continuous connection to Kick.com (IVS) while seamlessly switching between live camera feed and offline video. Uses the "one hose, two faucets" architecture pattern.
 
 ## Features
 
-✅ **Persistent Connection** - Single FFmpeg process maintains continuous connection to Kick  
-✅ **Seamless Switching** - Uses FFmpeg streamselect/aselect filters with ZMQ control  
-✅ **Zero Downtime** - No stream disconnection when switching between live and offline  
-✅ **Automatic Failover** - Detects live stream status and switches automatically  
-✅ **External Publisher Detection** - Only switches to live when non-private IP publishes  
-✅ **Containerized** - All components run in isolated Docker containers  
-✅ **Configurable** - All settings in `.env` file  
-✅ **Observable** - Comprehensive logging for all components  
+✅ **Persistent Connection** - Single push-to-kick process maintains uninterrupted connection to Kick
+✅ **Clean Source Switching** - Switcher process restarts when changing sources (live/offline)
+✅ **Zero Kick Downtime** - Push-to-kick never restarts, ensuring stable stream delivery
+✅ **Automatic Failover** - Detects live stream status and switches automatically
+✅ **External Publisher Detection** - Only switches to live when non-private IP publishes
+✅ **Containerized** - All components run in isolated Docker containers
+✅ **Configurable** - All settings in `.env` file
+✅ **Observable** - Comprehensive logging for all components
 
 ## Architecture
 
@@ -22,53 +22,71 @@ A Docker Compose-based RTMP relay system that maintains a continuous connection 
        │ Publishes RTMP
        ▼
 ┌──────────────────┐
-│  nginx-rtmp      │◄──┐
-│  Port: 1936      │   │
-│  Stats: 8080     │   │ Polls stats
-└────────┬─────────┘   │ (every 1s)
-         │             │
-         │ Live RTMP   │
-         │ Feed        │
-         ▼             │
-┌──────────────────┐   │
-│  ffmpeg-relay    │   │
-│  ZMQ: 5559       │◄──┤
-│                  │   │ Sends ZMQ
-│  Input 0: Live   │   │ commands
-│  Input 1: Offline│   │
-└────────┬─────────┘   │
-         │             │
-         │ Persistent  │
-         │ RTMP        │
-         ▼             │
-┌──────────────────┐   │
-│  Kick.com (IVS)  │   │
-└──────────────────┘   │
-                       │
-┌──────────────────┐   │
-│  supervisor      │───┘
-│  Python script   │
+│  nginx-rtmp      │◄────┐
+│  /live/stream    │     │ Polls stats
+│  /switch/out     │     │ (every 1s)
+│  Stats: 8080     │     │
+└─────┬────────────┘     │
+      │                  │
+      │ Live RTMP        │
+      ▼                  │
+┌──────────────────┐     │
+│  supervisor      │─────┘
+│  Manages:        │
+│  ├─ switcher     │
+│  └─ (restarts)   │
+└──────┬───────────┘
+       │ Controls
+       ▼
+┌──────────────────┐
+│  switcher        │
+│  (FFmpeg)        │
+│  Pulls either:   │
+│  ├─ /live OR     │
+│  └─ offline.mp4  │
+└──────┬───────────┘
+       │ Publishes to
+       │ /switch/out
+       ▼
+┌──────────────────┐
+│  push-to-kick    │
+│  (FFmpeg)        │
+│  Always pulling  │
+│  from /switch    │
+└──────┬───────────┘
+       │ Stable
+       │ Connection
+       ▼
+┌──────────────────┐
+│  Kick.com (IVS)  │
 └──────────────────┘
 ```
 
 ## System Components
 
 ### 1. nginx-rtmp
-- Receives incoming RTMP streams from your camera/OBS
+- Receives incoming RTMP streams from your camera/OBS on `/live`
+- Hosts intermediate `/switch/out` application for internal republishing
 - Provides XML stats endpoint for monitoring
 - Lightweight, proven RTMP server
 
-### 2. ffmpeg-relay
-- Runs FFmpeg with dual inputs (live RTMP + offline MP4)
-- Uses `streamselect` and `aselect` filters for switching
-- Exposes ZMQ control socket on port 5559
-- Maintains persistent connection to Kick
-
-### 3. supervisor
+### 2. supervisor
 - Python script that monitors nginx-rtmp stats
 - Detects live stream status (external IP, video bitrate)
-- Sends ZMQ commands to switch FFmpeg inputs
+- Manages switcher FFmpeg process lifecycle (kill/restart on source change)
 - Handles automatic failover and recovery
+
+### 3. switcher
+- FFmpeg process that pulls from either `/live` OR offline video
+- Republishes selected source to `/switch/out`
+- Restarted by supervisor when source needs to change
+- Encodes with consistent settings for smooth transitions
+
+### 4. push-to-kick
+- FFmpeg process that maintains persistent connection to Kick
+- Pulls from `/switch/out` using copy codec (no re-encoding)
+- Never restarts - provides stable delivery regardless of source changes
+- This is the "one hose" that never disconnects
 
 ## Prerequisites
 
@@ -107,20 +125,19 @@ RTMP_STREAM_NAME=mystream
 # Offline Video (full path on host)
 OFFLINE_VIDEO_PATH=/path/to/your/offline.mp4
 
-# Video Encoding Settings
+# Video Encoding Settings (used by switcher)
 OUT_RES=1080
 OUT_FPS=30
-VID_BITRATE=3000k
-MAX_BITRATE=3500k
-BUFFER_SIZE=12000k
+VID_BITRATE=6000k
+MAX_BITRATE=6000k
+BUFFER_SIZE=12M
 
-# Audio Encoding Settings
-AUDIO_BITRATE=128k
+# Audio Encoding Settings (used by switcher)
+AUDIO_BITRATE=160k
 AUDIO_SAMPLERATE=48000
 
 # Supervisor Settings
 POLL_INTERVAL=1
-KILL_GRACE=3
 CRASH_BACKOFF=2
 
 # Logging
@@ -169,14 +186,22 @@ In OBS, configure your streaming settings:
 ### Supervisor Settings
 
 - `POLL_INTERVAL`: How often to check stream status (seconds)
-- `KILL_GRACE`: Grace period when stopping processes (seconds)
 - `CRASH_BACKOFF`: Delay before restarting after crash (seconds)
 
 ## How It Works
 
+### The "One Hose, Two Faucets" Pattern
+
+This system uses a unique architecture where:
+
+1. **Two Faucets (Sources)**: Live stream from camera OR offline video loop
+2. **One Hose (Delivery)**: push-to-kick maintains a single, persistent connection to Kick
+
+The key insight is that push-to-kick pulls from nginx-rtmp's `/switch/out` application, which is always fed by the switcher. When sources change, only the switcher restarts—the push-to-kick connection to Kick remains stable.
+
 ### Stream Detection
 
-The supervisor checks for live stream by examining nginx-rtmp stats:
+The supervisor checks for live stream by examining nginx-rtmp XML stats:
 
 1. **Video Bitrate Check** - Ensures video data is flowing (> 0)
 2. **Publisher Check** - Verifies at least one client is publishing
@@ -186,20 +211,17 @@ The supervisor checks for live stream by examining nginx-rtmp stats:
 
 Only when ALL conditions are met does it switch to live mode.
 
-### ZMQ Control Protocol
+### Source Switching Process
 
-FFmpeg exposes a ZMQ socket that accepts text commands:
+When the supervisor detects a source change:
 
-- `streamselect map 0` - Switch video to input 0 (live)
-- `streamselect map 1` - Switch video to input 1 (offline)
-- `aselect map 0` - Switch audio to input 0 (live)
-- `aselect map 1` - Switch audio to input 1 (offline)
+1. **Kill** current switcher FFmpeg process
+2. **Wait** 0.5 seconds (brief pause for clean transition)
+3. **Start** new switcher with appropriate source (live or offline)
+4. Switcher begins publishing to `/switch/out`
+5. push-to-kick continues pulling from `/switch/out` uninterrupted
 
-The supervisor sends these commands when state changes are detected.
-
-### Silent Audio Injection
-
-If the live stream lacks audio, FFmpeg automatically injects silent audio to maintain stream compatibility with Kick's requirements.
+This approach is simpler and more reliable than complex filter-based switching.
 
 ## Managing the System
 
@@ -218,10 +240,12 @@ docker-compose down
 ### Restart a Specific Service
 
 ```bash
-docker-compose restart ffmpeg-relay
+docker-compose restart push-to-kick
 docker-compose restart supervisor
 docker-compose restart nginx-rtmp
 ```
+
+Note: The switcher process is managed by supervisor, so it doesn't appear as a separate docker-compose service.
 
 ### View Logs
 
@@ -231,8 +255,12 @@ docker-compose logs -f
 
 # Specific service
 docker-compose logs -f supervisor
-docker-compose logs -f ffmpeg-relay
+docker-compose logs -f push-to-kick
 docker-compose logs -f nginx-rtmp
+
+# Log files (written by services)
+tail -f logs/switcher.log
+tail -f logs/push-to-kick.log
 ```
 
 ### Check Service Status
@@ -250,19 +278,20 @@ docker-compose ps
 3. Check nginx-rtmp stats: `curl http://localhost:8080/rtmp_stat`
 4. Ensure your source IP is not private/loopback
 
-### FFmpeg Errors
+### Switcher Errors
 
-1. Check FFmpeg logs: `docker-compose logs -f ffmpeg-relay`
-2. Verify offline video file exists and is readable
-3. Check Kick credentials in `.env`
-4. Ensure FFmpeg has ZMQ support (included in linuxserver/ffmpeg)
+1. Check supervisor logs: `docker-compose logs -f supervisor`
+2. Check switcher log file: `tail -f logs/switcher.log`
+3. Verify offline video file exists and is readable at `OFFLINE_VIDEO_PATH`
+4. Ensure switcher can connect to nginx-rtmp
 
 ### No Video on Kick
 
-1. Verify stream key and URL are correct
-2. Check FFmpeg is running: `docker-compose ps ffmpeg-relay`
-3. Review FFmpeg logs for connection errors
-4. Test with manual ffmpeg command outside Docker
+1. Verify stream key and URL are correct in `.env`
+2. Check push-to-kick is running: `docker-compose ps push-to-kick`
+3. Review push-to-kick logs: `docker-compose logs -f push-to-kick`
+4. Check if switcher is publishing to `/switch/out`: `curl http://localhost:8080/rtmp_stat`
+5. Verify push-to-kick log file: `tail -f logs/push-to-kick.log`
 
 ### High CPU Usage
 
@@ -283,17 +312,20 @@ curl http://localhost:8080/rtmp_stat
 
 ```bash
 docker-compose ps
-docker stats relayer-nginx-rtmp relayer-ffmpeg relayer-supervisor
+docker stats relayer-nginx-rtmp-1 relayer-push-to-kick-1 relayer-supervisor-1
 ```
 
 ### View Real-time Logs
 
 ```bash
 # Supervisor activity
-docker-compose logs -f supervisor | grep -E "LIVE|OFFLINE|Switch"
+docker-compose logs -f supervisor | grep -E "LIVE|OFFLINE|Starting switcher"
 
-# FFmpeg errors
-docker-compose logs -f ffmpeg-relay | grep -i error
+# Push-to-kick logs
+docker-compose logs -f push-to-kick | grep -i error
+
+# Switcher logs from file
+tail -f logs/switcher.log
 ```
 
 ## Project Structure
@@ -304,12 +336,16 @@ relayer/
 ├── .env.example            # Template configuration
 ├── docker-compose.yml      # Service orchestration
 ├── logs/                   # Log output directory
-│   ├── ffmpeg.log
-│   └── supervisor.log
+│   ├── switcher.log
+│   ├── push-to-kick.log
+│   └── supervisor.log (docker logs)
 ├── nginx-rtmp/
 │   ├── Dockerfile
 │   └── nginx.conf
-├── ffmpeg-relay/
+├── switcher/               # NEW: Source switcher
+│   ├── Dockerfile
+│   └── entrypoint.sh
+├── push-to-kick/           # NEW: Stable Kick connection
 │   ├── Dockerfile
 │   └── entrypoint.sh
 ├── supervisor/
@@ -321,20 +357,6 @@ relayer/
 
 ## Advanced Usage
 
-### Manual Control via ZMQ
-
-You can manually send commands to FFmpeg:
-
-```bash
-# Switch to live
-echo "streamselect map 0" | nc localhost 5559
-echo "aselect map 0" | nc localhost 5559
-
-# Switch to offline
-echo "streamselect map 1" | nc localhost 5559
-echo "aselect map 1" | nc localhost 5559
-```
-
 ### Custom nginx-rtmp Configuration
 
 Edit `nginx-rtmp/nginx.conf` for custom RTMP settings, then:
@@ -343,12 +365,26 @@ Edit `nginx-rtmp/nginx.conf` for custom RTMP settings, then:
 docker-compose up -d --build nginx-rtmp
 ```
 
-### Adjust Encoding on the Fly
+### Adjust Encoding Settings
 
-Modify `.env`, then restart FFmpeg:
+Modify `.env`, then restart supervisor (which will restart switcher with new settings):
 
 ```bash
-docker-compose up -d --force-recreate ffmpeg-relay
+docker-compose restart supervisor
+```
+
+Note: push-to-kick uses copy codec and doesn't re-encode, so encoding changes only affect the switcher.
+
+### Manual Testing
+
+Check if switcher is publishing to /switch/out:
+
+```bash
+# View RTMP stats
+curl http://localhost:8080/rtmp_stat
+
+# Check for active stream on /switch/out
+curl http://localhost:8080/rtmp_stat | grep -A 10 'application/switch'
 ```
 ## Running Multiple Instances
 
@@ -453,7 +489,7 @@ docker-compose --env-file .env.relay1 logs -f
 docker-compose --env-file .env.relay2 logs -f supervisor
 
 # All relay containers
-docker logs -f relay1-ffmpeg-relay-1
+docker logs -f relay1-push-to-kick-1
 docker logs -f relay2-supervisor-1
 ```
 
@@ -475,8 +511,8 @@ docker-compose --env-file .env.relay3 down
 #### Restart Specific Service in Instance
 
 ```bash
-# Restart FFmpeg in instance 1
-docker-compose --env-file .env.relay1 restart ffmpeg-relay
+# Restart push-to-kick in instance 1
+docker-compose --env-file .env.relay1 restart push-to-kick
 
 # Restart supervisor in instance 2
 docker-compose --env-file .env.relay2 restart supervisor
@@ -498,17 +534,19 @@ Each instance will have uniquely named containers based on `COMPOSE_PROJECT_NAME
 
 ```
 relay1-nginx-rtmp-1
-relay1-ffmpeg-relay-1
 relay1-supervisor-1
+relay1-push-to-kick-1
 
 relay2-nginx-rtmp-1
-relay2-ffmpeg-relay-1
 relay2-supervisor-1
+relay2-push-to-kick-1
 
 relay3-nginx-rtmp-1
-relay3-ffmpeg-relay-1
 relay3-supervisor-1
+relay3-push-to-kick-1
 ```
+
+Note: switcher processes run inside supervisor containers, not as separate services.
 
 ### Network Isolation
 
@@ -536,13 +574,13 @@ To stream to all instances simultaneously from OBS:
 
 ### Resource Considerations
 
-Each instance runs 3 containers and 1 FFmpeg process. For 3 instances:
+Each instance runs 3 Docker containers with 2 FFmpeg processes. For 3 instances:
 
-- **Containers:** 9 total (3 per instance)
-- **FFmpeg Processes:** 3 (most resource-intensive)
+- **Containers:** 9 total (3 per instance: nginx-rtmp, supervisor, push-to-kick)
+- **FFmpeg Processes:** 6 total (2 per instance: switcher runs in supervisor, push-to-kick)
 - **RAM:** ~2GB per instance = ~6GB total
 - **CPU:** Depends on resolution/bitrate (1080p@30fps uses ~50% of 1 core per instance)
-- **Upload Bandwidth:** Sum of all bitrates (3Mbps × 3 = 9Mbps minimum)
+- **Upload Bandwidth:** Sum of all bitrates (6Mbps × 3 = 18Mbps minimum)
 
 ### Troubleshooting Multiple Instances
 
