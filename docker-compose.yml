@@ -8,8 +8,8 @@ services:
       dockerfile: Dockerfile
     container_name: ${COMPOSE_PROJECT_NAME:-relayer}-nginx-rtmp
     ports:
-      - "1936:1936"  # RTMP port
-      - "8080:8080"  # HTTP stats port
+      - "${RTMP_PORT:-1936}:1936"  # RTMP port
+      - "${HTTP_STATS_PORT:-8080}:8080"  # HTTP stats port
     networks:
       - rtmp-network
     restart: unless-stopped
@@ -59,7 +59,7 @@ services:
       dockerfile: Dockerfile
     container_name: ${COMPOSE_PROJECT_NAME:-relayer}-stream-switcher
     ports:
-      - "8088:8088"  # API port
+      - "${SWITCHER_API_PORT:-8088}:8088"  # API port
     networks:
       - rtmp-network
     depends_on:

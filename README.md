@@ -88,6 +88,8 @@ A Docker-based RTMP relay system with two input streams and switchable output to
 
 ## Configuration
 
+### Single Instance Setup
+
 Edit [`.env`](.env:1) file:
 
 ```bash
@@ -98,15 +100,33 @@ COMPOSE_PROJECT_NAME=relayer
 KICK_URL=rtmps://fa723fc1b171.global-contribute.live-video.net/app
 KICK_KEY=sk_us-west-2_xXX3uY9mOSJP_eZTBNAACIwJSKv3EMu6Dhh2La1XZ1s
 
-# Video Files
-OFFLINE_VIDEO_PATH=/home/mulligan/offline.mp4
-OFFLINE_VIDEO_PATH_2=/home/mulligan/offline2.mp4
-
-# Ports
+# Exposed Ports (change these for multiple instances)
 RTMP_PORT=1936
 HTTP_STATS_PORT=8080
 SWITCHER_API_PORT=8088
+
+# Video Files
+OFFLINE_VIDEO_PATH=/home/mulligan/offline.mp4
+OFFLINE_VIDEO_PATH_2=/home/mulligan/offline2.mp4
 ```
+
+### Multi-Instance Setup
+
+To run multiple instances on the same server, each instance needs unique ports. Example configurations are provided:
+
+- [`.env.instance1`](.env.instance1:1) - Instance 1 (ports: 1936, 8080, 8088)
+- [`.env.instance2`](.env.instance2:1) - Instance 2 (ports: 2036, 8180, 8188)
+- [`.env.instance3`](.env.instance3:1) - Instance 3 (ports: 2136, 8280, 8288)
+
+**Port Mapping:**
+
+| Instance | RTMP Port | HTTP Stats | Switcher API |
+|----------|-----------|------------|--------------|
+| 1        | 1936      | 8080       | 8088         |
+| 2        | 2036      | 8180       | 8188         |
+| 3        | 2136      | 8280       | 8288         |
+
+**Important:** Each instance must have a unique `COMPOSE_PROJECT_NAME` to avoid container name conflicts.
 
 ## Usage
 
@@ -169,6 +189,105 @@ curl http://localhost:8088/health  # stream-switcher
 
 ```bash
 docker compose down
+```
+
+## Running Multiple Instances
+
+### Start Multiple Instances Simultaneously
+
+**Instance 1 (default ports):**
+```bash
+docker compose --env-file .env.instance1 up -d
+```
+
+**Instance 2 (offset ports):**
+```bash
+docker compose --env-file .env.instance2 up -d
+```
+
+**Instance 3 (offset ports):**
+```bash
+docker compose --env-file .env.instance3 up -d
+```
+
+### Access Different Instances
+
+Each instance exposes its services on different ports:
+
+**Instance 1:**
+```bash
+# Stream switching
+curl "http://localhost:8088/switch?src=offline"
+
+# RTMP stream
+rtmp://localhost:1936/live/program
+
+# Stats
+curl http://localhost:8080/stat
+```
+
+**Instance 2:**
+```bash
+# Stream switching
+curl "http://localhost:8188/switch?src=offline"
+
+# RTMP stream
+rtmp://localhost:2036/live/program
+
+# Stats
+curl http://localhost:8180/stat
+```
+
+**Instance 3:**
+```bash
+# Stream switching
+curl "http://localhost:8288/switch?src=offline"
+
+# RTMP stream
+rtmp://localhost:2136/live/program
+
+# Stats
+curl http://localhost:8280/stat
+```
+
+### Stop Specific Instance
+
+```bash
+# Stop instance 1
+docker compose --env-file .env.instance1 down
+
+# Stop instance 2
+docker compose --env-file .env.instance2 down
+
+# Stop instance 3
+docker compose --env-file .env.instance3 down
+```
+
+### View Logs for Specific Instance
+
+```bash
+# Instance 1 logs
+docker compose --env-file .env.instance1 logs -f
+
+# Instance 2 logs
+docker compose --env-file .env.instance2 logs -f
+```
+
+### Custom Port Configuration
+
+To use custom ports, create your own `.env.custom` file:
+
+```bash
+# Copy an existing template
+cp .env.instance1 .env.custom
+
+# Edit ports to avoid conflicts
+# RTMP_PORT=3036
+# HTTP_STATS_PORT=8380
+# SWITCHER_API_PORT=8388
+
+# Start with custom config
+docker compose --env-file .env.custom up -d
 ```
 
 ## Service Startup Order
