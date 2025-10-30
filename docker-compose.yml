@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  # NGINX RTMP Server - Central relay hub
+  nginx-rtmp:
+    build:
+      context: ./nginx-rtmp
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-nginx-rtmp
+    ports:
+      - "1936:1936"  # RTMP port
+      - "8080:8080"  # HTTP stats port
+    networks:
+      - rtmp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # FFmpeg Offline Video Stream - Always running
+  ffmpeg-offline:
+    build:
+      context: ./ffmpeg-offline
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-ffmpeg-offline
+    volumes:
+      - ${OFFLINE_VIDEO_PATH}:/videos/offline.mp4:ro
+    networks:
+      - rtmp-network
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # FFmpeg Dev Camera Stream - Only in dev profile
+  ffmpeg-dev-cam:
+    build:
+      context: ./ffmpeg-dev-cam
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-ffmpeg-dev-cam
+    profiles:
+      - dev
+    volumes:
+      - ${OFFLINE_VIDEO_PATH_2}:/videos/offline2.mp4:ro
+    networks:
+      - rtmp-network
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Stream Switcher - GStreamer-based scene switcher
+  stream-switcher:
+    build:
+      context: ./stream-switcher
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-stream-switcher
+    ports:
+      - "8088:8088"  # API port
+    networks:
+      - rtmp-network
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
+      ffmpeg-offline:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # FFmpeg Kick Pusher - Relays to Kick streaming service
+  ffmpeg-kick:
+    build:
+      context: ./ffmpeg-kick
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-ffmpeg-kick
+    environment:
+      - KICK_URL=${KICK_URL}
+      - KICK_KEY=${KICK_KEY}
+    networks:
+      - rtmp-network
+    depends_on:
+      stream-switcher:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  rtmp-network:
+    driver: bridge
