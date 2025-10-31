@@ -35,14 +35,12 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # FFmpeg Dev Camera Stream - Only in dev profile
+  # FFmpeg Dev Camera Stream - Always running
   ffmpeg-dev-cam:
     build:
       context: ./ffmpeg-dev-cam
       dockerfile: Dockerfile
     container_name: ${COMPOSE_PROJECT_NAME:-relayer}-ffmpeg-dev-cam
-    profiles:
-      - dev
     volumes:
       - ${OFFLINE_VIDEO_PATH_2}:/videos/offline2.mp4:ro
     networks:
@@ -75,6 +73,33 @@ services:
       retries: 3
       start_period: 30s
 
+  # Auto-Switcher - Monitors streams and automatically switches based on quality
+  stream-auto-switcher:
+    build:
+      context: ./stream-auto-switcher
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-auto-switcher
+    environment:
+      - STAT_URL=http://nginx-rtmp:8080/stat
+      - SWITCH_API=http://stream-switcher:8088/switch
+      - APP_NAME=live
+      - CAM_STREAM=cam
+      - OFFLINE_NAME=offline
+      - MIN_BITRATE_KBPS=${MIN_BITRATE_KBPS:-300}
+      - POLL_SECS=${AUTO_SWITCHER_POLL_SECS:-0.5}
+      - CAM_MISS_TIMEOUT=${AUTO_SWITCHER_CAM_MISS_TIMEOUT:-3.0}
+      - CAM_BACK_STABILITY=${AUTO_SWITCHER_CAM_BACK_STABILITY:-2.0}
+    networks:
+      - rtmp-network
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
+      stream-switcher:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - auto
+
   # FFmpeg Kick Pusher - Relays to Kick streaming service
   ffmpeg-kick:
     build:
@@ -91,6 +116,60 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Container Controller - REST API for container lifecycle management
+  stream-controller:
+    build:
+      context: ./stream-controller
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-controller
+    ports:
+      - "${CONTROLLER_API_PORT:-8089}:8089"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-relayer}
+    networks:
+      - rtmp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8089/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # Stream Dashboard - Web UI for monitoring and control
+  stream-dashboard:
+    build:
+      context: ./stream-dashboard
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-dashboard
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+    environment:
+      - PORT=3000
+      - CONTROLLER_API=http://stream-controller:8089
+      - SWITCHER_API=http://stream-switcher:8088
+      - NGINX_STATS=http://nginx-rtmp:8080/stat
+      - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
+    networks:
+      - rtmp-network
+    depends_on:
+      stream-controller:
+        condition: service_healthy
+      nginx-rtmp:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
 networks:
   rtmp-network:
     driver: bridge
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.enable_ipv6: "false"

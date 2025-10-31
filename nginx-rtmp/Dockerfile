@@ -1,10 +1,12 @@
 FROM debian:bullseye-slim
 
-# Install nginx with RTMP module
+# Install nginx with RTMP module and diagnostic tools
 RUN apt-get update && \
     apt-get install -y \
     nginx \
     libnginx-mod-rtmp \
+    net-tools \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy configuration files

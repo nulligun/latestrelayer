@@ -8,6 +8,7 @@ RUN apt-get update && \
     apt-get install -y \
     python3 \
     python3-pip \
+    curl \
     gstreamer1.0-tools \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
@@ -32,5 +33,5 @@ RUN chmod +x /app/rtmp_switcher.py
 # Expose API port
 EXPOSE 8088
 
-# Run the switcher
-CMD ["python3", "/app/rtmp_switcher.py"]
+# Run the switcher with unbuffered output (-u flag)
+CMD ["python3", "-u", "/app/rtmp_switcher.py"]
