@@ -17,7 +17,7 @@
 
       <div class="dashboard-grid">
         <SystemMetrics :metrics="data.systemMetrics" />
-        <StreamStats :stats="data.rtmpStats" :currentScene="data.currentScene" />
+        <StreamStats :stats="data.rtmpStats" :streamStatus="data.streamStatus" :currentScene="data.currentScene" />
       </div>
 
       <div class="containers-section">
@@ -66,7 +66,11 @@ export default {
         inboundBandwidth: 0,
         streams: {}
       },
-      currentScene: null
+      currentScene: null,
+      streamStatus: {
+        isOnline: false,
+        durationSeconds: 0
+      }
     });
 
     const formatTime = (timestamp) => {

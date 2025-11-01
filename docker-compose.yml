@@ -97,8 +97,6 @@ services:
       stream-switcher:
         condition: service_healthy
     restart: unless-stopped
-    profiles:
-      - auto
 
   # FFmpeg Kick Pusher - Relays to Kick streaming service
   ffmpeg-kick:

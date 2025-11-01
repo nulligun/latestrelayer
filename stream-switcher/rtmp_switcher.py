@@ -273,6 +273,9 @@ class Switcher:
         # Track pipeline state
         self.pipeline_playing = False
         
+        # Track current active source/scene
+        self.current_source = None
+        
         # Log available sources
         print(f"[init] Available sources: {', '.join([k for k, v in self.sources_available.items() if v])}")
         
@@ -325,6 +328,8 @@ class Switcher:
             self.vsel.set_property("active-pad", self.b_v_sink)
             self.asel.set_property("active-pad", self.b_a_sink)
         
+        # Update current source state
+        self.current_source = which
         print(f"[switch] active = {which}")
 
     def start(self):
@@ -360,6 +365,21 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"[http] Switch error: {e}")
                 self.send_response(400); self.end_headers()
                 self.wfile.write(f"error: {e}\n".encode())
+        elif parsed.path == "/scene":
+            # Return current active scene as JSON
+            try:
+                import json
+                scene = switcher.current_source or "offline"
+                response = json.dumps({"scene": scene})
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(response.encode())
+                print(f"[http] Scene query returned: {scene}")
+            except Exception as e:
+                print(f"[http] Scene query error: {e}")
+                self.send_response(500); self.end_headers()
+                self.wfile.write(f"error: {e}\n".encode())
         elif parsed.path == "/health":
             # Simple health check: query actual pipeline state
             state = switcher.pipeline.get_state(0)[1]  # Get current state without blocking
@@ -375,7 +395,7 @@ class Handler(BaseHTTPRequestHandler):
 def run_http():
     srv = HTTPServer(("0.0.0.0", 8088), Handler)
     print("[http] HTTP server bound to 0.0.0.0:8088")
-    print("[http] Endpoints: /health and /switch?src=offline|cam")
+    print("[http] Endpoints: /health, /scene, and /switch?src=offline|cam")
     srv.serve_forever()
 
 if __name__ == "__main__":

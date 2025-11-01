@@ -3,8 +3,9 @@ export class WebSocketService {
     this.ws = null;
     this.listeners = [];
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
-    this.reconnectDelay = 2000;
+    this.initialReconnectDelay = 2000;
+    this.currentReconnectDelay = 2000;
+    this.maxReconnectDelay = 10000;
   }
 
   connect(onMessage, onError) {
@@ -19,6 +20,7 @@ export class WebSocketService {
     this.ws.onopen = () => {
       console.log('[ws] Connected');
       this.reconnectAttempts = 0;
+      this.currentReconnectDelay = this.initialReconnectDelay;
     };
 
     this.ws.onmessage = (event) => {
@@ -42,19 +44,17 @@ export class WebSocketService {
   }
 
   attemptReconnect(onMessage, onError) {
-    if (this.reconnectAttempts < this.maxReconnectAttempts) {
-      this.reconnectAttempts++;
-      console.log(`[ws] Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
-      
-      setTimeout(() => {
-        this.connect(onMessage, onError);
-      }, this.reconnectDelay);
-    } else {
-      console.error('[ws] Max reconnection attempts reached');
-      if (onError) {
-        onError(new Error('Failed to reconnect to WebSocket'));
-      }
-    }
+    this.reconnectAttempts++;
+    console.log(`[ws] Attempting to reconnect in ${this.currentReconnectDelay / 1000}s (attempt ${this.reconnectAttempts})...`);
+    
+    setTimeout(() => {
+      this.connect(onMessage, onError);
+      // Implement exponential backoff with max cap
+      this.currentReconnectDelay = Math.min(
+        this.currentReconnectDelay * 2,
+        this.maxReconnectDelay
+      );
+    }, this.currentReconnectDelay);
   }
 
   disconnect() {

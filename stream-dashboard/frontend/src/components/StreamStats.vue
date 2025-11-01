@@ -3,14 +3,24 @@
     <h2>Streaming Statistics</h2>
     <div class="stream-info">
       <div class="info-item">
-        <div class="info-label">Current Scene</div>
-        <div class="info-value scene-badge" :class="getSceneClass(currentScene)">
-          {{ getSceneDisplay(currentScene) }}
+        <div class="info-label">Stream Status</div>
+        <div class="info-value status-badge" :class="getStatusClass(streamStatus.isOnline)">
+          {{ streamStatus.isOnline ? 'ONLINE' : 'OFFLINE' }}
+        </div>
+        <div class="duration-text">
+          {{ formatDuration(streamStatus.durationSeconds) }}
         </div>
       </div>
       
       <div class="info-item">
-        <div class="info-label">Total Inbound Bandwidth</div>
+        <div class="info-label">Current Scene</div>
+        <div class="info-value scene-value">
+          {{ currentScene ? currentScene.toUpperCase() : 'UNKNOWN' }}
+        </div>
+      </div>
+      
+      <div class="info-item">
+        <div class="info-label">Camera Bitrate</div>
         <div class="info-value bandwidth-value">
           {{ stats.inboundBandwidth.toLocaleString() }} kbps
         </div>
@@ -18,7 +28,12 @@
     </div>
     
     <div class="streams-grid">
-      <div v-for="(stream, name) in stats.streams" :key="name" class="stream-item">
+      <div
+        v-for="(stream, name) in stats.streams"
+        :key="name"
+        class="stream-item"
+        :class="{ 'current-scene': name === currentScene }"
+      >
         <div class="stream-header">
           <span class="stream-name">{{ name }}</span>
           <span class="stream-status" :class="{ active: stream.active, inactive: !stream.active }">
@@ -39,6 +54,14 @@
             <span class="detail-value">{{ stream.publishing ? 'Yes' : 'No' }}</span>
           </div>
         </div>
+        <button
+          v-if="shouldShowSwitchButton(name)"
+          @click="switchScene(name)"
+          class="switch-button"
+          :disabled="switching"
+        >
+          {{ switching === name ? 'Switching...' : `Switch to ${name}` }}
+        </button>
       </div>
     </div>
   </div>
@@ -55,20 +78,67 @@ export default {
         streams: {}
       })
     },
+    streamStatus: {
+      type: Object,
+      default: () => ({
+        isOnline: false,
+        durationSeconds: 0
+      })
+    },
     currentScene: {
       type: String,
       default: null
     }
   },
+  data() {
+    return {
+      switching: null
+    };
+  },
   methods: {
-    getSceneDisplay(scene) {
-      if (!scene) return 'Unknown';
-      return scene.toUpperCase();
+    getStatusClass(isOnline) {
+      return isOnline ? 'status-online' : 'status-offline';
     },
-    getSceneClass(scene) {
-      if (scene === 'cam') return 'scene-cam';
-      if (scene === 'offline') return 'scene-offline';
-      return 'scene-unknown';
+    formatDuration(seconds) {
+      if (seconds < 60) {
+        return `${seconds}s`;
+      } else if (seconds < 3600) {
+        const minutes = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${minutes}m ${secs}s`;
+      } else {
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        return `${hours}h ${minutes}m ${secs}s`;
+      }
+    },
+    shouldShowSwitchButton(streamName) {
+      // Don't show button for "program" stream or current scene
+      return streamName !== 'program' && streamName !== this.currentScene;
+    },
+    async switchScene(sceneName) {
+      if (this.switching) return;
+      
+      this.switching = sceneName;
+      console.log(`[StreamStats] Switching to scene: ${sceneName}`);
+      
+      try {
+        const response = await fetch(`http://localhost:8088/switch?src=${sceneName}`);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(errorText || 'Switch failed');
+        }
+        
+        const result = await response.text();
+        console.log(`[StreamStats] Switch successful: ${result}`);
+      } catch (error) {
+        console.error(`[StreamStats] Error switching scene:`, error);
+        alert(`Failed to switch scene: ${error.message}`);
+      } finally {
+        this.switching = null;
+      }
     }
   }
 };
@@ -113,30 +183,37 @@ h2 {
   color: #f1f5f9;
 }
 
-.scene-badge {
+.status-badge {
   display: inline-block;
   padding: 8px 16px;
   border-radius: 6px;
   font-size: 1rem;
 }
 
-.scene-cam {
+.status-online {
   background: #10b981;
   color: #fff;
 }
 
-.scene-offline {
-  background: #f59e0b;
+.status-offline {
+  background: #ef4444;
   color: #fff;
 }
 
-.scene-unknown {
-  background: #64748b;
-  color: #fff;
+.duration-text {
+  margin-top: 8px;
+  font-size: 0.875rem;
+  color: #94a3b8;
+  font-weight: normal;
 }
 
 .bandwidth-value {
   color: #3b82f6;
+}
+
+.scene-value {
+  color: #10b981;
+  font-weight: bold;
 }
 
 .streams-grid {
@@ -150,6 +227,12 @@ h2 {
   border-radius: 6px;
   padding: 15px;
   border: 1px solid #334155;
+  position: relative;
+}
+
+.stream-item.current-scene {
+  border: 2px solid #10b981;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
 }
 
 .stream-header {
@@ -204,5 +287,33 @@ h2 {
 .detail-value {
   color: #e2e8f0;
   font-weight: 500;
+}
+
+.switch-button {
+  margin-top: 12px;
+  width: 100%;
+  padding: 8px 16px;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.switch-button:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.switch-button:active:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.switch-button:disabled {
+  background: #64748b;
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 </style>

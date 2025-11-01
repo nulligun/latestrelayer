@@ -12,7 +12,7 @@
           </div>
         </div>
         
-        <div class="container-id">ID: {{ container.id }}</div>
+        <div class="container-description">{{ getContainerDescription(container.name) }}</div>
         
         <div class="container-actions">
           <button 
@@ -61,10 +61,22 @@ export default {
     return {
       loading: false,
       actionPending: {},
-      actionError: {}
+      actionError: {},
+      containerDescriptions: {
+        'ffmpeg-kick': 'Stream to kick',
+        'stream-switcher': 'Mux Offline and Cam to Program',
+        'dashboard': 'This control panel',
+        'ffmpeg-offline': 'A looping video of the BRB screen',
+        'ffmpeg-dev-cam': 'A looping video for testing the camera feed',
+        'nginx-rtmp': 'RTMP Relay server',
+        'controller': 'API for container management'
+      }
     };
   },
   methods: {
+    getContainerDescription(name) {
+      return this.containerDescriptions[name] || 'No description available';
+    },
     getStatusClass(status) {
       if (status === 'running') return 'status-running';
       if (status === 'exited') return 'status-stopped';
@@ -190,11 +202,12 @@ h2 {
   background: rgba(100, 116, 139, 0.1);
 }
 
-.container-id {
-  font-size: 0.75rem;
-  color: #64748b;
+.container-description {
+  font-size: 0.8rem;
+  color: #94a3b8;
   margin-bottom: 15px;
-  font-family: monospace;
+  line-height: 1.4;
+  font-style: italic;
 }
 
 .container-actions {

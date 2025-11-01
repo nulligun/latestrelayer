@@ -39,7 +39,7 @@ app.use(cors());
 app.use(express.json());
 
 // Serve static files from frontend build
-app.use(express.static(path.join(__dirname, '../frontend/dist')));
+app.use(express.static(path.join(__dirname, 'frontend/dist')));
 
 // Create HTTP server
 const server = http.createServer(app);
@@ -125,7 +125,7 @@ app.post('/api/container/:name/restart', async (req, res) => {
 
 // Serve frontend for all other routes (SPA fallback)
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
+  res.sendFile(path.join(__dirname, 'frontend/dist/index.html'));
 });
 
 // Start server

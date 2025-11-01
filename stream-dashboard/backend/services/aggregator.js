@@ -9,25 +9,16 @@ const RtmpParserService = require('./rtmpParser');
 class AggregatorService {
   constructor(config) {
     this.controllerService = new ControllerService(config.controllerUrl);
-    this.rtmpParser = new RtmpParserService(config.nginxStatsUrl);
+    this.rtmpParser = new RtmpParserService(config.nginxStatsUrl, config.switcherUrl);
     this.switcherUrl = config.switcherUrl;
     this.pollingInterval = config.pollingInterval || 2000;
     this.clients = new Set();
-  }
-
-  /**
-   * Get current scene from stream-switcher
-   */
-  async getCurrentScene() {
-    try {
-      // The stream-switcher doesn't have a specific endpoint for current scene,
-      // so we'll need to infer it or add one. For now, return null
-      // This can be enhanced by adding a /status endpoint to stream-switcher
-      return null;
-    } catch (error) {
-      console.error('[aggregator] Error getting current scene:', error.message);
-      return null;
-    }
+    
+    // Stream status tracking
+    this.streamStatus = {
+      isOnline: false,
+      stateChangeTimestamp: Date.now()
+    };
   }
 
   /**
@@ -37,12 +28,25 @@ class AggregatorService {
     const timestamp = new Date().toISOString();
 
     try {
-      const [containers, systemMetrics, rtmpStats, currentScene] = await Promise.all([
+      const [containers, systemMetrics, rtmpStats] = await Promise.all([
         this.controllerService.listContainers(),
         metricsService.getSystemMetrics(),
-        this.rtmpParser.getStats(),
-        this.getCurrentScene()
+        this.rtmpParser.getStats()
       ]);
+
+      // Check if ffmpeg-kick is running to determine stream status
+      const ffmpegKick = containers.find(c => c.name === 'ffmpeg-kick');
+      const isOnline = ffmpegKick ? ffmpegKick.running : false;
+      
+      // Track state changes and update timestamp
+      if (isOnline !== this.streamStatus.isOnline) {
+        this.streamStatus.isOnline = isOnline;
+        this.streamStatus.stateChangeTimestamp = Date.now();
+        console.log(`[aggregator] Stream status changed to ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
+      }
+      
+      // Calculate duration in current state (seconds)
+      const durationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
 
       return {
         timestamp,
@@ -55,16 +59,28 @@ class AggregatorService {
         })),
         systemMetrics,
         rtmpStats,
-        currentScene
+        currentScene: rtmpStats.currentScene,
+        streamStatus: {
+          isOnline,
+          durationSeconds
+        }
       };
     } catch (error) {
       console.error('[aggregator] Error aggregating data:', error.message);
+      
+      // Calculate duration even on error
+      const durationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
+      
       return {
         timestamp,
         containers: [],
         systemMetrics: { cpu: 0, memory: 0, load: [0] },
         rtmpStats: { inboundBandwidth: 0, streams: {} },
         currentScene: null,
+        streamStatus: {
+          isOnline: this.streamStatus.isOnline,
+          durationSeconds
+        },
         error: error.message
       };
     }
