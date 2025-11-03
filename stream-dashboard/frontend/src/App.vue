@@ -16,12 +16,27 @@
       </div>
 
       <div class="dashboard-grid">
-        <SystemMetrics :metrics="data.systemMetrics" />
-        <StreamStats :stats="data.rtmpStats" :streamStatus="data.streamStatus" :currentScene="data.currentScene" />
+        <SystemMetrics
+          :metrics="data.systemMetrics"
+          :containers="data.containers"
+          :rtmpStats="data.rtmpStats"
+        />
+        <StreamStats
+          :stats="data.rtmpStats"
+          :streamStatus="data.streamStatus"
+          :currentScene="data.currentScene"
+          :sceneDurationSeconds="data.sceneDurationSeconds"
+          :switchingScene="switchingScene"
+          :sourceAvailability="data.sourceAvailability"
+          @scene-switching="handleSceneSwitching"
+        />
       </div>
 
       <div class="containers-section">
-        <ContainerGrid :containers="data.containers" />
+        <ContainerGrid
+          :containers="data.containers"
+          @container-status-changed="updateContainerStatus"
+        />
       </div>
     </main>
 
@@ -52,6 +67,14 @@ export default {
     const error = ref(null);
     const pollingInterval = ref(2000);
     
+    // Track pending container operations
+    const pendingOperations = ref({});
+    
+    // Track scene switching state
+    const switchingScene = ref(null);
+    let switchingTimeout = null;
+    let previousScene = null;
+    
     const data = ref({
       timestamp: null,
       containers: [],
@@ -67,10 +90,12 @@ export default {
         streams: {}
       },
       currentScene: null,
+      sourceAvailability: null,
       streamStatus: {
         isOnline: false,
         durationSeconds: 0
-      }
+      },
+      sceneDurationSeconds: 0
     });
 
     const formatTime = (timestamp) => {
@@ -80,7 +105,63 @@ export default {
     };
 
     const handleMessage = (newData) => {
-      data.value = newData;
+      const now = Date.now();
+      const OPERATION_TIMEOUT = 30000; // 30 seconds
+      
+      // Detect scene changes and clear switching state
+      if (newData.currentScene !== previousScene && switchingScene.value) {
+        console.log(`[app] Scene changed from ${previousScene} to ${newData.currentScene}, clearing switching state`);
+        switchingScene.value = null;
+        if (switchingTimeout) {
+          clearTimeout(switchingTimeout);
+          switchingTimeout = null;
+        }
+      }
+      previousScene = newData.currentScene;
+      
+      // Process containers and apply pending operations
+      const processedContainers = newData.containers.map(container => {
+        const pending = pendingOperations.value[container.name];
+        
+        if (!pending) {
+          return container;
+        }
+        
+        // Check if operation timed out
+        const elapsed = now - pending.startTime;
+        if (elapsed > OPERATION_TIMEOUT) {
+          console.log(`[app] Operation timeout for ${container.name}, clearing pending status`);
+          delete pendingOperations.value[container.name];
+          return container;
+        }
+        
+        // Check if operation completed (status matches expected state)
+        const expectedStates = {
+          'stopping': ['exited', 'not-created'],
+          'starting': ['running'],
+          'restarting': ['running'],
+          'creating': ['running']
+        };
+        
+        const expected = expectedStates[pending.status];
+        if (expected && expected.includes(container.status)) {
+          console.log(`[app] Operation completed for ${container.name}: ${pending.status} → ${container.status}`);
+          delete pendingOperations.value[container.name];
+          return container;
+        }
+        
+        // Operation still in progress - override with transitional status
+        console.log(`[app] Preserving transitional status for ${container.name}: ${pending.status}`);
+        return {
+          ...container,
+          status: pending.status
+        };
+      });
+      
+      data.value = {
+        ...newData,
+        containers: processedContainers
+      };
       lastUpdate.value = formatTime(newData.timestamp);
       wsConnected.value = true;
       error.value = null;
@@ -91,6 +172,45 @@ export default {
       wsConnected.value = false;
     };
 
+    const updateContainerStatus = (update) => {
+      console.log('[app] Recording pending operation:', update);
+      
+      // Record the pending operation with timestamp
+      pendingOperations.value = {
+        ...pendingOperations.value,
+        [update.name]: {
+          status: update.status,
+          startTime: Date.now()
+        }
+      };
+      
+      // Apply immediate optimistic update
+      const containerIndex = data.value.containers.findIndex(c => c.name === update.name);
+      if (containerIndex !== -1) {
+        data.value.containers[containerIndex] = {
+          ...data.value.containers[containerIndex],
+          status: update.status
+        };
+        console.log('[app] Container status updated to:', update.status, '- tracking until completion');
+      }
+    };
+
+    const handleSceneSwitching = (sceneName) => {
+      console.log(`[app] handleSceneSwitching called for: ${sceneName}`);
+      switchingScene.value = sceneName;
+      console.log(`[app] Set switchingScene.value to: ${sceneName}`);
+      
+      // Set timeout to clear switching state after 5 seconds
+      if (switchingTimeout) {
+        clearTimeout(switchingTimeout);
+      }
+      switchingTimeout = setTimeout(() => {
+        console.log('[app] Scene switching timeout reached, clearing state');
+        switchingScene.value = null;
+        switchingTimeout = null;
+      }, 5000);
+    };
+
     onMounted(() => {
       console.log('[app] Mounting dashboard...');
       wsService.connect(handleMessage, handleError);
@@ -99,6 +219,9 @@ export default {
     onUnmounted(() => {
       console.log('[app] Unmounting dashboard...');
       wsService.disconnect();
+      if (switchingTimeout) {
+        clearTimeout(switchingTimeout);
+      }
     });
 
     return {
@@ -106,7 +229,10 @@ export default {
       wsConnected,
       lastUpdate,
       error,
-      pollingInterval
+      pollingInterval,
+      switchingScene,
+      updateContainerStatus,
+      handleSceneSwitching
     };
   }
 };

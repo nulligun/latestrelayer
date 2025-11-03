@@ -17,12 +17,8 @@
         <div class="info-value scene-value">
           {{ currentScene ? currentScene.toUpperCase() : 'UNKNOWN' }}
         </div>
-      </div>
-      
-      <div class="info-item">
-        <div class="info-label">Camera Bitrate</div>
-        <div class="info-value bandwidth-value">
-          {{ stats.inboundBandwidth.toLocaleString() }} kbps
+        <div class="duration-text">
+          {{ formatDuration(sceneDurationSeconds) }}
         </div>
       </div>
     </div>
@@ -32,13 +28,24 @@
         v-for="(stream, name) in stats.streams"
         :key="name"
         class="stream-item"
-        :class="{ 'current-scene': name === currentScene }"
+        :class="{
+          'current-scene': name === currentScene,
+          'using-fallback': sourceAvailability && sourceAvailability[name] && sourceAvailability[name].using_fallback
+        }"
       >
         <div class="stream-header">
           <span class="stream-name">{{ name }}</span>
-          <span class="stream-status" :class="{ active: stream.active, inactive: !stream.active }">
-            {{ stream.active ? '● LIVE' : '○ OFFLINE' }}
-          </span>
+          <div class="stream-header-right">
+            <span v-if="sourceAvailability && sourceAvailability[name] && sourceAvailability[name].using_fallback"
+                  class="fallback-badge"
+                  title="Using fallback test source - waiting for real stream">
+              ⚠ FALLBACK
+            </span>
+            <span v-if="switchingScene === name" class="switching-spinner"></span>
+            <span class="stream-status" :class="{ active: stream.active, inactive: !stream.active }">
+              {{ stream.active ? '● LIVE' : '○ OFFLINE' }}
+            </span>
+          </div>
         </div>
         <div class="stream-details">
           <div class="detail">
@@ -58,7 +65,7 @@
           v-if="shouldShowSwitchButton(name)"
           @click="switchScene(name)"
           class="switch-button"
-          :disabled="switching"
+          :disabled="switching || switchingScene"
         >
           {{ switching === name ? 'Switching...' : `Switch to ${name}` }}
         </button>
@@ -87,6 +94,18 @@ export default {
     },
     currentScene: {
       type: String,
+      default: null
+    },
+    sceneDurationSeconds: {
+      type: Number,
+      default: 0
+    },
+    switchingScene: {
+      type: String,
+      default: null
+    },
+    sourceAvailability: {
+      type: Object,
       default: null
     }
   },
@@ -118,21 +137,38 @@ export default {
       return streamName !== 'program' && streamName !== this.currentScene;
     },
     async switchScene(sceneName) {
-      if (this.switching) return;
+      console.log(`[StreamStats] switchScene called for: ${sceneName}`);
+      console.log(`[StreamStats] switching=${this.switching}, switchingScene prop=${this.switchingScene}`);
+      
+      if (this.switching || this.switchingScene) {
+        console.log(`[StreamStats] Blocked - already switching`);
+        return;
+      }
       
       this.switching = sceneName;
-      console.log(`[StreamStats] Switching to scene: ${sceneName}`);
+      console.log(`[StreamStats] Set local switching=${sceneName}`);
+      
+      // Emit event to parent to show loading indicator
+      console.log(`[StreamStats] Emitting scene-switching event`);
+      this.$emit('scene-switching', sceneName);
       
       try {
-        const response = await fetch(`http://localhost:8088/switch?src=${sceneName}`);
+        // Use proxied endpoint to avoid CORS issues
+        const response = await fetch('/api/scene/switch', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ scene: sceneName })
+        });
         
         if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(errorText || 'Switch failed');
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Switch failed');
         }
         
-        const result = await response.text();
-        console.log(`[StreamStats] Switch successful: ${result}`);
+        const result = await response.json();
+        console.log(`[StreamStats] Switch successful:`, result);
       } catch (error) {
         console.error(`[StreamStats] Error switching scene:`, error);
         alert(`Failed to switch scene: ${error.message}`);
@@ -221,6 +257,21 @@ h2 {
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
   gap: 15px;
 }
+.stream-item.using-fallback {
+  border: 2px solid #f59e0b;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.3);
+}
+
+.fallback-badge {
+  font-size: 0.65rem;
+  font-weight: bold;
+  padding: 3px 6px;
+  border-radius: 3px;
+  color: #fff;
+  background: #f59e0b;
+  margin-right: 6px;
+}
+
 
 .stream-item {
   background: #0f172a;
@@ -242,6 +293,27 @@ h2 {
   margin-bottom: 12px;
   padding-bottom: 12px;
   border-bottom: 1px solid #334155;
+}
+
+.stream-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.switching-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #3b82f6;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .stream-name {

@@ -19,6 +19,12 @@ class AggregatorService {
       isOnline: false,
       stateChangeTimestamp: Date.now()
     };
+    
+    // Scene status tracking
+    this.sceneStatus = {
+      currentScene: null,
+      sceneChangeTimestamp: Date.now()
+    };
   }
 
   /**
@@ -48,28 +54,44 @@ class AggregatorService {
       // Calculate duration in current state (seconds)
       const durationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
 
+      // Track scene changes and update timestamp
+      if (rtmpStats.currentScene !== this.sceneStatus.currentScene) {
+        this.sceneStatus.currentScene = rtmpStats.currentScene;
+        this.sceneStatus.sceneChangeTimestamp = Date.now();
+        console.log(`[aggregator] Scene changed to ${rtmpStats.currentScene}`);
+      }
+      
+      // Calculate duration on current scene (seconds)
+      const sceneDurationSeconds = Math.floor((Date.now() - this.sceneStatus.sceneChangeTimestamp) / 1000);
+
       return {
         timestamp,
         containers: containers.map(c => ({
           name: c.name,
           fullName: c.full_name,
           status: c.status,
+          statusDetail: c.status_detail,
           running: c.running,
+          health: c.health,
           id: c.id
         })),
         systemMetrics,
         rtmpStats,
         currentScene: rtmpStats.currentScene,
+        sourceAvailability: rtmpStats.sourceAvailability || null,
+        muxerStatus: rtmpStats.muxerStatus || null,
         streamStatus: {
           isOnline,
           durationSeconds
-        }
+        },
+        sceneDurationSeconds
       };
     } catch (error) {
       console.error('[aggregator] Error aggregating data:', error.message);
       
       // Calculate duration even on error
       const durationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
+      const sceneDurationSeconds = Math.floor((Date.now() - this.sceneStatus.sceneChangeTimestamp) / 1000);
       
       return {
         timestamp,
@@ -77,10 +99,13 @@ class AggregatorService {
         systemMetrics: { cpu: 0, memory: 0, load: [0] },
         rtmpStats: { inboundBandwidth: 0, streams: {} },
         currentScene: null,
+        sourceAvailability: null,
+        muxerStatus: null,
         streamStatus: {
           isOnline: this.streamStatus.isOnline,
           durationSeconds
         },
+        sceneDurationSeconds,
         error: error.message
       };
     }

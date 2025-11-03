@@ -36,7 +36,7 @@ class ControllerService {
       const response = await axios.post(
         `${this.controllerUrl}/container/${containerName}/start`,
         {},
-        { timeout: 10000 }
+        { timeout: 30000 }
       );
       return response.data;
     } catch (error) {
@@ -50,7 +50,7 @@ class ControllerService {
       const response = await axios.post(
         `${this.controllerUrl}/container/${containerName}/stop`,
         {},
-        { timeout: 10000 }
+        { timeout: 30000 }
       );
       return response.data;
     } catch (error) {
@@ -64,11 +64,25 @@ class ControllerService {
       const response = await axios.post(
         `${this.controllerUrl}/container/${containerName}/restart`,
         {},
-        { timeout: 10000 }
+        { timeout: 30000 }
       );
       return response.data;
     } catch (error) {
       console.error(`[controller] Error restarting ${containerName}:`, error.message);
+      return { error: error.message };
+    }
+  }
+
+  async createAndStartContainer(containerName) {
+    try {
+      const response = await axios.post(
+        `${this.controllerUrl}/container/${containerName}/create-and-start`,
+        {},
+        { timeout: 30000 }
+      );
+      return response.data;
+    } catch (error) {
+      console.error(`[controller] Error creating and starting ${containerName}:`, error.message);
       return { error: error.message };
     }
   }

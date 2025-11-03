@@ -5,33 +5,39 @@ const cors = require('cors');
 const path = require('path');
 const AggregatorService = require('./services/aggregator');
 const ControllerService = require('./services/controller');
+const SceneService = require('./services/scene');
 
 // Configuration from environment variables
 const PORT = process.env.PORT || 3000;
 const CONTROLLER_API = process.env.CONTROLLER_API || 'http://stream-controller:8089';
-const SWITCHER_API = process.env.SWITCHER_API || 'http://stream-switcher:8088';
+const MUXER_API = process.env.MUXER_API || 'http://muxer:8088';
 const NGINX_STATS = process.env.NGINX_STATS || 'http://nginx-rtmp:8080/stat';
 const POLLING_INTERVAL = parseInt(process.env.POLLING_INTERVAL || '2000');
+const RTMP_DOMAIN = process.env.RTMP_DOMAIN || 'localhost';
+const RTMP_PORT = process.env.RTMP_PORT || '1936';
+const RTMP_STREAM_KEY = process.env.RTMP_STREAM_KEY || 'cam';
 
 console.log('='.repeat(60));
 console.log('Stream Dashboard Backend - Starting Up');
 console.log('='.repeat(60));
 console.log(`[config] Port: ${PORT}`);
 console.log(`[config] Controller API: ${CONTROLLER_API}`);
-console.log(`[config] Switcher API: ${SWITCHER_API}`);
+console.log(`[config] Muxer API: ${MUXER_API}`);
 console.log(`[config] NGINX Stats: ${NGINX_STATS}`);
 console.log(`[config] Polling Interval: ${POLLING_INTERVAL}ms`);
+console.log(`[config] RTMP URL: rtmps://${RTMP_DOMAIN}:${RTMP_PORT}/live/${RTMP_STREAM_KEY}`);
 console.log('='.repeat(60));
 
 // Initialize services
 const aggregator = new AggregatorService({
   controllerUrl: CONTROLLER_API,
-  switcherUrl: SWITCHER_API,
+  switcherUrl: MUXER_API,
   nginxStatsUrl: NGINX_STATS,
   pollingInterval: POLLING_INTERVAL
 });
 
 const controller = new ControllerService(CONTROLLER_API);
+const sceneService = new SceneService(MUXER_API);
 
 // Create Express app
 const app = express();
@@ -95,6 +101,16 @@ app.get('/api/data', async (req, res) => {
   }
 });
 
+// Get RTMP configuration
+app.get('/api/config', (req, res) => {
+  res.json({
+    rtmpUrl: `rtmps://${RTMP_DOMAIN}:${RTMP_PORT}/live/${RTMP_STREAM_KEY}`,
+    domain: RTMP_DOMAIN,
+    port: RTMP_PORT,
+    streamKey: RTMP_STREAM_KEY
+  });
+});
+
 // Container control endpoints (proxy to stream-controller)
 app.post('/api/container/:name/start', async (req, res) => {
   try {
@@ -123,6 +139,38 @@ app.post('/api/container/:name/restart', async (req, res) => {
   }
 });
 
+app.post('/api/container/:name/create-and-start', async (req, res) => {
+  try {
+    const result = await controller.createAndStartContainer(req.params.name);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Scene switching endpoints (proxy to muxer)
+app.post('/api/scene/switch', async (req, res) => {
+  try {
+    const { scene } = req.body;
+    if (!scene) {
+      return res.status(400).json({ error: 'Scene name is required' });
+    }
+    const result = await sceneService.switchScene(scene);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/scene/current', async (req, res) => {
+  try {
+    const result = await sceneService.getCurrentScene();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Serve frontend for all other routes (SPA fallback)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'frontend/dist/index.html'));
@@ -134,6 +182,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('[http] REST API endpoints:');
   console.log('[http]   GET  /api/health');
   console.log('[http]   GET  /api/data');
+  console.log('[http]   GET  /api/config');
   console.log('[http]   POST /api/container/:name/start');
   console.log('[http]   POST /api/container/:name/stop');
   console.log('[http]   POST /api/container/:name/restart');

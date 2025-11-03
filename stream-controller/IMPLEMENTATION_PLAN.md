@@ -25,7 +25,7 @@ graph TB
         KICK[ffmpeg-kick]
         OFFLINE[ffmpeg-offline]
         CAM[ffmpeg-dev-cam]
-        SWITCHER[stream-switcher]
+        SWITCHER[muxer]
     end
     
     CLIENT -->|POST /container/ffmpeg-kick/start| HTTP
@@ -58,7 +58,7 @@ The service will manage containers with the project prefix (`relayer-` by defaul
 - `ffmpeg-kick`
 - `ffmpeg-offline`
 - `ffmpeg-dev-cam`
-- `stream-switcher`
+- `muxer`
 - `nginx-rtmp`
 
 ### Example Usage
@@ -103,7 +103,7 @@ stream-controller/
 - Run with unbuffered output
 
 #### 2. container_controller.py
-**Pattern:** Similar to [`rtmp_switcher.py`](../stream-switcher/rtmp_switcher.py)
+**Pattern:** Similar to [`rtmp_switcher.py`](../muxer/rtmp_switcher.py)
 
 **Structure:**
 ```python

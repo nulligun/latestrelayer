@@ -6,38 +6,54 @@
       <div v-for="container in containers" :key="container.name" class="container-item">
         <div class="container-header">
           <div class="container-name">{{ container.name }}</div>
-          <div class="container-status" :class="getStatusClass(container.status)">
-            <span class="status-dot">●</span>
-            {{ container.status.toUpperCase() }}
+          <div class="container-status" :class="getStatusClass(container)">
+            <span v-if="isTransitional(container)" class="status-spinner">⟳</span>
+            <span v-else class="status-dot">●</span>
+            {{ getStatusDisplay(container) }}
           </div>
         </div>
         
         <div class="container-description">{{ getContainerDescription(container.name) }}</div>
         
+        <div v-if="container.statusDetail" class="container-status-detail">
+          {{ container.statusDetail }}
+        </div>
+        
         <div class="container-actions">
-          <button 
-            @click="startContainer(container.name)"
-            :disabled="container.running || actionPending[container.name]"
-            class="btn btn-start"
-          >
-            {{ actionPending[container.name] === 'start' ? 'Starting...' : 'Start' }}
-          </button>
-          
-          <button 
-            @click="stopContainer(container.name)"
-            :disabled="!container.running || actionPending[container.name]"
-            class="btn btn-stop"
-          >
-            {{ actionPending[container.name] === 'stop' ? 'Stopping...' : 'Stop' }}
-          </button>
-          
-          <button 
-            @click="restartContainer(container.name)"
-            :disabled="actionPending[container.name]"
-            class="btn btn-restart"
-          >
-            {{ actionPending[container.name] === 'restart' ? 'Restarting...' : 'Restart' }}
-          </button>
+          <template v-if="container.status === 'not-created'">
+            <button
+              @click="createAndStartContainer(container.name)"
+              :disabled="actionPending[container.name] || isTransitional(container)"
+              class="btn btn-create"
+            >
+              {{ actionPending[container.name] === 'create-and-start' ? 'Creating...' : 'Create & Start' }}
+            </button>
+          </template>
+          <template v-else>
+            <button
+              @click="startContainer(container.name)"
+              :disabled="container.running || actionPending[container.name] || isTransitional(container)"
+              class="btn btn-start"
+            >
+              {{ actionPending[container.name] === 'start' ? 'Starting...' : 'Start' }}
+            </button>
+            
+            <button
+              @click="stopContainer(container.name)"
+              :disabled="!container.running || actionPending[container.name] || isTransitional(container)"
+              class="btn btn-stop"
+            >
+              {{ actionPending[container.name] === 'stop' ? 'Stopping...' : 'Stop' }}
+            </button>
+            
+            <button
+              @click="restartContainer(container.name)"
+              :disabled="!container.running || actionPending[container.name] || isTransitional(container)"
+              class="btn btn-restart"
+            >
+              {{ actionPending[container.name] === 'restart' ? 'Restarting...' : 'Restart' }}
+            </button>
+          </template>
         </div>
         
         <div v-if="actionError[container.name]" class="error-message">
@@ -63,10 +79,11 @@ export default {
       actionPending: {},
       actionError: {},
       containerDescriptions: {
+        'auto-switcher': 'Auto switch between Camera and BRB',
         'ffmpeg-kick': 'Stream to kick',
-        'stream-switcher': 'Mux Offline and Cam to Program',
+        'muxer': 'Mux BRB and Cam to Program',
         'dashboard': 'This control panel',
-        'ffmpeg-offline': 'A looping video of the BRB screen',
+        'ffmpeg-brb': 'A looping video of the BRB screen',
         'ffmpeg-dev-cam': 'A looping video for testing the camera feed',
         'nginx-rtmp': 'RTMP Relay server',
         'controller': 'API for container management'
@@ -77,13 +94,41 @@ export default {
     getContainerDescription(name) {
       return this.containerDescriptions[name] || 'No description available';
     },
-    getStatusClass(status) {
-      if (status === 'running') return 'status-running';
-      if (status === 'exited') return 'status-stopped';
+    isTransitional(container) {
+      const transitionalStates = ['stopping', 'starting', 'restarting', 'creating'];
+      return transitionalStates.includes(container.status);
+    },
+    getStatusClass(container) {
+      // Check for transitional states
+      if (this.isTransitional(container)) {
+        return 'status-transitional';
+      }
+      // Check if running but unhealthy
+      if (container.status === 'running' && container.health === 'unhealthy') {
+        return 'status-unhealthy';
+      }
+      if (container.status === 'running') return 'status-running';
+      if (container.status === 'exited') return 'status-not-running';
+      if (container.status === 'not-created') return 'status-not-created';
       return 'status-unknown';
+    },
+    getStatusDisplay(container) {
+      // Handle transitional states
+      if (container.status === 'stopping') return 'STOPPING';
+      if (container.status === 'starting') return 'STARTING';
+      if (container.status === 'restarting') return 'RESTARTING';
+      if (container.status === 'creating') return 'CREATING';
+      // Show UNHEALTHY if running but unhealthy
+      if (container.status === 'running' && container.health === 'unhealthy') {
+        return 'UNHEALTHY';
+      }
+      if (container.status === 'exited') return 'NOT-RUNNING';
+      if (container.status === 'not-created') return 'NOT-CREATED';
+      return container.status.toUpperCase();
     },
     
     async performAction(containerName, action) {
+      console.log(`[container] ACTION STARTED: ${action} on ${containerName}`);
       this.actionPending = { ...this.actionPending, [containerName]: action };
       this.actionError = { ...this.actionError, [containerName]: null };
       
@@ -96,17 +141,28 @@ export default {
         });
         
         const data = await response.json();
+        console.log(`[container] RESPONSE received:`, {
+          status: response.status,
+          data: data
+        });
         
         if (!response.ok) {
           throw new Error(data.error || `Failed to ${action} container`);
         }
         
-        console.log(`[container] ${action} success:`, data);
+        console.log(`[container] ${action} success - transitional status:`, data.status);
+        
+        // DIAGNOSTIC: Emit event to parent to immediately update container status
+        this.$emit('container-status-changed', {
+          name: containerName,
+          status: data.status
+        });
       } catch (error) {
         console.error(`[container] ${action} error:`, error);
         this.actionError = { ...this.actionError, [containerName]: error.message };
       } finally {
         this.actionPending = { ...this.actionPending, [containerName]: null };
+        console.log(`[container] ACTION COMPLETED: actionPending cleared for ${containerName}`);
       }
     },
     
@@ -120,6 +176,10 @@ export default {
     
     restartContainer(name) {
       this.performAction(name, 'restart');
+    },
+    
+    createAndStartContainer(name) {
+      this.performAction(name, 'create-and-start');
     }
   }
 };
@@ -192,9 +252,24 @@ h2 {
   background: rgba(16, 185, 129, 0.1);
 }
 
-.status-stopped {
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.1);
+.status-not-running {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.status-not-created {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.status-unhealthy {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.status-transitional {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
 }
 
 .status-unknown {
@@ -202,12 +277,37 @@ h2 {
   background: rgba(100, 116, 139, 0.1);
 }
 
+.status-spinner {
+  display: inline-block;
+  font-size: 0.9rem;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .container-description {
   font-size: 0.8rem;
   color: #94a3b8;
-  margin-bottom: 15px;
+  margin-bottom: 10px;
   line-height: 1.4;
   font-style: italic;
+}
+
+.container-status-detail {
+  font-size: 0.75rem;
+  color: #64748b;
+  margin-bottom: 15px;
+  padding: 6px 10px;
+  background: rgba(100, 116, 139, 0.1);
+  border-radius: 4px;
+  border-left: 2px solid #475569;
 }
 
 .container-actions {
@@ -256,6 +356,16 @@ h2 {
 
 .btn-restart:hover:not(:disabled) {
   background: #2563eb;
+}
+
+.btn-create {
+  background: #f59e0b;
+  color: white;
+  flex: 1;
+}
+
+.btn-create:hover:not(:disabled) {
+  background: #d97706;
 }
 
 .error-message {

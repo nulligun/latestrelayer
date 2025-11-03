@@ -141,7 +141,7 @@ if pipeline_playing:
 ## Code Changes Summary
 
 ### Files to Modify
-- `stream-switcher/rtmp_switcher.py` - Main refactoring
+- `muxer/rtmp_switcher.py` - Main refactoring
 
 ### Lines to Change
 - Lines 137-501: Entire `Switcher` class

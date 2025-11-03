@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-echo "Starting FFmpeg offline video stream..."
+echo "Starting FFmpeg BRB (Be Right Back) video stream..."
 echo "Source: /videos/offline.mp4"
-echo "Target: rtmp://nginx-rtmp:1936/live/offline"
+echo "Target: rtmp://nginx-rtmp:1936/live/brb"
 
 # Wait for nginx-rtmp RTMP service to be fully ready
 echo "Waiting for nginx-rtmp RTMP service..."
@@ -27,12 +27,12 @@ fi
 
 # Give nginx a moment to fully initialize RTMP application
 sleep 2
-echo "Starting FFmpeg stream to rtmp://nginx-rtmp:1936/live/offline"
+echo "Starting FFmpeg stream to rtmp://nginx-rtmp:1936/live/brb"
 
-# Stream the offline video in a loop with verbose logging
+# Stream the BRB video in a loop with verbose logging
 exec ffmpeg -re -stream_loop -1 -i /videos/offline.mp4 \
   -c:v libx264 -pix_fmt yuv420p -preset veryfast \
   -b:v 3000k -maxrate 3000k -bufsize 6000k \
   -r 30 -g 60 -keyint_min 60 \
   -c:a aac -b:a 128k -ar 48000 -ac 2 \
-  -f flv rtmp://nginx-rtmp:1936/live/offline
+  -f flv rtmp://nginx-rtmp:1936/live/brb

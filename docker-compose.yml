@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # NGINX RTMP Server - Central relay hub
   nginx-rtmp:
@@ -20,51 +18,64 @@ services:
       retries: 3
       start_period: 10s
 
-  # FFmpeg Offline Video Stream - Always running
-  ffmpeg-offline:
+  # FFmpeg BRB (Be Right Back) Video Stream - Always running
+  ffmpeg-brb:
     build:
-      context: ./ffmpeg-offline
+      context: ./ffmpeg-brb
       dockerfile: Dockerfile
-    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-ffmpeg-offline
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-ffmpeg-brb
     volumes:
-      - ${OFFLINE_VIDEO_PATH}:/videos/offline.mp4:ro
+      - ${BRB_VIDEO_PATH}:/videos/offline.mp4:ro
     networks:
       - rtmp-network
     depends_on:
       nginx-rtmp:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "ffmpeg"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
-  # FFmpeg Dev Camera Stream - Always running
+  # FFmpeg Dev Camera Stream - Manual start only
   ffmpeg-dev-cam:
+    profiles: ["manual"]
     build:
       context: ./ffmpeg-dev-cam
       dockerfile: Dockerfile
     container_name: ${COMPOSE_PROJECT_NAME:-relayer}-ffmpeg-dev-cam
     volumes:
-      - ${OFFLINE_VIDEO_PATH_2}:/videos/offline2.mp4:ro
+      - ${BRB_VIDEO_PATH_2}:/videos/offline2.mp4:ro
     networks:
       - rtmp-network
     depends_on:
       nginx-rtmp:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "ffmpeg"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
-  # Stream Switcher - GStreamer-based scene switcher
-  stream-switcher:
+  # Muxer - GStreamer-based stream multiplexer
+  muxer:
     build:
-      context: ./stream-switcher
+      context: ./muxer
       dockerfile: Dockerfile
-    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-stream-switcher
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-muxer
     ports:
-      - "${SWITCHER_API_PORT:-8088}:8088"  # API port
+      - "${MUXER_API_PORT:-8088}:8088"  # API port
     networks:
       - rtmp-network
     depends_on:
       nginx-rtmp:
         condition: service_healthy
-      ffmpeg-offline:
-        condition: service_started
+      ffmpeg-brb:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
@@ -81,10 +92,10 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-relayer}-auto-switcher
     environment:
       - STAT_URL=http://nginx-rtmp:8080/stat
-      - SWITCH_API=http://stream-switcher:8088/switch
+      - SWITCH_API=http://muxer:8088/switch
       - APP_NAME=live
       - CAM_STREAM=cam
-      - OFFLINE_NAME=offline
+      - BRB_NAME=brb
       - MIN_BITRATE_KBPS=${MIN_BITRATE_KBPS:-300}
       - POLL_SECS=${AUTO_SWITCHER_POLL_SECS:-0.5}
       - CAM_MISS_TIMEOUT=${AUTO_SWITCHER_CAM_MISS_TIMEOUT:-3.0}
@@ -94,12 +105,19 @@ services:
     depends_on:
       nginx-rtmp:
         condition: service_healthy
-      stream-switcher:
+      muxer:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "python3"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
-  # FFmpeg Kick Pusher - Relays to Kick streaming service
+  # FFmpeg Kick Pusher - Manual start only
   ffmpeg-kick:
+    profiles: ["manual"]
     build:
       context: ./ffmpeg-kick
       dockerfile: Dockerfile
@@ -110,9 +128,15 @@ services:
     networks:
       - rtmp-network
     depends_on:
-      stream-switcher:
+      muxer:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "ffmpeg"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 75s
 
   # Container Controller - REST API for container lifecycle management
   stream-controller:
@@ -124,6 +148,8 @@ services:
       - "${CONTROLLER_API_PORT:-8089}:8089"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./.env:/app/.env:ro
     environment:
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-relayer}
     networks:
@@ -144,12 +170,17 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-relayer}-dashboard
     ports:
       - "${DASHBOARD_PORT:-3000}:3000"
+    volumes:
+      - /proc/net/dev:/host_proc/net/dev:ro
     environment:
       - PORT=3000
       - CONTROLLER_API=http://stream-controller:8089
-      - SWITCHER_API=http://stream-switcher:8088
+      - MUXER_API=http://muxer:8088
       - NGINX_STATS=http://nginx-rtmp:8080/stat
       - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
+      - RTMP_DOMAIN=${RTMP_DOMAIN}
+      - RTMP_PORT=${RTMP_PORT:-1936}
+      - RTMP_STREAM_KEY=${RTMP_STREAM_KEY:-cam}
     networks:
       - rtmp-network
     depends_on:
@@ -159,7 +190,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 15s
       timeout: 5s
       retries: 3

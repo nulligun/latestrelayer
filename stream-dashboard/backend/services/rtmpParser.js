@@ -18,14 +18,34 @@ class RtmpParserService {
       
       const stats = this.parseRtmpStats(result);
       
-      // Fetch current scene from stream-switcher
+      // Fetch enhanced health data from muxer (includes source availability)
       if (this.switcherUrl) {
         try {
-          const sceneResponse = await axios.get(`${this.switcherUrl}/scene`, { timeout: 2000 });
-          stats.currentScene = sceneResponse.data.scene;
-        } catch (sceneError) {
-          console.error('[rtmp] Error fetching current scene:', sceneError.message);
+          const healthResponse = await axios.get(`${this.switcherUrl}/health`, { timeout: 2000 });
+          
+          // Check if response is JSON (new format) or text (old format)
+          if (typeof healthResponse.data === 'object' && healthResponse.data.sources) {
+            // New enhanced health endpoint
+            stats.currentScene = healthResponse.data.current_scene;
+            stats.sourceAvailability = healthResponse.data.sources;
+            stats.muxerStatus = {
+              pipeline_state: healthResponse.data.pipeline_state,
+              uptime_seconds: healthResponse.data.uptime_seconds
+            };
+          } else {
+            // Fallback to old /scene endpoint for backward compatibility
+            try {
+              const sceneResponse = await axios.get(`${this.switcherUrl}/scene`, { timeout: 2000 });
+              stats.currentScene = sceneResponse.data.scene;
+            } catch (sceneError) {
+              console.error('[rtmp] Error fetching current scene:', sceneError.message);
+              stats.currentScene = null;
+            }
+          }
+        } catch (healthError) {
+          console.error('[rtmp] Error fetching muxer health:', healthError.message);
           stats.currentScene = null;
+          stats.sourceAvailability = null;
         }
       }
       
@@ -35,7 +55,8 @@ class RtmpParserService {
       return {
         inboundBandwidth: 0,
         streams: {},
-        currentScene: null
+        currentScene: null,
+        sourceAvailability: null
       };
     }
   }

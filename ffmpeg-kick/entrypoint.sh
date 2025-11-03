@@ -5,14 +5,14 @@ echo "Starting FFmpeg Kick pusher..."
 echo "Source: rtmp://nginx-rtmp:1936/live/program"
 echo "Target: ${KICK_URL}/${KICK_KEY}"
 
-# Wait for nginx-rtmp and stream-switcher to be ready
+# Wait for nginx-rtmp and muxer to be ready
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting 10 seconds for services..."
 sleep 10
 
-# Check if stream-switcher health endpoint is responding
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Checking stream-switcher health..."
-if curl -f -s http://stream-switcher:8088/health > /dev/null 2>&1; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Stream-switcher is healthy"
+# Check if muxer health endpoint is responding
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Checking muxer health..."
+if curl -f -s http://muxer:8088/health > /dev/null 2>&1; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Muxer is healthy"
 else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ Stream-switcher health check failed"
 fi
@@ -73,52 +73,13 @@ fi
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting 3 seconds for stream to stabilize..."
 sleep 3
 
-# Start FFmpeg with retry logic
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting FFmpeg with retry logic..."
-MAX_RETRIES=5
-RETRY_COUNT=0
-
-while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] FFmpeg attempt $((RETRY_COUNT + 1))/$MAX_RETRIES"
-    
-    # Use exec only on last attempt to replace the shell process
-    if [ $RETRY_COUNT -eq $((MAX_RETRIES - 1)) ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Final attempt - executing FFmpeg with verbose logging..."
-        exec ffmpeg -v info -stats \
-          -probesize 10M \
-          -analyzeduration 5000000 \
-          -rtmp_buffer 5000 \
-          -i rtmp://nginx-rtmp:1936/live/program \
-          -c:v copy -c:a copy \
-          -rtmp_buffer 5000 \
-          -f flv "${KICK_URL}/${KICK_KEY}"
-    else
-        # Run without exec so we can retry - using info level to see frame drops
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting FFmpeg with verbose logging to monitor performance..."
-        ffmpeg -v info -stats \
-          -probesize 10M \
-          -analyzeduration 5000000 \
-          -rtmp_buffer 5000 \
-          -i rtmp://nginx-rtmp:1936/live/program \
-          -c:v copy -c:a copy \
-          -rtmp_buffer 5000 \
-          -f flv "${KICK_URL}/${KICK_KEY}"
-        
-        EXIT_CODE=$?
-        if [ $EXIT_CODE -eq 0 ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FFmpeg exited successfully"
-            exit 0
-        else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FFmpeg failed with exit code $EXIT_CODE"
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                SLEEP_TIME=$((2 ** RETRY_COUNT))
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Retrying in ${SLEEP_TIME}s..."
-                sleep $SLEEP_TIME
-            fi
-        fi
-    fi
-done
-
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: All FFmpeg retry attempts failed"
-exit 1
+# Start FFmpeg - using exec to make it PID 1 for proper health checks
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting FFmpeg to stream to Kick..."
+exec ffmpeg -v info -stats \
+  -probesize 10M \
+  -analyzeduration 5000000 \
+  -rtmp_buffer 5000 \
+  -i rtmp://nginx-rtmp:1936/live/program \
+  -c:v copy -c:a copy \
+  -rtmp_buffer 5000 \
+  -f flv "${KICK_URL}/${KICK_KEY}"

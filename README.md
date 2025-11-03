@@ -13,7 +13,7 @@ A Docker-based RTMP relay system with two input streams and switchable output to
     ┌────┴─────┐
     │          │
 ┌───▼───┐  ┌──▼────┐
-│offline│  │offline│
+│brb│  │brb│
 │  .mp4 │  │ 2.mp4 │
 └───┬───┘  └───┬───┘
     │          │
@@ -23,7 +23,7 @@ A Docker-based RTMP relay system with two input streams and switchable output to
     │      └───┬────────────┘
     │          │
 ┌───▼──────────▼────┐
-│  ffmpeg-offline   │
+│  ffmpeg-brb   │
 └───┬───────────────┘
     │
     │      ┌────────────────┐
@@ -57,39 +57,40 @@ A Docker-based RTMP relay system with two input streams and switchable output to
 - **Purpose**: Central RTMP relay hub
 - **Ports**: 1936 (RTMP), 8080 (HTTP stats)
 - **Streams**: 
-  - `rtmp://nginx-rtmp:1936/live/offline` - Offline video loop
+  - `rtmp://nginx-rtmp:1936/live/brb` - Offline video loop
   - `rtmp://nginx-rtmp:1936/live/cam` - Camera feed (dev mode)
   - `rtmp://nginx-rtmp:1936/live/program` - Output stream
 
-### 2. ffmpeg-offline
-- **Purpose**: Continuously streams offline.mp4
-- **Output**: `rtmp://nginx-rtmp:1936/live/offline`
+### 2. ffmpeg-brb
+- **Purpose**: Continuously streams brb.mp4
+- **Output**: `rtmp://nginx-rtmp:1936/live/brb`
 - **Profiles**: All (default and dev)
 
 ### 3. ffmpeg-dev-cam
-- **Purpose**: Simulates camera feed using offline2.mp4
+- **Purpose**: Simulates camera feed using brb2.mp4
 - **Output**: `rtmp://nginx-rtmp:1936/live/cam`
-- **Profiles**: dev only
+- **Profiles**: manual (requires explicit start)
 
-### 4. stream-switcher
+### 4. muxer
 - **Purpose**: Switches between input streams using GStreamer
 - **API Port**: 8088
 - **Output**: `rtmp://nginx-rtmp:1936/live/program`
-- **Default**: Starts with offline stream
+- **Default**: Starts with brb stream
 
 ### 5. ffmpeg-kick
 - **Purpose**: Relays program stream to Kick
 - **Output**: Kick RTMPS server
+- **Profiles**: manual (requires explicit start)
 
 ### 6. stream-auto-switcher
-- **Purpose**: Automatically switches between camera and offline streams based on availability and quality
+- **Purpose**: Automatically switches between camera and brb streams based on availability and quality
 - **Monitors**: nginx-rtmp stats for stream presence and bitrate
 - **Profiles**: auto (optional, can be run manually or omitted)
 - **Key Features**:
   - XML-based parsing of nginx-rtmp statistics
   - Configurable minimum bitrate threshold (default: 300 kbps)
   - Grace period for stream stability before switching
-  - Automatic fallback to offline when camera quality degrades
+  - Automatic fallback to brb when camera quality degrades
 
 ### 7. stream-controller
 - **Purpose**: Container lifecycle management via REST API
@@ -111,8 +112,8 @@ A Docker-based RTMP relay system with two input streams and switchable output to
 
 - Docker and Docker Compose
 - Video files:
-  - `/home/mulligan/offline.mp4` - Main offline video
-  - `/home/mulligan/offline2.mp4` - Dev camera simulation
+  - `/home/mulligan/brb.mp4` - Main brb video
+  - `/home/mulligan/brb2.mp4` - Dev camera simulation
 
 ## Configuration
 
@@ -136,8 +137,8 @@ CONTROLLER_API_PORT=8089
 DASHBOARD_PORT=3000
 
 # Video Files
-OFFLINE_VIDEO_PATH=/home/mulligan/offline.mp4
-OFFLINE_VIDEO_PATH_2=/home/mulligan/offline2.mp4
+BRB_VIDEO_PATH=/home/mulligan/brb.mp4
+BRB_VIDEO_PATH_2=/home/mulligan/brb2.mp4
 ```
 
 ### Multi-Instance Setup
@@ -162,14 +163,9 @@ To run multiple instances on the same server, each instance needs unique ports. 
 
 ### Start Services
 
-**Production Mode** (without dev camera):
+**Production Mode** (core services only):
 ```bash
 docker compose up -d
-```
-
-**Development Mode** (with simulated camera):
-```bash
-docker compose --profile dev up -d
 ```
 
 **With Auto-Switcher** (automatically manages stream switching):
@@ -177,10 +173,31 @@ docker compose --profile dev up -d
 docker compose --profile auto up -d
 ```
 
-**Dev Mode + Auto-Switcher** (simulated camera with automatic switching):
+### Start Manual Services
+
+Some services are configured with the `manual` profile and won't start automatically. You can start them when needed:
+
+**Start ffmpeg-kick pusher** (push to Kick streaming service):
 ```bash
-docker compose --profile dev --profile auto up -d
+docker compose --profile manual up -d ffmpeg-kick
 ```
+
+**Start ffmpeg-dev-cam** (simulated camera feed for testing):
+```bash
+docker compose --profile manual up -d ffmpeg-dev-cam
+```
+
+**Start both manual services together**:
+```bash
+docker compose --profile manual up -d
+```
+
+**Combine with auto profile**:
+```bash
+docker compose --profile auto --profile manual up -d
+```
+
+**Alternative: Use the Container Controller API or Web Dashboard to start/stop these services dynamically without restarting Docker Compose.**
 
 ### Switch Between Streams
 
@@ -188,9 +205,9 @@ docker compose --profile dev --profile auto up -d
 
 The stream switcher exposes an HTTP API on port 8088:
 
-**Switch to offline stream:**
+**Switch to brb stream:**
 ```bash
-curl "http://localhost:8088/switch?src=offline"
+curl "http://localhost:8088/switch?src=brb"
 ```
 
 **Switch to camera stream:**
@@ -225,6 +242,9 @@ AUTO_SWITCHER_CAM_MISS_TIMEOUT=3.0
 
 # Seconds camera must be stable before switching to it (default: 2.0)
 AUTO_SWITCHER_CAM_BACK_STABILITY=2.0
+
+# Muxer health endpoint URL to check for fallback status (default: http://muxer:8088/health)
+MUXER_HEALTH_URL=http://muxer:8088/health
 ```
 
 **View auto-switcher logs:**
@@ -284,14 +304,14 @@ curl "http://localhost:8089/health"
 
 **Control other containers:**
 ```bash
-# Stop offline stream
-curl -X POST "http://localhost:8089/container/ffmpeg-offline/stop"
+# Stop brb stream
+curl -X POST "http://localhost:8089/container/ffmpeg-brb/stop"
 
 # Start dev camera stream
 curl -X POST "http://localhost:8089/container/ffmpeg-dev-cam/start"
 
 # Check stream switcher status
-curl "http://localhost:8089/container/stream-switcher/status"
+curl "http://localhost:8089/container/muxer/status"
 ```
 
 ### Monitor Services
@@ -302,7 +322,7 @@ curl "http://localhost:8089/container/stream-switcher/status"
 docker compose logs -f
 
 # Specific service
-docker compose logs -f stream-switcher
+docker compose logs -f muxer
 docker compose logs -f ffmpeg-kick
 ```
 
@@ -315,7 +335,7 @@ curl http://localhost:8080/stat
 **Health check all services:**
 ```bash
 curl http://localhost:8080/health  # nginx-rtmp
-curl http://localhost:8088/health  # stream-switcher
+curl http://localhost:8088/health  # muxer
 curl http://localhost:8089/health  # stream-controller
 curl http://localhost:3000/api/health  # stream-dashboard
 ```
@@ -358,7 +378,7 @@ Each instance exposes its services on different ports:
 **Instance 1:**
 ```bash
 # Stream switching
-curl "http://localhost:8088/switch?src=offline"
+curl "http://localhost:8088/switch?src=brb"
 
 # RTMP stream
 rtmp://localhost:1936/live/program
@@ -370,7 +390,7 @@ curl http://localhost:8080/stat
 **Instance 2:**
 ```bash
 # Stream switching
-curl "http://localhost:8188/switch?src=offline"
+curl "http://localhost:8188/switch?src=brb"
 
 # RTMP stream
 rtmp://localhost:2036/live/program
@@ -382,7 +402,7 @@ curl http://localhost:8180/stat
 **Instance 3:**
 ```bash
 # Stream switching
-curl "http://localhost:8288/switch?src=offline"
+curl "http://localhost:8288/switch?src=brb"
 
 # RTMP stream
 rtmp://localhost:2136/live/program
@@ -434,13 +454,15 @@ docker compose --env-file .env.custom up -d
 ## Service Startup Order
 
 1. **nginx-rtmp** - Starts first and waits for health check
-2. **ffmpeg-offline** - Starts after nginx-rtmp is healthy
-3. **ffmpeg-dev-cam** - Starts after nginx-rtmp is healthy (dev profile only)
-4. **stream-switcher** - Starts after nginx-rtmp and ffmpeg-offline
-5. **stream-auto-switcher** - Starts after stream-switcher is healthy (auto profile only)
-6. **ffmpeg-kick** - Starts after stream-switcher is healthy
-7. **stream-controller** - Starts independently (no dependencies)
-8. **stream-dashboard** - Starts after stream-controller and nginx-rtmp are healthy
+2. **ffmpeg-brb** - Starts after nginx-rtmp is healthy
+3. **muxer** - Starts after nginx-rtmp and ffmpeg-brb
+4. **stream-auto-switcher** - Starts after muxer is healthy (auto profile only)
+5. **stream-controller** - Starts independently (no dependencies)
+6. **stream-dashboard** - Starts after stream-controller and nginx-rtmp are healthy
+
+**Manual Services** (require explicit start with `--profile manual`):
+- **ffmpeg-dev-cam** - Simulated camera stream (starts after nginx-rtmp is healthy)
+- **ffmpeg-kick** - Kick streaming pusher (starts after muxer is healthy)
 
 ## Troubleshooting
 
@@ -449,10 +471,10 @@ docker compose --env-file .env.custom up -d
 **Manual switching:**
 - Check if the desired input stream is running:
   ```bash
-  docker compose logs ffmpeg-offline
+  docker compose logs ffmpeg-brb
   docker compose logs ffmpeg-dev-cam
   ```
-- Verify stream-switcher is running:
+- Verify muxer is running:
   ```bash
   curl http://localhost:8088/health
   ```
@@ -479,7 +501,7 @@ docker compose --env-file .env.custom up -d
   docker compose logs ffmpeg-kick
   ```
 - Verify Kick credentials in [`.env`](.env:1)
-- Ensure stream-switcher is outputting to program stream
+- Ensure muxer is outputting to program stream
 
 ### Container control issues
 - Check if stream-controller is running:
@@ -514,16 +536,16 @@ docker compose --env-file .env.custom up -d
 - Verify file paths in [`.env`](.env:1) match actual file locations
 - Ensure files are readable by Docker:
   ```bash
-  ls -l /home/mulligan/offline.mp4
-  ls -l /home/mulligan/offline2.mp4
+  ls -l /home/mulligan/brb.mp4
+  ls -l /home/mulligan/brb2.mp4
   ```
 
 ## Development
 
 ### Rebuild specific service
 ```bash
-docker compose build stream-switcher
-docker compose up -d stream-switcher
+docker compose build muxer
+docker compose up -d muxer
 ```
 
 ### Test without Kick output
@@ -532,7 +554,7 @@ Comment out the `ffmpeg-kick` service in [`docker-compose.yml`](docker-compose.y
 ### View RTMP streams locally
 Use VLC or ffplay to view streams:
 ```bash
-ffplay rtmp://localhost:1936/live/offline
+ffplay rtmp://localhost:1936/live/brb
 ffplay rtmp://localhost:1936/live/cam
 ffplay rtmp://localhost:1936/live/program
 ```
@@ -541,29 +563,35 @@ ffplay rtmp://localhost:1936/live/program
 
 ### Auto-Switcher Architecture
 
-The auto-switcher monitors nginx-rtmp statistics and automatically controls the stream switcher:
+The auto-switcher monitors nginx-rtmp statistics and muxer health to automatically control the stream switcher:
 
 **Monitoring Process:**
 1. Polls nginx-rtmp `/stat` endpoint every 0.5 seconds
-2. Parses XML response using `xml.etree.ElementTree`
-3. Extracts stream presence, publishing status, and video bitrate
-4. Compares bitrate against `MIN_BITRATE_KBPS` threshold
+2. Polls muxer `/health` endpoint to check for fallback sources
+3. Parses XML response from nginx using `xml.etree.ElementTree`
+4. Parses JSON response from muxer health endpoint
+5. Extracts stream presence, publishing status, and video bitrate
+6. Checks if cam is using fallback test source (black video + silence)
+7. Compares bitrate against `MIN_BITRATE_KBPS` threshold
 
 **State Machine:**
-- **OFFLINE_ACTIVE**: Currently showing offline stream
+- **OFFLINE_ACTIVE**: Currently showing brb stream
 - **WAITING_FOR_CAM**: Camera detected with good quality, waiting for stability
 - **CAM_STABLE**: Camera stream is active and meeting quality requirements
 - **CAM_UNSTABLE**: Camera exists but below bitrate threshold
 
 **Decision Logic:**
-- Switch TO camera: When stream is present, publishing, has sufficient bitrate, and stable for `CAM_BACK_STABILITY` seconds
-- Switch FROM camera: When stream is missing, not publishing, or below bitrate threshold for `CAM_MISS_TIMEOUT` seconds
+- Switch TO camera: When stream is present, publishing, has sufficient bitrate, is NOT using fallback source, and stable for `CAM_BACK_STABILITY` seconds
+- Switch FROM camera: When stream is missing, not publishing, below bitrate threshold, or using fallback source for `CAM_MISS_TIMEOUT` seconds
 
 **Quality Monitoring:**
 - Parses `<bw_video>` element from nginx-rtmp stats (bytes/sec)
 - Converts to kbps: `(bytes_per_sec * 8) / 1000`
 - Compares against configurable threshold (default: 300 kbps)
+- Checks muxer health for `using_fallback` status
 - Prevents switching to degraded camera feeds
+- Prevents auto-switching to cam when using fallback test source
+- Allows manual switch to cam in fallback, but auto-switches back to brb after timeout
 
 ### Stream Specifications
 - **Resolution**: 1920x1080 (1080p)
@@ -576,7 +604,7 @@ The auto-switcher monitors nginx-rtmp statistics and automatically controls the 
 - **Audio Channels**: 2 (stereo)
 
 ### GStreamer Pipeline
-The stream-switcher uses GStreamer's input-selector element for seamless switching:
+The muxer uses GStreamer's input-selector element for seamless switching:
 - Decodes both input streams to raw video/audio
 - Normalizes to 1080p30 format
 - Uses input-selector for instant switching

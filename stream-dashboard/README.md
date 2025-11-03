@@ -38,7 +38,7 @@ DASHBOARD_PORT=3000
 
 # API Endpoints (internal Docker network)
 CONTROLLER_API=http://stream-controller:8089
-SWITCHER_API=http://stream-switcher:8088
+MUXER_API=http://stream-switcher:8088
 NGINX_STATS=http://nginx-rtmp:8080/stat
 
 # Polling interval (milliseconds)

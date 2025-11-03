@@ -3,9 +3,9 @@ FROM python:3.11-slim
 # Prevent interactive prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install curl for health checks
+# Install curl and procps for health checks
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
+    apt-get install -y --no-install-recommends curl procps && \
     rm -rf /var/lib/apt/lists/*
 
 # Create app directory

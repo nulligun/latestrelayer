@@ -9,7 +9,7 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 ┌─────────────────────────────────────────────────────────────────┐
 │                        HOST SYSTEM                               │
 │  ┌──────────────┐              ┌──────────────┐                 │
-│  │ offline.mp4  │              │ offline2.mp4 │                 │
+│  │ brb.mp4  │              │ brb2.mp4 │                 │
 │  │ (video loop) │              │ (dev camera) │                 │
 │  └──────┬───────┘              └──────┬───────┘                 │
 └─────────┼──────────────────────────────┼──────────────────────────┘
@@ -19,13 +19,13 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 │                     DOCKER NETWORK (rtmp-network)                 │
 │                                                                    │
 │  ┌────────────────┐              ┌──────────────────┐            │
-│  │ ffmpeg-offline │              │ ffmpeg-dev-cam   │            │
+│  │ ffmpeg-brb │              │ ffmpeg-dev-cam   │            │
 │  │                │              │ (dev profile)    │            │
-│  │ Loops offline  │              │ Simulates camera │            │
+│  │ Loops brb  │              │ Simulates camera │            │
 │  │ video to RTMP  │              │ with video file  │            │
 │  └────────┬───────┘              └────────┬─────────┘            │
 │           │                               │                       │
-│           │ /live/offline                 │ /live/cam            │
+│           │ /live/brb                 │ /live/cam            │
 │           │                               │                       │
 │           └───────────────┬───────────────┘                       │
 │                           │                                       │
@@ -36,11 +36,11 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 │                    │ Stats: 8080   │          │                  │
 │                    └───┬───────┬───┘          │                  │
 │                        │       │              │                  │
-│         /live/offline  │       │ /live/cam    │                  │
+│         /live/brb  │       │ /live/cam    │                  │
 │         /live/cam      │       │              │                  │
 │                        │       │              │                  │
 │                 ┌──────▼───────▼──────┐       │                  │
-│                 │  stream-switcher    │───────┘                  │
+│                 │  muxer    │───────┘                  │
 │                 │                     │                           │
 │                 │ GStreamer pipeline  │                           │
 │                 │ API Port: 8088      │                           │
@@ -98,9 +98,9 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
   - `1936`: RTMP streaming port
   - `8080`: HTTP statistics and health endpoint
 - **Streams**:
-  - `/live/offline`: Receives offline video loop
+  - `/live/brb`: Receives brb video loop
   - `/live/cam`: Receives camera feed (dev mode)
-  - `/live/program`: Receives final output from stream-switcher
+  - `/live/program`: Receives final output from muxer
 - **Key Features**: 
   - Stream statistics via XML endpoint
   - Health monitoring
@@ -108,11 +108,11 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 
 ---
 
-### 2. **ffmpeg-offline** (Always Active)
+### 2. **ffmpeg-brb** (Always Active)
 - **Purpose**: Continuously streams a pre-recorded video file in a loop
 - **Technology**: FFmpeg
-- **Input**: `offline.mp4` from host filesystem
-- **Output**: `rtmp://nginx-rtmp:1936/live/offline`
+- **Input**: `brb.mp4` from host filesystem
+- **Output**: `rtmp://nginx-rtmp:1936/live/brb`
 - **Profile**: All (runs in both production and dev mode)
 - **Use Case**: Fallback content when camera is unavailable
 
@@ -121,30 +121,30 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 ### 3. **ffmpeg-dev-cam** (Development Only)
 - **Purpose**: Simulates a camera feed using a second video file
 - **Technology**: FFmpeg
-- **Input**: `offline2.mp4` from host filesystem
+- **Input**: `brb2.mp4` from host filesystem
 - **Output**: `rtmp://nginx-rtmp:1936/live/cam`
 - **Profile**: `dev` (only runs with `--profile dev`)
 - **Use Case**: Testing camera switching logic without real camera hardware
 
 ---
 
-### 4. **stream-switcher** (Scene Switcher)
+### 4. **muxer** (Scene Switcher)
 - **Purpose**: Dynamically switches between multiple input streams and outputs a single program stream
 - **Technology**: GStreamer with Python control API
 - **API Port**: `8088`
 - **Inputs**: 
-  - `rtmp://nginx-rtmp:1936/live/offline`
+  - `rtmp://nginx-rtmp:1936/live/brb`
   - `rtmp://nginx-rtmp:1936/live/cam`
 - **Output**: `rtmp://nginx-rtmp:1936/live/program`
 - **Key Features**:
-  - RESTful API for manual switching (`/switch?src=offline` or `src=cam`)
+  - RESTful API for manual switching (`/switch?src=brb` or `src=cam`)
   - Seamless transitions using input-selector element
   - Re-encodes to H.264/AAC at 1080p30, 3000 kbps
 
 ---
 
 ### 5. **stream-auto-switcher** (Automated Quality Manager)
-- **Purpose**: Monitors stream quality and automatically switches between camera and offline content
+- **Purpose**: Monitors stream quality and automatically switches between camera and brb content
 - **Technology**: Python with XML parsing
 - **Profile**: `auto` (optional, runs with `--profile auto`)
 - **Monitoring**: Polls nginx-rtmp stats every 0.5 seconds
@@ -212,17 +212,17 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 ## Data Flow
 
 ### Video Stream Flow:
-1. `offline.mp4` → **ffmpeg-offline** → nginx-rtmp `/live/offline`
-2. `offline2.mp4` → **ffmpeg-dev-cam** → nginx-rtmp `/live/cam`
-3. nginx-rtmp streams → **stream-switcher** → nginx-rtmp `/live/program`
+1. `brb.mp4` → **ffmpeg-brb** → nginx-rtmp `/live/brb`
+2. `brb2.mp4` → **ffmpeg-dev-cam** → nginx-rtmp `/live/cam`
+3. nginx-rtmp streams → **muxer** → nginx-rtmp `/live/program`
 4. nginx-rtmp `/live/program` → **ffmpeg-kick** → Kick streaming platform
 
 ### Control Flow:
 1. **stream-auto-switcher** monitors nginx-rtmp stats
-2. **stream-auto-switcher** sends switch commands to **stream-switcher** API
+2. **stream-auto-switcher** sends switch commands to **muxer** API
 3. **stream-dashboard** queries **stream-controller** for container status
 4. **stream-dashboard** queries nginx-rtmp for stream statistics
-5. **stream-dashboard** queries **stream-switcher** for current scene
+5. **stream-dashboard** queries **muxer** for current scene
 
 ### Management Flow:
 1. User accesses **stream-dashboard** web UI (port 3000)
@@ -250,9 +250,9 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 
 ```
 nginx-rtmp (healthy)
-    ├── ffmpeg-offline
+    ├── ffmpeg-brb
     ├── ffmpeg-dev-cam (dev profile)
-    └── stream-switcher (after ffmpeg-offline)
+    └── muxer (after ffmpeg-brb)
             ├── stream-auto-switcher (healthy, auto profile)
             └── ffmpeg-kick (healthy)
 
@@ -264,7 +264,7 @@ stream-controller (independent)
 
 ## Profiles
 
-- **Default**: nginx-rtmp, ffmpeg-offline, stream-switcher, ffmpeg-kick, stream-controller, stream-dashboard
+- **Default**: nginx-rtmp, ffmpeg-brb, muxer, ffmpeg-kick, stream-controller, stream-dashboard
 - **dev**: Adds ffmpeg-dev-cam for camera simulation
 - **auto**: Adds stream-auto-switcher for automatic quality management
 
@@ -276,7 +276,7 @@ Profiles can be combined: `docker compose --profile dev --profile auto up -d`
 
 All critical services implement health endpoints:
 - **nginx-rtmp**: `http://localhost:8080/health`
-- **stream-switcher**: `http://localhost:8088/health`
+- **muxer**: `http://localhost:8088/health`
 - **stream-controller**: `http://localhost:8089/health`
 - **stream-dashboard**: `http://localhost:3000/api/health`
 

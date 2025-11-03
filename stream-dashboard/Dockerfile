@@ -43,6 +43,7 @@ WORKDIR /app
 RUN apk add --no-cache \
     python3 make g++ pkgconfig \
     git openssh \
+    curl \
     libc6-compat ca-certificates
 RUN npm i -g npm@10
 
@@ -67,7 +68,7 @@ EXPOSE 3000
 # Set environment variables with defaults
 ENV PORT=3000
 ENV CONTROLLER_API=http://stream-controller:8089
-ENV SWITCHER_API=http://stream-switcher:8088
+ENV MUXER_API=http://muxer:8088
 ENV NGINX_STATS=http://nginx-rtmp:8080/stat
 ENV POLLING_INTERVAL=2000
 
