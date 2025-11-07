@@ -86,6 +86,7 @@ export default {
         'ffmpeg-brb': 'A looping video of the BRB screen',
         'ffmpeg-dev-cam': 'A looping video for testing the camera feed',
         'nginx-rtmp': 'RTMP Relay server',
+        'ffmpeg-srt': 'SRT to RTMP relay',
         'controller': 'API for container management'
       }
     };
