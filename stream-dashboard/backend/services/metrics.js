@@ -123,11 +123,11 @@ class MetricsService {
 
       return {
         cpu: parseFloat(cpu.currentLoad.toFixed(2)),
-        memory: parseFloat(((mem.used / mem.total) * 100).toFixed(2)),
+        memory: parseFloat(((mem.active / mem.total) * 100).toFixed(2)),
         load: cpu.avgLoad ? [
           parseFloat(cpu.avgLoad.toFixed(2))
         ] : [0],
-        memoryUsed: Math.round(mem.used / (1024 * 1024 * 1024) * 100) / 100, // GB
+        memoryUsed: Math.round(mem.active / (1024 * 1024 * 1024) * 100) / 100, // GB
         memoryTotal: Math.round(mem.total / (1024 * 1024 * 1024) * 100) / 100, // GB
         network,
         ping
