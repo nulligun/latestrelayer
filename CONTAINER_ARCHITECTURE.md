@@ -1,7 +1,7 @@
 # Container Architecture Diagram
 
 ## Overview
-The RTMP Stream Relay System consists of 8 Docker containers working together to manage, switch, and relay video streams.
+The RTMP Stream Relay System consists of 9 Docker containers working together to manage, switch, and relay video streams.
 
 ## Container Architecture
 
@@ -14,20 +14,24 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 │  └──────┬───────┘              └──────┬───────┘                 │
 └─────────┼──────────────────────────────┼──────────────────────────┘
           │                              │
-          │                              │
-┌─────────▼──────────────────────────────▼──────────────────────────┐
+          │                              │      ┌──────────────────┐
+          │                              │      │ External SRT     │
+          │                              │      │ Source           │
+          │                              │      └────────┬─────────┘
+          │                              │               │ SRT Port 1937
+┌─────────▼──────────────────────────────▼───────────────▼──────────┐
 │                     DOCKER NETWORK (rtmp-network)                 │
 │                                                                    │
-│  ┌────────────────┐              ┌──────────────────┐            │
-│  │ ffmpeg-brb │              │ ffmpeg-dev-cam   │            │
-│  │                │              │ (dev profile)    │            │
-│  │ Loops brb  │              │ Simulates camera │            │
-│  │ video to RTMP  │              │ with video file  │            │
-│  └────────┬───────┘              └────────┬─────────┘            │
-│           │                               │                       │
-│           │ /live/brb                 │ /live/cam            │
-│           │                               │                       │
-│           └───────────────┬───────────────┘                       │
+│  ┌────────────────┐  ┌──────────────────┐  ┌─────────────────┐  │
+│  │ ffmpeg-brb │  │ ffmpeg-dev-cam   │  │  ffmpeg-srt     │  │
+│  │                │  │ (manual profile) │  │                 │  │
+│  │ Loops brb  │  │ Simulates camera │  │ SRT listener    │  │
+│  │ video to RTMP  │  │ with video file  │  │ relays to RTMP  │  │
+│  └────────┬───────┘  └────────┬─────────┘  └────────┬────────┘  │
+│           │                   │                      │            │
+│           │ /live/brb      │ /live/cam          │ /live/cam │
+│           │                   │                      │            │
+│           └───────────────┬───┴──────────────────────┘            │
 │                           │                                       │
 │                    ┌──────▼────────┐                              │
 │                    │  nginx-rtmp   │◄─────────┐                  │
@@ -118,17 +122,32 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 
 ---
 
-### 3. **ffmpeg-dev-cam** (Development Only)
+### 3. **ffmpeg-dev-cam** (Manual Service)
 - **Purpose**: Simulates a camera feed using a second video file
 - **Technology**: FFmpeg
 - **Input**: `brb2.mp4` from host filesystem
 - **Output**: `rtmp://nginx-rtmp:1936/live/cam`
-- **Profile**: `dev` (only runs with `--profile dev`)
+- **Profile**: `manual` (requires explicit start)
 - **Use Case**: Testing camera switching logic without real camera hardware
 
 ---
 
-### 4. **muxer** (Scene Switcher)
+### 4. **ffmpeg-srt** (SRT Bridge)
+- **Purpose**: Accepts external SRT streams and relays them to the internal RTMP infrastructure
+- **Technology**: FFmpeg with SRT protocol support
+- **Input**: `srt://0.0.0.0:9000?mode=listener` (exposed on host port 1937)
+- **Output**: `rtmp://nginx-rtmp:1936/live/cam`
+- **Port**: `1937` (configurable via `SRT_PORT` environment variable)
+- **Profile**: All (runs by default)
+- **Key Features**:
+  - Zero-latency stream copy (no re-encoding)
+  - SRT listener mode for accepting external connections
+  - Direct bridge to internal RTMP network
+- **Use Case**: Receiving live video feeds from external SRT encoders, cameras, or OBS Studio
+
+---
+
+### 5. **muxer** (Scene Switcher)
 - **Purpose**: Dynamically switches between multiple input streams and outputs a single program stream
 - **Technology**: GStreamer with Python control API
 - **API Port**: `8088`
@@ -143,7 +162,7 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 
 ---
 
-### 5. **stream-auto-switcher** (Automated Quality Manager)
+### 6. **stream-auto-switcher** (Automated Quality Manager)
 - **Purpose**: Monitors stream quality and automatically switches between camera and brb content
 - **Technology**: Python with XML parsing
 - **Profile**: `auto` (optional, runs with `--profile auto`)
@@ -159,7 +178,7 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 
 ---
 
-### 6. **ffmpeg-kick** (External Relay)
+### 7. **ffmpeg-kick** (External Relay)
 - **Purpose**: Relays the final program stream to Kick streaming platform
 - **Technology**: FFmpeg with RTMPS
 - **Input**: `rtmp://nginx-rtmp:1936/live/program`
@@ -171,7 +190,7 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 
 ---
 
-### 7. **stream-controller** (Container Manager)
+### 8. **stream-controller** (Container Manager)
 - **Purpose**: Provides REST API for container lifecycle management
 - **Technology**: Python with Docker SDK
 - **API Port**: `8089`
@@ -189,7 +208,7 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 
 ---
 
-### 8. **stream-dashboard** (Web Interface)
+### 9. **stream-dashboard** (Web Interface)
 - **Purpose**: Provides web-based monitoring and control interface
 - **Technology**: Vue.js 3 frontend + Express.js backend + WebSocket
 - **Port**: `3000` (HTTP + WebSocket)
@@ -213,9 +232,10 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 
 ### Video Stream Flow:
 1. `brb.mp4` → **ffmpeg-brb** → nginx-rtmp `/live/brb`
-2. `brb2.mp4` → **ffmpeg-dev-cam** → nginx-rtmp `/live/cam`
-3. nginx-rtmp streams → **muxer** → nginx-rtmp `/live/program`
-4. nginx-rtmp `/live/program` → **ffmpeg-kick** → Kick streaming platform
+2. `brb2.mp4` → **ffmpeg-dev-cam** → nginx-rtmp `/live/cam` (manual)
+3. External SRT stream → **ffmpeg-srt** → nginx-rtmp `/live/cam`
+4. nginx-rtmp streams → **muxer** → nginx-rtmp `/live/program`
+5. nginx-rtmp `/live/program` → **ffmpeg-kick** → Kick streaming platform
 
 ### Control Flow:
 1. **stream-auto-switcher** monitors nginx-rtmp stats
@@ -238,6 +258,7 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 - **Type**: Docker bridge network
 - **Internal Communication**: All containers communicate using service names as hostnames
 - **External Access**: Only specific ports are exposed to the host:
+  - `1937`: SRT input (ffmpeg-srt listener)
   - `1936`: RTMP streaming
   - `8080`: NGINX stats
   - `8088`: Stream switcher API
@@ -251,10 +272,11 @@ The RTMP Stream Relay System consists of 8 Docker containers working together to
 ```
 nginx-rtmp (healthy)
     ├── ffmpeg-brb
-    ├── ffmpeg-dev-cam (dev profile)
+    ├── ffmpeg-dev-cam (manual profile)
+    ├── ffmpeg-srt
     └── muxer (after ffmpeg-brb)
             ├── stream-auto-switcher (healthy, auto profile)
-            └── ffmpeg-kick (healthy)
+            └── ffmpeg-kick (manual profile, healthy)
 
 stream-controller (independent)
     └── stream-dashboard (after nginx-rtmp and stream-controller healthy)
@@ -264,11 +286,11 @@ stream-controller (independent)
 
 ## Profiles
 
-- **Default**: nginx-rtmp, ffmpeg-brb, muxer, ffmpeg-kick, stream-controller, stream-dashboard
-- **dev**: Adds ffmpeg-dev-cam for camera simulation
+- **Default**: nginx-rtmp, ffmpeg-brb, ffmpeg-srt, muxer, stream-controller, stream-dashboard
+- **manual**: ffmpeg-dev-cam (camera simulation), ffmpeg-kick (Kick streaming)
 - **auto**: Adds stream-auto-switcher for automatic quality management
 
-Profiles can be combined: `docker compose --profile dev --profile auto up -d`
+Profiles can be combined: `docker compose --profile manual --profile auto up -d`
 
 ---
 

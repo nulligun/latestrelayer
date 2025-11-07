@@ -61,6 +61,27 @@ services:
       retries: 3
       start_period: 10s
 
+  # FFmpeg SRT Listener - Relays SRT input to RTMP
+  ffmpeg-srt:
+    build:
+      context: ./ffmpeg-srt
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-ffmpeg-srt
+    ports:
+      - "${SRT_PORT:-1937}:9000"  # SRT port
+    networks:
+      - rtmp-network
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "ffmpeg"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   # Muxer - GStreamer-based stream multiplexer
   muxer:
     build:
@@ -181,6 +202,7 @@ services:
       - RTMP_DOMAIN=${RTMP_DOMAIN}
       - RTMP_PORT=${RTMP_PORT:-1936}
       - RTMP_STREAM_KEY=${RTMP_STREAM_KEY:-cam}
+      - SRT_PORT=${SRT_PORT:-1937}
     networks:
       - rtmp-network
     depends_on:

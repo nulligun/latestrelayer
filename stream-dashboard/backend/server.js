@@ -16,6 +16,7 @@ const POLLING_INTERVAL = parseInt(process.env.POLLING_INTERVAL || '2000');
 const RTMP_DOMAIN = process.env.RTMP_DOMAIN || 'localhost';
 const RTMP_PORT = process.env.RTMP_PORT || '1936';
 const RTMP_STREAM_KEY = process.env.RTMP_STREAM_KEY || 'cam';
+const SRT_PORT = process.env.SRT_PORT || '1937';
 
 console.log('='.repeat(60));
 console.log('Stream Dashboard Backend - Starting Up');
@@ -26,6 +27,7 @@ console.log(`[config] Muxer API: ${MUXER_API}`);
 console.log(`[config] NGINX Stats: ${NGINX_STATS}`);
 console.log(`[config] Polling Interval: ${POLLING_INTERVAL}ms`);
 console.log(`[config] RTMP URL: rtmps://${RTMP_DOMAIN}:${RTMP_PORT}/live/${RTMP_STREAM_KEY}`);
+console.log(`[config] SRT URL: srt://${RTMP_DOMAIN}:${SRT_PORT}`);
 console.log('='.repeat(60));
 
 // Initialize services
@@ -101,14 +103,39 @@ app.get('/api/data', async (req, res) => {
   }
 });
 
-// Get RTMP configuration
-app.get('/api/config', (req, res) => {
-  res.json({
-    rtmpUrl: `rtmps://${RTMP_DOMAIN}:${RTMP_PORT}/live/${RTMP_STREAM_KEY}`,
-    domain: RTMP_DOMAIN,
-    port: RTMP_PORT,
-    streamKey: RTMP_STREAM_KEY
-  });
+// Get RTMP/SRT configuration
+app.get('/api/config', async (req, res) => {
+  try {
+    // Check if ffmpeg-srt container is running
+    const containers = await controller.listContainers();
+    const srtContainer = containers.find(c => c.name === 'ffmpeg-srt');
+    const isSrtRunning = srtContainer && srtContainer.running;
+
+    // Return SRT URL if ffmpeg-srt is running, otherwise RTMPS URL
+    const cameraUrl = isSrtRunning
+      ? `srt://${RTMP_DOMAIN}:${SRT_PORT}`
+      : `rtmps://${RTMP_DOMAIN}:${RTMP_PORT}/live/${RTMP_STREAM_KEY}`;
+
+    res.json({
+      rtmpUrl: cameraUrl,
+      domain: RTMP_DOMAIN,
+      port: isSrtRunning ? SRT_PORT : RTMP_PORT,
+      streamKey: RTMP_STREAM_KEY,
+      protocol: isSrtRunning ? 'srt' : 'rtmps',
+      srtRunning: isSrtRunning
+    });
+  } catch (error) {
+    console.error('[api] Error getting config:', error.message);
+    // Fallback to RTMPS URL on error
+    res.json({
+      rtmpUrl: `rtmps://${RTMP_DOMAIN}:${RTMP_PORT}/live/${RTMP_STREAM_KEY}`,
+      domain: RTMP_DOMAIN,
+      port: RTMP_PORT,
+      streamKey: RTMP_STREAM_KEY,
+      protocol: 'rtmps',
+      srtRunning: false
+    });
+  }
 });
 
 // Container control endpoints (proxy to stream-controller)

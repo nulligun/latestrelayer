@@ -12,23 +12,23 @@ A Docker-based RTMP relay system with two input streams and switchable output to
          │
     ┌────┴─────┐
     │          │
-┌───▼───┐  ┌──▼────┐
-│brb│  │brb│
-│  .mp4 │  │ 2.mp4 │
-└───┬───┘  └───┬───┘
-    │          │
-    │      ┌───▼────────────┐
-    │      │ ffmpeg-dev-cam │
-    │      │  (dev only)    │
-    │      └───┬────────────┘
-    │          │
-┌───▼──────────▼────┐
-│  ffmpeg-brb   │
-└───┬───────────────┘
-    │
-    │      ┌────────────────┐
-    └──────► NGINX-RTMP     │◄──┐
-           │   Server       │   │
+┌───▼───┐  ┌──▼────┐      ┌─────────────┐
+│brb│  │brb│      │ External    │
+│  .mp4 │  │ 2.mp4 │      │ SRT Source  │
+└───┬───┘  └───┬───┘      └──────┬──────┘
+    │          │                 │
+    │      ┌───▼────────────┐    │
+    │      │ ffmpeg-dev-cam │    │
+    │      │  (manual)      │    │
+    │      └───┬────────────┘    │
+    │          │                 │
+┌───▼──────────▼────┐      ┌────▼────────┐
+│  ffmpeg-brb   │      │ ffmpeg-srt  │
+└───┬───────────────┘      └────┬────────┘
+    │                           │
+    │      ┌────────────────┐   │
+    └──────► NGINX-RTMP     │◄──┘
+           │   Server       │◄──┐
            │ Port 1936      │   │
            └───┬────────────┘   │
                │                │
@@ -71,18 +71,25 @@ A Docker-based RTMP relay system with two input streams and switchable output to
 - **Output**: `rtmp://nginx-rtmp:1936/live/cam`
 - **Profiles**: manual (requires explicit start)
 
-### 4. muxer
+### 4. ffmpeg-srt
+- **Purpose**: Accepts external SRT streams and relays to RTMP
+- **Input**: `srt://0.0.0.0:1937?mode=listener` (configurable via `SRT_PORT`)
+- **Output**: `rtmp://nginx-rtmp:1936/live/cam`
+- **Profiles**: All (default)
+- **Use Case**: Bridge for external SRT encoders/cameras to send live video
+
+### 5. muxer
 - **Purpose**: Switches between input streams using GStreamer
 - **API Port**: 8088
 - **Output**: `rtmp://nginx-rtmp:1936/live/program`
 - **Default**: Starts with brb stream
 
-### 5. ffmpeg-kick
+### 6. ffmpeg-kick
 - **Purpose**: Relays program stream to Kick
 - **Output**: Kick RTMPS server
 - **Profiles**: manual (requires explicit start)
 
-### 6. stream-auto-switcher
+### 7. stream-auto-switcher
 - **Purpose**: Automatically switches between camera and brb streams based on availability and quality
 - **Monitors**: nginx-rtmp stats for stream presence and bitrate
 - **Profiles**: auto (optional, can be run manually or omitted)
@@ -92,12 +99,12 @@ A Docker-based RTMP relay system with two input streams and switchable output to
   - Grace period for stream stability before switching
   - Automatic fallback to brb when camera quality degrades
 
-### 7. stream-controller
+### 8. stream-controller
 - **Purpose**: Container lifecycle management via REST API
 - **API Port**: 8089
 - **Capabilities**: Start/stop/restart/status for all containers
 
-### 8. stream-dashboard
+### 9. stream-dashboard
 - **Purpose**: Web UI for monitoring and controlling the streaming system
 - **Port**: 3000 (HTTP/WebSocket)
 - **Features**:
@@ -130,6 +137,7 @@ KICK_URL=rtmps://fa723fc1b171.global-contribute.live-video.net/app
 KICK_KEY=sk_us-west-2_xXX3uY9mOSJP_eZTBNAACIwJSKv3EMu6Dhh2La1XZ1s
 
 # Exposed Ports (change these for multiple instances)
+SRT_PORT=1937
 RTMP_PORT=1936
 HTTP_STATS_PORT=8080
 SWITCHER_API_PORT=8088
@@ -151,11 +159,11 @@ To run multiple instances on the same server, each instance needs unique ports. 
 
 **Port Mapping:**
 
-| Instance | RTMP Port | HTTP Stats | Switcher API | Controller API | Dashboard |
-|----------|-----------|------------|--------------|----------------|-----------|
-| 1        | 1936      | 8080       | 8088         | 8089           | 3000      |
-| 2        | 2036      | 8180       | 8188         | 8189           | 3100      |
-| 3        | 2136      | 8280       | 8288         | 8289           | 3200      |
+| Instance | SRT Port | RTMP Port | HTTP Stats | Switcher API | Controller API | Dashboard |
+|----------|----------|-----------|------------|--------------|----------------|-----------|
+| 1        | 1937     | 1936      | 8080       | 8088         | 8089           | 3000      |
+| 2        | 2037     | 2036      | 8180       | 8188         | 8189           | 3100      |
+| 3        | 2137     | 2136      | 8280       | 8288         | 8289           | 3200      |
 
 **Important:** Each instance must have a unique `COMPOSE_PROJECT_NAME` to avoid container name conflicts.
 
@@ -455,10 +463,11 @@ docker compose --env-file .env.custom up -d
 
 1. **nginx-rtmp** - Starts first and waits for health check
 2. **ffmpeg-brb** - Starts after nginx-rtmp is healthy
-3. **muxer** - Starts after nginx-rtmp and ffmpeg-brb
-4. **stream-auto-switcher** - Starts after muxer is healthy (auto profile only)
-5. **stream-controller** - Starts independently (no dependencies)
-6. **stream-dashboard** - Starts after stream-controller and nginx-rtmp are healthy
+3. **ffmpeg-srt** - Starts after nginx-rtmp is healthy (listens for external SRT input)
+4. **muxer** - Starts after nginx-rtmp and ffmpeg-brb
+5. **stream-auto-switcher** - Starts after muxer is healthy (auto profile only)
+6. **stream-controller** - Starts independently (no dependencies)
+7. **stream-dashboard** - Starts after stream-controller and nginx-rtmp are healthy
 
 **Manual Services** (require explicit start with `--profile manual`):
 - **ffmpeg-dev-cam** - Simulated camera stream (starts after nginx-rtmp is healthy)
