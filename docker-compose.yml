@@ -68,7 +68,7 @@ services:
       dockerfile: Dockerfile
     container_name: ${COMPOSE_PROJECT_NAME:-relayer}-ffmpeg-srt
     ports:
-      - "${SRT_PORT:-1937}:9000"  # SRT port
+      - "${SRT_PORT:-1937}:9000/udp"  # SRT port
     networks:
       - rtmp-network
     depends_on:
