@@ -1,9 +1,10 @@
 FROM alpine:3.19
 
-# Install FFmpeg
+# Install FFmpeg and utilities
 RUN apk add --no-cache \
     ffmpeg \
-    bash
+    bash \
+    curl
 
 # Copy entrypoint script
 COPY entrypoint.sh /entrypoint.sh

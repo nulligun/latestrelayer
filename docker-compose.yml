@@ -95,6 +95,7 @@ services:
       - GOP_SIZE=${CAM_RELAY_GOP_SIZE:-60}
       - MAX_RETRIES=${CAM_RELAY_MAX_RETRIES:-0}
       - RETRY_DELAY=${CAM_RELAY_RETRY_DELAY:-5}
+      - STREAM_CHECK_INTERVAL=${CAM_RELAY_STREAM_CHECK_INTERVAL:-5}
     networks:
       - rtmp-network
     depends_on:
@@ -102,7 +103,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "pgrep", "-x", "ffmpeg"]
+      test: ["CMD", "sh", "-c", "curl -f http://nginx-rtmp:8080/stat > /dev/null 2>&1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -165,6 +166,7 @@ services:
   # FFmpeg Kick Pusher - Manual start only
   ffmpeg-kick:
     profiles: ["manual"]
+    stop_grace_period: 10s
     build:
       context: ./ffmpeg-kick
       dockerfile: Dockerfile

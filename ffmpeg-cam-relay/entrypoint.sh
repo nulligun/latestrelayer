@@ -16,6 +16,8 @@ FRAMERATE=${FRAMERATE:-30}
 GOP_SIZE=${GOP_SIZE:-60}
 MAX_RETRIES=${MAX_RETRIES:-0}  # 0 = infinite retries
 RETRY_DELAY=${RETRY_DELAY:-5}
+STREAM_CHECK_INTERVAL=${STREAM_CHECK_INTERVAL:-5}
+NGINX_STATS_URL="http://nginx-rtmp:8080/stat"
 
 echo "Configuration:"
 echo "  Video Bitrate: ${VIDEO_BITRATE}k"
@@ -23,12 +25,35 @@ echo "  Audio Bitrate: ${AUDIO_BITRATE}k"
 echo "  Frame Rate: ${FRAMERATE} fps"
 echo "  GOP Size: ${GOP_SIZE} frames (2s keyframes)"
 echo "  Retry Delay: ${RETRY_DELAY}s"
+echo "  Stream Check Interval: ${STREAM_CHECK_INTERVAL}s"
 echo "=========================================="
 echo ""
+
+# Function to check if cam-raw stream exists
+check_stream_exists() {
+    # Query nginx-rtmp stats and check for cam-raw stream
+    if curl -s --max-time 2 "$NGINX_STATS_URL" | grep -q "<name>cam-raw</name>"; then
+        return 0  # Stream exists
+    else
+        return 1  # Stream doesn't exist
+    fi
+}
 
 # Wait for nginx-rtmp to be ready
 echo "[init] Waiting for nginx-rtmp to be ready..."
 sleep 5
+
+# Wait for cam-raw stream to become available
+echo "[init] Waiting for cam-raw stream to be published..."
+while true; do
+    if check_stream_exists; then
+        echo "[init] ✓ Stream detected on /live/cam-raw"
+        break
+    else
+        echo "[init] No stream found on /live/cam-raw, waiting ${STREAM_CHECK_INTERVAL}s..."
+        sleep "$STREAM_CHECK_INTERVAL"
+    fi
+done
 
 retry_count=0
 
@@ -42,15 +67,28 @@ while true; do
         echo ""
         echo "[retry] Attempt #$retry_count - Waiting ${RETRY_DELAY}s before reconnecting..."
         sleep "$RETRY_DELAY"
+        
+        # Wait for stream to come back
+        echo "[retry] Checking if cam-raw stream is available..."
+        while true; do
+            if check_stream_exists; then
+                echo "[retry] ✓ Stream detected, reconnecting..."
+                break
+            else
+                echo "[retry] Stream not available yet, waiting ${STREAM_CHECK_INTERVAL}s..."
+                sleep "$STREAM_CHECK_INTERVAL"
+            fi
+        done
     fi
     
     retry_count=$((retry_count + 1))
     
     echo "[stream] Starting FFmpeg relay (attempt #$retry_count)..."
-    echo "[stream] Waiting for input stream on rtmp://nginx-rtmp:1936/live/cam-raw"
+    echo "[stream] Reading from: rtmp://nginx-rtmp:1936/live/cam-raw"
+    echo "[stream] Publishing to: rtmp://nginx-rtmp:1936/live/cam"
     
-    # Run FFmpeg with auto-reconnect capability
-    # -re: Read input at native frame rate (important for live streaming)
+    # Run FFmpeg with live stream transcoding
+    # NOTE: No -re flag for live RTMP inputs (only for files)
     # -i: Input from nginx-rtmp cam-raw stream
     # -c:v libx264: Encode video with H.264
     # -profile:v main: Use Main profile (GStreamer compatible, better than Baseline)
@@ -70,8 +108,7 @@ while true; do
     # -ac: Audio channels (stereo)
     # -f flv: Output format (FLV for RTMP)
     
-    ffmpeg -re \
-        -timeout 10000000 \
+    ffmpeg \
         -i rtmp://nginx-rtmp:1936/live/cam-raw \
         -c:v libx264 \
         -profile:v main \
@@ -101,5 +138,5 @@ while true; do
         echo "[error] FFmpeg exited with code $exit_code"
     fi
     
-    echo "[stream] Stream ended or disconnected. Will retry..."
+    echo "[stream] Stream ended or disconnected. Will check for stream and retry..."
 done
