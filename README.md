@@ -56,9 +56,10 @@ A Docker-based RTMP relay system with two input streams and switchable output to
 ### 1. nginx-rtmp
 - **Purpose**: Central RTMP relay hub
 - **Ports**: 1936 (RTMP), 8080 (HTTP stats)
-- **Streams**: 
+- **Streams**:
   - `rtmp://nginx-rtmp:1936/live/brb` - Offline video loop
-  - `rtmp://nginx-rtmp:1936/live/cam` - Camera feed (dev mode)
+  - `rtmp://nginx-rtmp:1936/live/cam-raw` - Raw camera input (Moblin, SRT, etc.)
+  - `rtmp://nginx-rtmp:1936/live/cam` - Normalized camera feed (for muxer)
   - `rtmp://nginx-rtmp:1936/live/program` - Output stream
 
 ### 2. ffmpeg-brb
@@ -74,22 +75,35 @@ A Docker-based RTMP relay system with two input streams and switchable output to
 ### 4. ffmpeg-srt
 - **Purpose**: Accepts external SRT streams and relays to RTMP
 - **Input**: `srt://0.0.0.0:1937?mode=listener` (configurable via `SRT_PORT`)
-- **Output**: `rtmp://nginx-rtmp:1936/live/cam`
+- **Output**: `rtmp://nginx-rtmp:1936/live/cam-raw`
 - **Profiles**: All (default)
 - **Use Case**: Bridge for external SRT encoders/cameras to send live video
+- **Note**: Outputs to cam-raw which gets normalized by ffmpeg-cam-relay
 
-### 5. muxer
+### 5. ffmpeg-cam-relay
+- **Purpose**: Normalizes camera streams for GStreamer compatibility
+- **Input**: `rtmp://nginx-rtmp:1936/live/cam-raw`
+- **Output**: `rtmp://nginx-rtmp:1936/live/cam`
+- **Profiles**: All (default)
+- **Key Features**:
+  - Transcodes to GStreamer-compatible H.264 (Main profile, no B-frames)
+  - Handles hardware encoder quirks from mobile devices (Moblin, iOS)
+  - Auto-reconnects when input stream disconnects
+  - Configurable bitrate and quality settings
+- **Use Case**: Fixes black screen issues with Moblin/mobile hardware encoders
+
+### 6. muxer
 - **Purpose**: Switches between input streams using GStreamer
 - **API Port**: 8088
 - **Output**: `rtmp://nginx-rtmp:1936/live/program`
 - **Default**: Starts with brb stream
 
-### 6. ffmpeg-kick
+### 7. ffmpeg-kick
 - **Purpose**: Relays program stream to Kick
 - **Output**: Kick RTMPS server
 - **Profiles**: manual (requires explicit start)
 
-### 7. stream-auto-switcher
+### 8. stream-auto-switcher
 - **Purpose**: Automatically switches between camera and brb streams based on availability and quality
 - **Monitors**: nginx-rtmp stats for stream presence and bitrate
 - **Profiles**: auto (optional, can be run manually or omitted)
@@ -99,12 +113,12 @@ A Docker-based RTMP relay system with two input streams and switchable output to
   - Grace period for stream stability before switching
   - Automatic fallback to brb when camera quality degrades
 
-### 8. stream-controller
+### 9. stream-controller
 - **Purpose**: Container lifecycle management via REST API
 - **API Port**: 8089
 - **Capabilities**: Start/stop/restart/status for all containers
 
-### 9. stream-dashboard
+### 10. stream-dashboard
 - **Purpose**: Web UI for monitoring and controlling the streaming system
 - **Port**: 3000 (HTTP/WebSocket)
 - **Features**:
@@ -168,6 +182,33 @@ To run multiple instances on the same server, each instance needs unique ports. 
 **Important:** Each instance must have a unique `COMPOSE_PROJECT_NAME` to avoid container name conflicts.
 
 ## Usage
+
+### External Camera Setup (Moblin, OBS, etc.)
+
+**For Moblin or other mobile streaming apps:**
+
+Stream to the **cam-raw** endpoint instead of cam directly:
+```
+RTMP URL: rtmp://YOUR_SERVER_IP:1936/live/cam-raw
+```
+
+**Why cam-raw?**
+- Mobile hardware encoders (iOS, Android) use H.264 High profile with B-frames
+- GStreamer (used by the muxer) struggles with these encoding parameters
+- The ffmpeg-cam-relay service normalizes the stream to GStreamer-compatible format
+- This fixes black screen and no audio issues
+
+**For OBS Studio (SRT mode):**
+```
+SRT URL: srt://YOUR_SERVER_IP:1937
+Mode: Caller
+```
+The ffmpeg-srt service receives SRT and sends to cam-raw automatically.
+
+**Stream Flow:**
+```
+Moblin → /live/cam-raw → ffmpeg-cam-relay → /live/cam → muxer → /live/program → Kick
+```
 
 ### Start Services
 
@@ -563,9 +604,10 @@ Comment out the `ffmpeg-kick` service in [`docker-compose.yml`](docker-compose.y
 ### View RTMP streams locally
 Use VLC or ffplay to view streams:
 ```bash
-ffplay rtmp://localhost:1936/live/brb
-ffplay rtmp://localhost:1936/live/cam
-ffplay rtmp://localhost:1936/live/program
+ffplay rtmp://localhost:1936/live/brb          # BRB video loop
+ffplay rtmp://localhost:1936/live/cam-raw      # Raw camera input (before normalization)
+ffplay rtmp://localhost:1936/live/cam          # Normalized camera (GStreamer-compatible)
+ffplay rtmp://localhost:1936/live/program      # Final mixed output
 ```
 
 ## Technical Details

@@ -82,6 +82,32 @@ services:
       retries: 3
       start_period: 10s
 
+  # FFmpeg Camera Relay - Normalizes camera streams for GStreamer compatibility
+  ffmpeg-cam-relay:
+    build:
+      context: ./ffmpeg-cam-relay
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-ffmpeg-cam-relay
+    environment:
+      - VIDEO_BITRATE=${CAM_RELAY_VIDEO_BITRATE:-3000}
+      - AUDIO_BITRATE=${CAM_RELAY_AUDIO_BITRATE:-128}
+      - FRAMERATE=${CAM_RELAY_FRAMERATE:-30}
+      - GOP_SIZE=${CAM_RELAY_GOP_SIZE:-60}
+      - MAX_RETRIES=${CAM_RELAY_MAX_RETRIES:-0}
+      - RETRY_DELAY=${CAM_RELAY_RETRY_DELAY:-5}
+    networks:
+      - rtmp-network
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "ffmpeg"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   # Muxer - GStreamer-based stream multiplexer
   muxer:
     build:

@@ -1,7 +1,7 @@
 # Container Architecture Diagram
 
 ## Overview
-The RTMP Stream Relay System consists of 9 Docker containers working together to manage, switch, and relay video streams.
+The RTMP Stream Relay System consists of 10 Docker containers working together to manage, switch, and relay video streams.
 
 ## Container Architecture
 
@@ -29,22 +29,29 @@ The RTMP Stream Relay System consists of 9 Docker containers working together to
 │  │ video to RTMP  │  │ with video file  │  │ relays to RTMP  │  │
 │  └────────┬───────┘  └────────┬─────────┘  └────────┬────────┘  │
 │           │                   │                      │            │
-│           │ /live/brb      │ /live/cam          │ /live/cam │
+│           │ /live/brb      │ /live/cam-raw      │ /live/cam-raw│
 │           │                   │                      │            │
-│           └───────────────┬───┴──────────────────────┘            │
-│                           │                                       │
-│                    ┌──────▼────────┐                              │
-│                    │  nginx-rtmp   │◄─────────┐                  │
-│                    │               │          │                  │
-│                    │ Port 1936     │          │ /live/program    │
-│                    │ Stats: 8080   │          │                  │
-│                    └───┬───────┬───┘          │                  │
-│                        │       │              │                  │
-│         /live/brb  │       │ /live/cam    │                  │
-│         /live/cam      │       │              │                  │
-│                        │       │              │                  │
-│                 ┌──────▼───────▼──────┐       │                  │
-│                 │  muxer    │───────┘                  │
+│           │            ┌──────┴──────────────────────┘            │
+│           │            │                                          │
+│           │      ┌─────▼─────────────┐                           │
+│           │      │ ffmpeg-cam-relay  │                           │
+│           │      │ Normalizes camera │                           │
+│           │      │ for GStreamer     │                           │
+│           │      └─────┬─────────────┘                           │
+│           │            │ /live/cam                                │
+│           └───────┬────┴───────────────┐                         │
+│                   │                    │                          │
+│            ┌──────▼────────┐           │                          │
+│            │  nginx-rtmp   │◄──────────┘                          │
+│            │               │◄─────────┐                           │
+│            │ Port 1936     │          │ /live/program             │
+│            │ Stats: 8080   │          │                           │
+│            └───┬───────┬───┘          │                           │
+│                │       │              │                           │
+│   /live/brb    │       │ /live/cam    │                           │
+│                │       │              │                           │
+│         ┌──────▼───────▼──────┐       │                           │
+│         │  muxer    │───────┘                           │
 │                 │                     │                           │
 │                 │ GStreamer pipeline  │                           │
 │                 │ API Port: 8088      │                           │
@@ -103,7 +110,8 @@ The RTMP Stream Relay System consists of 9 Docker containers working together to
   - `8080`: HTTP statistics and health endpoint
 - **Streams**:
   - `/live/brb`: Receives brb video loop
-  - `/live/cam`: Receives camera feed (dev mode)
+  - `/live/cam-raw`: Receives raw camera input (Moblin, SRT, etc.)
+  - `/live/cam`: Receives normalized camera feed (from ffmpeg-cam-relay)
   - `/live/program`: Receives final output from muxer
 - **Key Features**: 
   - Stream statistics via XML endpoint
@@ -136,18 +144,43 @@ The RTMP Stream Relay System consists of 9 Docker containers working together to
 - **Purpose**: Accepts external SRT streams and relays them to the internal RTMP infrastructure
 - **Technology**: FFmpeg with SRT protocol support
 - **Input**: `srt://0.0.0.0:9000?mode=listener` (exposed on host port 1937)
-- **Output**: `rtmp://nginx-rtmp:1936/live/cam`
+- **Output**: `rtmp://nginx-rtmp:1936/live/cam-raw`
 - **Port**: `1937` (configurable via `SRT_PORT` environment variable)
 - **Profile**: All (runs by default)
 - **Key Features**:
   - Zero-latency stream copy (no re-encoding)
   - SRT listener mode for accepting external connections
-  - Direct bridge to internal RTMP network
+  - Outputs to cam-raw for normalization
 - **Use Case**: Receiving live video feeds from external SRT encoders, cameras, or OBS Studio
 
 ---
 
-### 5. **muxer** (Scene Switcher)
+### 5. **ffmpeg-cam-relay** (Camera Normalizer)
+- **Purpose**: Normalizes raw camera streams to GStreamer-compatible format
+- **Technology**: FFmpeg with H.264 transcoding
+- **Input**: `rtmp://nginx-rtmp:1936/live/cam-raw`
+- **Output**: `rtmp://nginx-rtmp:1936/live/cam`
+- **Profile**: All (runs by default)
+- **Key Features**:
+  - Transcodes to GStreamer-compatible H.264 (Main profile, no B-frames)
+  - Handles mobile hardware encoder quirks (Moblin, iOS, Android)
+  - Auto-reconnects when input stream disconnects
+  - Configurable bitrate, framerate, and quality settings
+  - Infinite retry loop with configurable delay
+  - Health monitoring via process check
+- **Environment Variables**:
+  - `VIDEO_BITRATE`: Video bitrate in kbps (default: 3000)
+  - `AUDIO_BITRATE`: Audio bitrate in kbps (default: 128)
+  - `FRAMERATE`: Output framerate (default: 30)
+  - `GOP_SIZE`: Keyframe interval in frames (default: 60 = 2s)
+  - `MAX_RETRIES`: Maximum retry attempts, 0=infinite (default: 0)
+  - `RETRY_DELAY`: Seconds between retries (default: 5)
+- **Use Case**: Fixes black screen/no audio issues with Moblin and other mobile streaming apps
+- **Problem Solved**: GStreamer's uridecodebin struggles with H.264 High profile and B-frames from mobile hardware encoders
+
+---
+
+### 6. **muxer** (Scene Switcher)
 - **Purpose**: Dynamically switches between multiple input streams and outputs a single program stream
 - **Technology**: GStreamer with Python control API
 - **API Port**: `8088`
@@ -162,7 +195,7 @@ The RTMP Stream Relay System consists of 9 Docker containers working together to
 
 ---
 
-### 6. **stream-auto-switcher** (Automated Quality Manager)
+### 7. **stream-auto-switcher** (Automated Quality Manager)
 - **Purpose**: Monitors stream quality and automatically switches between camera and brb content
 - **Technology**: Python with XML parsing
 - **Profile**: `auto` (optional, runs with `--profile auto`)
@@ -178,7 +211,7 @@ The RTMP Stream Relay System consists of 9 Docker containers working together to
 
 ---
 
-### 7. **ffmpeg-kick** (External Relay)
+### 8. **ffmpeg-kick** (External Relay)
 - **Purpose**: Relays the final program stream to Kick streaming platform
 - **Technology**: FFmpeg with RTMPS
 - **Input**: `rtmp://nginx-rtmp:1936/live/program`
@@ -190,7 +223,7 @@ The RTMP Stream Relay System consists of 9 Docker containers working together to
 
 ---
 
-### 8. **stream-controller** (Container Manager)
+### 9. **stream-controller** (Container Manager)
 - **Purpose**: Provides REST API for container lifecycle management
 - **Technology**: Python with Docker SDK
 - **API Port**: `8089`
@@ -208,7 +241,7 @@ The RTMP Stream Relay System consists of 9 Docker containers working together to
 
 ---
 
-### 9. **stream-dashboard** (Web Interface)
+### 10. **stream-dashboard** (Web Interface)
 - **Purpose**: Provides web-based monitoring and control interface
 - **Technology**: Vue.js 3 frontend + Express.js backend + WebSocket
 - **Port**: `3000` (HTTP + WebSocket)
@@ -232,10 +265,12 @@ The RTMP Stream Relay System consists of 9 Docker containers working together to
 
 ### Video Stream Flow:
 1. `brb.mp4` → **ffmpeg-brb** → nginx-rtmp `/live/brb`
-2. `brb2.mp4` → **ffmpeg-dev-cam** → nginx-rtmp `/live/cam` (manual)
-3. External SRT stream → **ffmpeg-srt** → nginx-rtmp `/live/cam`
-4. nginx-rtmp streams → **muxer** → nginx-rtmp `/live/program`
-5. nginx-rtmp `/live/program` → **ffmpeg-kick** → Kick streaming platform
+2. `brb2.mp4` → **ffmpeg-dev-cam** → nginx-rtmp `/live/cam-raw` (manual)
+3. External SRT stream → **ffmpeg-srt** → nginx-rtmp `/live/cam-raw`
+4. External Moblin/RTMP → nginx-rtmp `/live/cam-raw`
+5. nginx-rtmp `/live/cam-raw` → **ffmpeg-cam-relay** → nginx-rtmp `/live/cam`
+6. nginx-rtmp streams (`/live/brb`, `/live/cam`) → **muxer** → nginx-rtmp `/live/program`
+7. nginx-rtmp `/live/program` → **ffmpeg-kick** → Kick streaming platform
 
 ### Control Flow:
 1. **stream-auto-switcher** monitors nginx-rtmp stats
@@ -274,6 +309,7 @@ nginx-rtmp (healthy)
     ├── ffmpeg-brb
     ├── ffmpeg-dev-cam (manual profile)
     ├── ffmpeg-srt
+    ├── ffmpeg-cam-relay
     └── muxer (after ffmpeg-brb)
             ├── stream-auto-switcher (healthy, auto profile)
             └── ffmpeg-kick (manual profile, healthy)
@@ -286,7 +322,7 @@ stream-controller (independent)
 
 ## Profiles
 
-- **Default**: nginx-rtmp, ffmpeg-brb, ffmpeg-srt, muxer, stream-controller, stream-dashboard
+- **Default**: nginx-rtmp, ffmpeg-brb, ffmpeg-srt, ffmpeg-cam-relay, muxer, stream-controller, stream-dashboard
 - **manual**: ffmpeg-dev-cam (camera simulation), ffmpeg-kick (Kick streaming)
 - **auto**: Adds stream-auto-switcher for automatic quality management
 
