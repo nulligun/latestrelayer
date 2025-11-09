@@ -18,7 +18,7 @@ A Docker-based RTMP relay system with two input streams and switchable output to
 └───┬───┘  └───┬───┘      └──────┬──────┘
     │          │                 │
     │      ┌───▼────────────┐    │
-    │      │ ffmpeg-dev-cam │    │
+    │      │ ffmpeg-cam-dev │    │
     │      │  (manual)      │    │
     │      └───┬────────────┘    │
     │          │                 │
@@ -67,7 +67,7 @@ A Docker-based RTMP relay system with two input streams and switchable output to
 - **Output**: `rtmp://nginx-rtmp:1936/live/brb`
 - **Profiles**: All (default and dev)
 
-### 3. ffmpeg-dev-cam
+### 3. ffmpeg-cam-dev
 - **Purpose**: Simulates camera feed using brb2.mp4
 - **Output**: `rtmp://nginx-rtmp:1936/live/cam`
 - **Profiles**: manual (requires explicit start)
@@ -78,9 +78,9 @@ A Docker-based RTMP relay system with two input streams and switchable output to
 - **Output**: `rtmp://nginx-rtmp:1936/live/cam-raw`
 - **Profiles**: All (default)
 - **Use Case**: Bridge for external SRT encoders/cameras to send live video
-- **Note**: Outputs to cam-raw which gets normalized by ffmpeg-cam-relay
+- **Note**: Outputs to cam-raw which gets normalized by ffmpeg-cam-normalized
 
-### 5. ffmpeg-cam-relay
+### 5. ffmpeg-cam-normalized
 - **Purpose**: Normalizes camera streams for GStreamer compatibility
 - **Input**: `rtmp://nginx-rtmp:1936/live/cam-raw`
 - **Output**: `rtmp://nginx-rtmp:1936/live/cam`
@@ -195,7 +195,7 @@ RTMP URL: rtmp://YOUR_SERVER_IP:1936/live/cam-raw
 **Why cam-raw?**
 - Mobile hardware encoders (iOS, Android) use H.264 High profile with B-frames
 - GStreamer (used by the muxer) struggles with these encoding parameters
-- The ffmpeg-cam-relay service normalizes the stream to GStreamer-compatible format
+- The ffmpeg-cam-normalized service normalizes the stream to GStreamer-compatible format
 - This fixes black screen and no audio issues
 
 **For OBS Studio (SRT mode):**
@@ -207,7 +207,7 @@ The ffmpeg-srt service receives SRT and sends to cam-raw automatically.
 
 **Stream Flow:**
 ```
-Moblin → /live/cam-raw → ffmpeg-cam-relay → /live/cam → muxer → /live/program → Kick
+Moblin → /live/cam-raw → ffmpeg-cam-normalized → /live/cam → muxer → /live/program → Kick
 ```
 
 ### Start Services
@@ -231,9 +231,9 @@ Some services are configured with the `manual` profile and won't start automatic
 docker compose --profile manual up -d ffmpeg-kick
 ```
 
-**Start ffmpeg-dev-cam** (simulated camera feed for testing):
+**Start ffmpeg-cam-dev** (simulated camera feed for testing):
 ```bash
-docker compose --profile manual up -d ffmpeg-dev-cam
+docker compose --profile manual up -d ffmpeg-cam-dev
 ```
 
 **Start both manual services together**:
@@ -357,7 +357,7 @@ curl "http://localhost:8089/health"
 curl -X POST "http://localhost:8089/container/ffmpeg-brb/stop"
 
 # Start dev camera stream
-curl -X POST "http://localhost:8089/container/ffmpeg-dev-cam/start"
+curl -X POST "http://localhost:8089/container/ffmpeg-cam-dev/start"
 
 # Check stream switcher status
 curl "http://localhost:8089/container/muxer/status"
@@ -511,7 +511,7 @@ docker compose --env-file .env.custom up -d
 7. **stream-dashboard** - Starts after stream-controller and nginx-rtmp are healthy
 
 **Manual Services** (require explicit start with `--profile manual`):
-- **ffmpeg-dev-cam** - Simulated camera stream (starts after nginx-rtmp is healthy)
+- **ffmpeg-cam-dev** - Simulated camera stream (starts after nginx-rtmp is healthy)
 - **ffmpeg-kick** - Kick streaming pusher (starts after muxer is healthy)
 
 ## Troubleshooting
@@ -522,7 +522,7 @@ docker compose --env-file .env.custom up -d
 - Check if the desired input stream is running:
   ```bash
   docker compose logs ffmpeg-brb
-  docker compose logs ffmpeg-dev-cam
+  docker compose logs ffmpeg-cam-dev
   ```
 - Verify muxer is running:
   ```bash

@@ -24,7 +24,7 @@ graph TB
     subgraph Managed Containers
         KICK[ffmpeg-kick]
         OFFLINE[ffmpeg-offline]
-        CAM[ffmpeg-dev-cam]
+        CAM[ffmpeg-cam-dev]
         SWITCHER[muxer]
     end
     
@@ -57,7 +57,7 @@ graph TB
 The service will manage containers with the project prefix (`relayer-` by default):
 - `ffmpeg-kick`
 - `ffmpeg-offline`
-- `ffmpeg-dev-cam`
+- `ffmpeg-cam-dev`
 - `muxer`
 - `nginx-rtmp`
 

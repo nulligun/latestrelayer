@@ -23,7 +23,7 @@ The RTMP Stream Relay System consists of 10 Docker containers working together t
 │                     DOCKER NETWORK (rtmp-network)                 │
 │                                                                    │
 │  ┌────────────────┐  ┌──────────────────┐  ┌─────────────────┐  │
-│  │ ffmpeg-brb │  │ ffmpeg-dev-cam   │  │  ffmpeg-srt     │  │
+│  │ ffmpeg-brb │  │ ffmpeg-cam-dev   │  │  ffmpeg-srt     │  │
 │  │                │  │ (manual profile) │  │                 │  │
 │  │ Loops brb  │  │ Simulates camera │  │ SRT listener    │  │
 │  │ video to RTMP  │  │ with video file  │  │ relays to RTMP  │  │
@@ -34,7 +34,7 @@ The RTMP Stream Relay System consists of 10 Docker containers working together t
 │           │            ┌──────┴──────────────────────┘            │
 │           │            │                                          │
 │           │      ┌─────▼─────────────┐                           │
-│           │      │ ffmpeg-cam-relay  │                           │
+│           │      │ ffmpeg-cam-normalized  │                           │
 │           │      │ Normalizes camera │                           │
 │           │      │ for GStreamer     │                           │
 │           │      └─────┬─────────────┘                           │
@@ -111,7 +111,7 @@ The RTMP Stream Relay System consists of 10 Docker containers working together t
 - **Streams**:
   - `/live/brb`: Receives brb video loop
   - `/live/cam-raw`: Receives raw camera input (Moblin, SRT, etc.)
-  - `/live/cam`: Receives normalized camera feed (from ffmpeg-cam-relay)
+  - `/live/cam`: Receives normalized camera feed (from ffmpeg-cam-normalized)
   - `/live/program`: Receives final output from muxer
 - **Key Features**: 
   - Stream statistics via XML endpoint
@@ -130,7 +130,7 @@ The RTMP Stream Relay System consists of 10 Docker containers working together t
 
 ---
 
-### 3. **ffmpeg-dev-cam** (Manual Service)
+### 3. **ffmpeg-cam-dev** (Manual Service)
 - **Purpose**: Simulates a camera feed using a second video file
 - **Technology**: FFmpeg
 - **Input**: `brb2.mp4` from host filesystem
@@ -155,7 +155,7 @@ The RTMP Stream Relay System consists of 10 Docker containers working together t
 
 ---
 
-### 5. **ffmpeg-cam-relay** (Camera Normalizer)
+### 5. **ffmpeg-cam-normalized** (Camera Normalizer)
 - **Purpose**: Normalizes raw camera streams to GStreamer-compatible format
 - **Technology**: FFmpeg with H.264 transcoding
 - **Input**: `rtmp://nginx-rtmp:1936/live/cam-raw`
@@ -265,10 +265,10 @@ The RTMP Stream Relay System consists of 10 Docker containers working together t
 
 ### Video Stream Flow:
 1. `brb.mp4` → **ffmpeg-brb** → nginx-rtmp `/live/brb`
-2. `brb2.mp4` → **ffmpeg-dev-cam** → nginx-rtmp `/live/cam-raw` (manual)
+2. `brb2.mp4` → **ffmpeg-cam-dev** → nginx-rtmp `/live/cam-raw` (manual)
 3. External SRT stream → **ffmpeg-srt** → nginx-rtmp `/live/cam-raw`
 4. External Moblin/RTMP → nginx-rtmp `/live/cam-raw`
-5. nginx-rtmp `/live/cam-raw` → **ffmpeg-cam-relay** → nginx-rtmp `/live/cam`
+5. nginx-rtmp `/live/cam-raw` → **ffmpeg-cam-normalized** → nginx-rtmp `/live/cam`
 6. nginx-rtmp streams (`/live/brb`, `/live/cam`) → **muxer** → nginx-rtmp `/live/program`
 7. nginx-rtmp `/live/program` → **ffmpeg-kick** → Kick streaming platform
 
@@ -307,9 +307,9 @@ The RTMP Stream Relay System consists of 10 Docker containers working together t
 ```
 nginx-rtmp (healthy)
     ├── ffmpeg-brb
-    ├── ffmpeg-dev-cam (manual profile)
+    ├── ffmpeg-cam-dev (manual profile)
     ├── ffmpeg-srt
-    ├── ffmpeg-cam-relay
+    ├── ffmpeg-cam-normalized
     └── muxer (after ffmpeg-brb)
             ├── stream-auto-switcher (healthy, auto profile)
             └── ffmpeg-kick (manual profile, healthy)
@@ -322,8 +322,8 @@ stream-controller (independent)
 
 ## Profiles
 
-- **Default**: nginx-rtmp, ffmpeg-brb, ffmpeg-srt, ffmpeg-cam-relay, muxer, stream-controller, stream-dashboard
-- **manual**: ffmpeg-dev-cam (camera simulation), ffmpeg-kick (Kick streaming)
+- **Default**: nginx-rtmp, ffmpeg-brb, ffmpeg-srt, ffmpeg-cam-normalized, muxer, stream-controller, stream-dashboard
+- **manual**: ffmpeg-cam-dev (camera simulation), ffmpeg-kick (Kick streaming)
 - **auto**: Adds stream-auto-switcher for automatic quality management
 
 Profiles can be combined: `docker compose --profile manual --profile auto up -d`

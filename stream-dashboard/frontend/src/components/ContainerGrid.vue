@@ -84,7 +84,7 @@ export default {
         'muxer': 'Mux BRB and Cam to Program',
         'dashboard': 'This control panel',
         'ffmpeg-brb': 'A looping video of the BRB screen',
-        'ffmpeg-dev-cam': 'A looping video for testing the camera feed',
+        'ffmpeg-cam-dev': 'A looping video for testing the camera feed',
         'nginx-rtmp': 'RTMP Relay server',
         'ffmpeg-srt': 'SRT to RTMP relay',
         'controller': 'API for container management'

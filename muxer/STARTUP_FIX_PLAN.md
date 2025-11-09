@@ -248,7 +248,7 @@ sequenceDiagram
 
 ### Test 2: Hot Reconnection
 1. With setup from Test 1 running
-2. Start ffmpeg-dev-cam
+2. Start ffmpeg-cam-dev
 3. **Expected:**
    - Within 10 seconds, muxer detects real cam
    - Automatically replaces fallback with real stream
@@ -258,7 +258,7 @@ sequenceDiagram
 
 ### Test 3: Stream Loss Recovery
 1. With all running normally
-2. Stop ffmpeg-dev-cam
+2. Stop ffmpeg-cam-dev
 3. **Expected:**
    - Within 10 seconds, muxer detects cam loss
    - Automatically falls back to test source
