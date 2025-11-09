@@ -30,7 +30,8 @@ NGINX_RTMP_PORT = 1936
 NGINX_STATS_URL = f"http://{NGINX_RTMP_HOST}:8080/stat"
 
 SRC_A = f"rtmp://{NGINX_RTMP_HOST}:{NGINX_RTMP_PORT}/live/brb"  # looped MP4 via nginx
-SRC_B = f"rtmp://{NGINX_RTMP_HOST}:{NGINX_RTMP_PORT}/live/cam"  # camera via nginx
+SRC_B = f"rtmp://{NGINX_RTMP_HOST}:{NGINX_RTMP_PORT}/live/cam"  # camera via nginx (normalized)
+SRC_C = f"rtmp://{NGINX_RTMP_HOST}:{NGINX_RTMP_PORT}/live/cam-raw"  # raw camera input
 
 # Output back to nginx and push onward from there
 OUTPUT = f"rtmp://{NGINX_RTMP_HOST}:{NGINX_RTMP_PORT}/live/program"
@@ -162,11 +163,18 @@ class Switcher:
                 "stream_exists": False,
                 "last_check": None,
                 "element_name": "b"
+            },
+            "cam-raw": {
+                "available": False,
+                "using_fallback": False,
+                "stream_exists": False,
+                "last_check": None,
+                "element_name": "c"
             }
         }
         
         # Track which sources are available (backward compat)
-        self.sources_available = {"brb": False, "cam": False}
+        self.sources_available = {"brb": False, "cam": False, "cam-raw": False}
 
         def create_fallback_source(tag):
             """Create fallback test source for when real stream is unavailable."""
@@ -374,6 +382,20 @@ class Switcher:
         else:
             print("[init] ✓ Cam source created successfully from real stream")
 
+        # Create cam-raw source (optional, with fallback)
+        print("[init] Creating cam-raw source (optional)...")
+        c = make_input("c", SRC_C, "cam-raw", required=False)
+        self.sources_available["cam-raw"] = True
+        self.source_status["cam-raw"]["available"] = True
+        self.source_status["cam-raw"]["stream_exists"] = not c.get("is_fallback", False)
+        self.source_status["cam-raw"]["using_fallback"] = c.get("is_fallback", False)
+        self.source_status["cam-raw"]["last_check"] = datetime.now().isoformat()
+        
+        if c.get("is_fallback", False):
+            print("[init] ✓ Cam-raw source created with FALLBACK (will auto-reconnect when available)")
+        else:
+            print("[init] ✓ Cam-raw source created successfully from real stream")
+
         # selectors for hard, instantaneous switching
         self.vsel = make("input-selector", "vsel")
         self.asel = make("input-selector", "asel")
@@ -390,8 +412,10 @@ class Switcher:
 
         self.a_v_sink = link_to_selector(self.vsel, a["v_srcpad"], "a_v")
         self.b_v_sink = link_to_selector(self.vsel, b["v_srcpad"], "b_v")
+        self.c_v_sink = link_to_selector(self.vsel, c["v_srcpad"], "c_v")
         self.a_a_sink = link_to_selector(self.asel, a["a_srcpad"], "a_a")
         self.b_a_sink = link_to_selector(self.asel, b["a_srcpad"], "b_a")
+        self.c_a_sink = link_to_selector(self.asel, c["a_srcpad"], "c_a")
 
         # --- encode & mux ---
         vconv2 = make("videoconvert", "vconv2")
@@ -487,6 +511,8 @@ class Switcher:
             uri = SRC_A
         elif source_name == "cam":
             uri = SRC_B
+        elif source_name == "cam-raw":
+            uri = SRC_C
         else:
             print(f"[reconnect] ERROR: Unknown source '{source_name}'")
             return False
@@ -619,6 +645,9 @@ class Switcher:
             elif source_name == "cam":
                 self.b_v_sink = new_vsink
                 self.b_a_sink = new_asink
+            elif source_name == "cam-raw":
+                self.c_v_sink = new_vsink
+                self.c_a_sink = new_asink
             
             # Step 8: Remove old fallback elements
             print(f"[reconnect] Removing old fallback elements...")
@@ -661,7 +690,7 @@ class Switcher:
                     time.sleep(STREAM_CHECK_INTERVAL)
                     
                     # Check each source
-                    for source_name in ["brb", "cam"]:
+                    for source_name in ["brb", "cam", "cam-raw"]:
                         status = self.source_status[source_name]
                         
                         # Check if stream exists on nginx
@@ -734,8 +763,8 @@ class Switcher:
 
     def set_source(self, which):
         """Switch to a different source."""
-        if which not in ["brb", "cam"]:
-            raise ValueError(f"Unknown source: {which}. Use 'brb' or 'cam'")
+        if which not in ["brb", "cam", "cam-raw"]:
+            raise ValueError(f"Unknown source: {which}. Use 'brb', 'cam', or 'cam-raw'")
         
         # Check if source is available
         if not self.sources_available.get(which, False):
@@ -748,6 +777,9 @@ class Switcher:
         elif which == "cam":
             self.vsel.set_property("active-pad", self.b_v_sink)
             self.asel.set_property("active-pad", self.b_a_sink)
+        elif which == "cam-raw":
+            self.vsel.set_property("active-pad", self.c_v_sink)
+            self.asel.set_property("active-pad", self.c_a_sink)
         
         # Update current source state
         self.current_source = which
@@ -852,6 +884,12 @@ class Handler(BaseHTTPRequestHandler):
                             "using_fallback": switcher.source_status["cam"]["using_fallback"],
                             "stream_exists": switcher.source_status["cam"]["stream_exists"],
                             "last_check": switcher.source_status["cam"]["last_check"]
+                        },
+                        "cam-raw": {
+                            "available": switcher.source_status["cam-raw"]["available"],
+                            "using_fallback": switcher.source_status["cam-raw"]["using_fallback"],
+                            "stream_exists": switcher.source_status["cam-raw"]["stream_exists"],
+                            "last_check": switcher.source_status["cam-raw"]["last_check"]
                         }
                     },
                     "output": {
@@ -879,7 +917,7 @@ class Handler(BaseHTTPRequestHandler):
 def run_http():
     srv = HTTPServer(("0.0.0.0", 8088), Handler)
     print("[http] HTTP server bound to 0.0.0.0:8088")
-    print("[http] Endpoints: /health, /scene, and /switch?src=brb|cam")
+    print("[http] Endpoints: /health, /scene, and /switch?src=brb|cam|cam-raw")
     srv.serve_forever()
 
 if __name__ == "__main__":
