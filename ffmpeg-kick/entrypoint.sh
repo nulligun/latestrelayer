@@ -75,7 +75,7 @@ sleep 3
 
 # Start FFmpeg - using exec to make it PID 1 for proper health checks
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting FFmpeg to stream to Kick..."
-exec ffmpeg -v info -stats \
+exec ffmpeg -nostdin -loglevel info -progress pipe:1 -nostats \
   -probesize 10M \
   -analyzeduration 5000000 \
   -rtmp_buffer 5000 \
