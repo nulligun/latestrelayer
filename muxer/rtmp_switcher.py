@@ -472,6 +472,186 @@ class Switcher:
         # default program = brb
         self.set_source("brb")
 
+    def hot_reconnect_source(self, source_name):
+        """
+        Replace fallback source with real stream source dynamically.
+        This is called when a real stream becomes available.
+        """
+        print(f"[reconnect] Starting hot-reconnection for '{source_name}'")
+        
+        status = self.source_status[source_name]
+        element_tag = status["element_name"]
+        
+        # Determine URI based on source
+        if source_name == "brb":
+            uri = SRC_A
+        elif source_name == "cam":
+            uri = SRC_B
+        else:
+            print(f"[reconnect] ERROR: Unknown source '{source_name}'")
+            return False
+        
+        try:
+            # Step 1: Find the old fallback elements to remove
+            old_vsrc = self.pipeline.get_by_name(f"{element_tag}_vsrc_fallback")
+            old_asrc = self.pipeline.get_by_name(f"{element_tag}_asrc_fallback")
+            
+            # Step 2: Create new real source elements
+            print(f"[reconnect] Creating new uridecodebin for '{source_name}'")
+            new_src = make("uridecodebin", f"{element_tag}_src_new")
+            new_src.set_property("uri", uri)
+            
+            # Video branch
+            new_vq = make("queue", f"{element_tag}_vq_new")
+            new_vq.set_property("max-size-buffers", 30)
+            new_vq.set_property("max-size-time", 0)
+            new_vq.set_property("max-size-bytes", 0)
+            new_vq.set_property("leaky", 1)
+            new_vconv = make("videoconvert", f"{element_tag}_vconv_new")
+            new_vscale = make("videoscale", f"{element_tag}_vscale_new")
+            new_vrate = make("videorate", f"{element_tag}_vrate_new")
+            new_vcaps = make("capsfilter", f"{element_tag}_vcaps_new")
+            new_vcaps.set_property("caps", Gst.Caps.from_string(
+                "video/x-raw,format=I420,width=1920,height=1080,framerate=30/1"
+            ))
+            
+            # Audio branch
+            new_aq = make("queue", f"{element_tag}_aq_new")
+            new_aq.set_property("max-size-buffers", 30)
+            new_aq.set_property("max-size-time", 0)
+            new_aq.set_property("max-size-bytes", 0)
+            new_aq.set_property("leaky", 1)
+            new_aconv = make("audioconvert", f"{element_tag}_aconv_new")
+            new_ares = make("audioresample", f"{element_tag}_ares_new")
+            new_acaps = make("capsfilter", f"{element_tag}_acaps_new")
+            new_acaps.set_property("caps", Gst.Caps.from_string(
+                "audio/x-raw,channels=2,rate=48000"
+            ))
+            
+            # Step 3: Add new elements to pipeline (in PAUSED state initially)
+            print(f"[reconnect] Adding new elements to pipeline")
+            for e in [new_src, new_vq, new_vconv, new_vscale, new_vrate, new_vcaps,
+                      new_aq, new_aconv, new_ares, new_acaps]:
+                self.pipeline.add(e)
+                e.sync_state_with_parent()
+            
+            # Link static parts of new chains
+            new_vq.link(new_vconv)
+            new_vconv.link(new_vscale)
+            new_vscale.link(new_vrate)
+            new_vrate.link(new_vcaps)
+            
+            new_aq.link(new_aconv)
+            new_aconv.link(new_ares)
+            new_ares.link(new_acaps)
+            
+            # Track pad linking completion
+            pads_linked = {"video": False, "audio": False}
+            link_event = threading.Event()
+            
+            # Step 4: Connect dynamic pad handlers for uridecodebin
+            def on_pad_added(element, pad):
+                caps = pad.get_current_caps()
+                s = caps.to_string() if caps else ""
+                print(f"[reconnect] New pad from uridecodebin: {s[:100]}...")
+                
+                if s.startswith("video/"):
+                    sink = new_vq.get_static_pad("sink")
+                    if not sink.is_linked():
+                        ret = pad.link(sink)
+                        if ret == Gst.PadLinkReturn.OK:
+                            print(f"[reconnect] ✓ Linked video pad")
+                            pads_linked["video"] = True
+                            if pads_linked["audio"]:
+                                link_event.set()
+                        else:
+                            print(f"[reconnect] ERROR: Failed to link video pad: {ret}")
+                elif s.startswith("audio/"):
+                    sink = new_aq.get_static_pad("sink")
+                    if not sink.is_linked():
+                        ret = pad.link(sink)
+                        if ret == Gst.PadLinkReturn.OK:
+                            print(f"[reconnect] ✓ Linked audio pad")
+                            pads_linked["audio"] = True
+                            if pads_linked["video"]:
+                                link_event.set()
+                        else:
+                            print(f"[reconnect] ERROR: Failed to link audio pad: {ret}")
+            
+            new_src.connect("pad-added", on_pad_added)
+            
+            # Step 5: Set new source to PLAYING to start pad emission
+            print(f"[reconnect] Starting new uridecodebin...")
+            new_src.set_state(Gst.State.PLAYING)
+            
+            # Wait for pads to be linked (with timeout)
+            print(f"[reconnect] Waiting for pads to link...")
+            if not link_event.wait(timeout=10):
+                print(f"[reconnect] WARNING: Timeout waiting for pads")
+                # Continue anyway, might work
+            
+            # Step 6: Create new selector sink pads and link
+            print(f"[reconnect] Linking to selector...")
+            new_vsink = self.vsel.request_pad_simple("sink_%u")
+            new_asink = self.asel.request_pad_simple("sink_%u")
+            
+            new_v_srcpad = new_vcaps.get_static_pad("src")
+            new_a_srcpad = new_acaps.get_static_pad("src")
+            
+            if new_v_srcpad.link(new_vsink) != Gst.PadLinkReturn.OK:
+                print(f"[reconnect] ERROR: Failed to link new video to selector")
+                return False
+            if new_a_srcpad.link(new_asink) != Gst.PadLinkReturn.OK:
+                print(f"[reconnect] ERROR: Failed to link new audio to selector")
+                return False
+            
+            print(f"[reconnect] ✓ New source linked to selector")
+            
+            # Step 7: Switch selector to new pads
+            print(f"[reconnect] Switching selector to new source...")
+            self.vsel.set_property("active-pad", new_vsink)
+            self.asel.set_property("active-pad", new_asink)
+            
+            # Update internal tracking based on source name
+            if source_name == "brb":
+                self.a_v_sink = new_vsink
+                self.a_a_sink = new_asink
+            elif source_name == "cam":
+                self.b_v_sink = new_vsink
+                self.b_a_sink = new_asink
+            
+            # Step 8: Remove old fallback elements
+            print(f"[reconnect] Removing old fallback elements...")
+            if old_vsrc and old_asrc:
+                # Get all fallback elements to remove
+                old_elements = []
+                for suffix in ["_vsrc_fallback", "_vq", "_vconv", "_vscale", "_vrate", "_vcaps",
+                              "_asrc_fallback", "_aq", "_aconv", "_ares", "_acaps"]:
+                    elem = self.pipeline.get_by_name(f"{element_tag}{suffix}")
+                    if elem:
+                        old_elements.append(elem)
+                
+                # Set to NULL and remove
+                for elem in old_elements:
+                    elem.set_state(Gst.State.NULL)
+                    self.pipeline.remove(elem)
+                
+                print(f"[reconnect] ✓ Old fallback elements removed")
+            
+            # Step 9: Update status
+            status["using_fallback"] = False
+            status["stream_exists"] = True
+            status["last_check"] = datetime.now().isoformat()
+            
+            print(f"[reconnect] ✓ Hot-reconnection complete for '{source_name}'")
+            return True
+            
+        except Exception as e:
+            print(f"[reconnect] ERROR during hot-reconnection: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            return False
+
     def start_monitoring_thread(self):
         """Start background thread to monitor stream availability and handle reconnection."""
         def monitor_streams():
@@ -494,18 +674,20 @@ class Switcher:
                         # If using fallback and real stream now available
                         if status["using_fallback"] and stream_exists:
                             print(f"[monitor] Real stream '{source_name}' is now available! (was using fallback)")
-                            print(f"[monitor] Hot-reconnection for '{source_name}' would happen here")
-                            # TODO: Implement dynamic pipeline modification
-                            # For now, just update the status
-                            status["stream_exists"] = True
-                            # Note: Full hot-reconnection requires dynamic pipeline modification
-                            # which is complex with GStreamer. For initial fix, restart is acceptable.
+                            print(f"[monitor] Initiating hot-reconnection...")
+                            
+                            # Perform hot-reconnection
+                            success = self.hot_reconnect_source(source_name)
+                            if success:
+                                print(f"[monitor] ✓ Successfully reconnected '{source_name}' to real stream")
+                            else:
+                                print(f"[monitor] ✗ Failed to reconnect '{source_name}', will retry next interval")
                         
                         # If using real stream and it disappeared
                         elif not status["using_fallback"] and not stream_exists:
                             print(f"[monitor] WARNING: Real stream '{source_name}' is no longer available")
                             status["stream_exists"] = False
-                            # Note: Pipeline should continue with what it has
+                            # Note: Pipeline continues with existing elements
                         
                         # If not using fallback and stream still exists
                         elif not status["using_fallback"] and stream_exists:
@@ -513,6 +695,8 @@ class Switcher:
                 
                 except Exception as e:
                     print(f"[monitor] Error in monitoring thread: {e}", file=sys.stderr)
+                    import traceback
+                    traceback.print_exc()
         
         # Start daemon thread
         monitor_thread = threading.Thread(target=monitor_streams, daemon=True)
