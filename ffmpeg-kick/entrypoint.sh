@@ -5,10 +5,6 @@ echo "Starting FFmpeg Kick pusher..."
 echo "Source: rtmp://nginx-rtmp:1936/live/program"
 echo "Target: ${KICK_URL}/${KICK_KEY}"
 
-# Wait for nginx-rtmp and muxer to be ready
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting 10 seconds for services..."
-sleep 10
-
 # Check if muxer health endpoint is responding
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Checking muxer health..."
 if curl -f -s http://muxer:8088/health > /dev/null 2>&1; then
@@ -43,7 +39,7 @@ fi
 
 # Poll for stream to be ready - WAIT INDEFINITELY until stream is available
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Polling for 'program' stream to be ready..."
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Will wait indefinitely until stream is available and publishing..."
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Will wait indefinitely until stream is available, publishing, and has bandwidth > 0..."
 ATTEMPT=0
 STREAM_READY=false
 
@@ -54,9 +50,21 @@ while [ "$STREAM_READY" = "false" ]; do
         # Check if program stream exists and is publishing using xmllint
         if xmllint --xpath "//stream[name='program']" /tmp/rtmp_check.xml > /dev/null 2>&1; then
             if xmllint --xpath "//stream[name='program']/publishing" /tmp/rtmp_check.xml > /dev/null 2>&1; then
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Stream 'program' is ready and publishing (after $ATTEMPT attempts)"
-                STREAM_READY=true
-                break
+                # Check if stream has bandwidth > 0 (actual video data flowing)
+                BW_VIDEO=$(xmllint --xpath "//stream[name='program']/bw_video/text()" /tmp/rtmp_check.xml 2>/dev/null || echo "0")
+                
+                if [ "$BW_VIDEO" -gt 0 ] 2>/dev/null; then
+                    # Convert bytes/sec to kbps for logging (using bash arithmetic)
+                    BW_KBPS=$((BW_VIDEO * 8 / 1000))
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Stream 'program' is ready, publishing, and has bandwidth: ${BW_KBPS} kbps (after $ATTEMPT attempts)"
+                    STREAM_READY=true
+                    break
+                else
+                    # Stream exists and is publishing but no bandwidth yet
+                    if [ $ATTEMPT -lt 30 ] || [ $((ATTEMPT % 5)) -eq 0 ]; then
+                        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Stream 'program' exists and publishing but bandwidth is 0 (no video data yet)"
+                    fi
+                fi
             fi
         fi
     fi
@@ -64,7 +72,9 @@ while [ "$STREAM_READY" = "false" ]; do
     # Progressive backoff: 1s for first 30 attempts, then 5s to reduce log spam
     if [ $ATTEMPT -lt 30 ]; then
         INTERVAL=1
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting for stream... (attempt $ATTEMPT, checking every ${INTERVAL}s)"
+        if [ $((ATTEMPT % 5)) -eq 1 ] || [ $ATTEMPT -eq 1 ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting for stream... (attempt $ATTEMPT, checking every ${INTERVAL}s)"
+        fi
     else
         INTERVAL=5
         # Log less frequently after 30 attempts
@@ -75,10 +85,6 @@ while [ "$STREAM_READY" = "false" ]; do
     
     sleep $INTERVAL
 done
-
-# Additional stabilization delay
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting 3 seconds for stream to stabilize..."
-sleep 3
 
 # Start FFmpeg - using exec to make it PID 1 for proper health checks
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting FFmpeg to stream to Kick..."
