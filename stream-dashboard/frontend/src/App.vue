@@ -2,11 +2,21 @@
   <div class="app">
     <header class="header">
       <h1>Stream Control Dashboard</h1>
-      <div class="connection-status">
-        <span class="status-indicator" :class="{ connected: wsConnected, disconnected: !wsConnected }">
-          {{ wsConnected ? '● Connected' : '○ Disconnected' }}
-        </span>
-        <span class="last-update">Last update: {{ lastUpdate }}</span>
+      <div class="header-controls">
+        <button 
+          @click="toggleInterface"
+          class="interface-toggle"
+          :title="interfaceMode === 'simplified' ? 'Switch to Full View' : 'Switch to Simplified View'"
+        >
+          <span class="toggle-icon">{{ interfaceMode === 'simplified' ? '📊' : '⚡' }}</span>
+          <span class="toggle-text">{{ interfaceMode === 'simplified' ? 'Full' : 'Simple' }}</span>
+        </button>
+        <div class="connection-status">
+          <span class="status-indicator" :class="{ connected: wsConnected, disconnected: !wsConnected }">
+            {{ wsConnected ? '● Connected' : '○ Disconnected' }}
+          </span>
+          <span class="last-update">Last update: {{ lastUpdate }}</span>
+        </div>
       </div>
     </header>
 
@@ -15,33 +25,45 @@
         <strong>Error:</strong> {{ error }}
       </div>
 
-      <div class="dashboard-grid">
-        <SystemMetrics
-          :metrics="data.systemMetrics"
-          :containers="data.containers"
-          :rtmpStats="data.rtmpStats"
-          :cameraConfig="data.cameraConfig"
-        />
-        <StreamStats
-          :stats="data.rtmpStats"
-          :streamStatus="data.streamStatus"
-          :currentScene="data.currentScene"
-          :sceneDurationSeconds="data.sceneDurationSeconds"
-          :switchingScene="switchingScene"
-          :sourceAvailability="data.sourceAvailability"
-          @scene-switching="handleSceneSwitching"
-        />
-      </div>
+      <!-- Simplified Interface -->
+      <SimplifiedView
+        v-if="interfaceMode === 'simplified'"
+        :containers="data.containers"
+        :currentScene="data.currentScene"
+        :sceneDurationSeconds="data.sceneDurationSeconds"
+        :rtmpStats="data.rtmpStats"
+      />
 
-      <div class="containers-section">
-        <ContainerGrid
-          :containers="data.containers"
-          @container-status-changed="updateContainerStatus"
-        />
-        <ContainerLogs
-          :containers="data.containers"
-        />
-      </div>
+      <!-- Full Interface -->
+      <template v-else>
+        <div class="dashboard-grid">
+          <SystemMetrics
+            :metrics="data.systemMetrics"
+            :containers="data.containers"
+            :rtmpStats="data.rtmpStats"
+            :cameraConfig="data.cameraConfig"
+          />
+          <StreamStats
+            :stats="data.rtmpStats"
+            :streamStatus="data.streamStatus"
+            :currentScene="data.currentScene"
+            :sceneDurationSeconds="data.sceneDurationSeconds"
+            :switchingScene="switchingScene"
+            :sourceAvailability="data.sourceAvailability"
+            @scene-switching="handleSceneSwitching"
+          />
+        </div>
+
+        <div class="containers-section">
+          <ContainerGrid
+            :containers="data.containers"
+            @container-status-changed="updateContainerStatus"
+          />
+          <ContainerLogs
+            :containers="data.containers"
+          />
+        </div>
+      </template>
     </main>
 
     <footer class="footer">
@@ -57,6 +79,7 @@ import SystemMetrics from './components/SystemMetrics.vue';
 import StreamStats from './components/StreamStats.vue';
 import ContainerGrid from './components/ContainerGrid.vue';
 import ContainerLogs from './components/ContainerLogs.vue';
+import SimplifiedView from './components/SimplifiedView.vue';
 
 export default {
   name: 'App',
@@ -64,9 +87,15 @@ export default {
     SystemMetrics,
     StreamStats,
     ContainerGrid,
-    ContainerLogs
+    ContainerLogs,
+    SimplifiedView
   },
   setup() {
+    // Interface mode with localStorage persistence
+    const STORAGE_KEY = 'streamDashboardMode';
+    const storedMode = localStorage.getItem(STORAGE_KEY);
+    const interfaceMode = ref(storedMode || 'full'); // 'simplified' or 'full'
+    
     const wsService = new WebSocketService();
     const wsConnected = ref(false);
     const lastUpdate = ref('Never');
@@ -218,6 +247,12 @@ export default {
       }, 5000);
     };
 
+    const toggleInterface = () => {
+      interfaceMode.value = interfaceMode.value === 'simplified' ? 'full' : 'simplified';
+      localStorage.setItem(STORAGE_KEY, interfaceMode.value);
+      console.log(`[app] Switched to ${interfaceMode.value} interface`);
+    };
+
     onMounted(() => {
       console.log('[app] Mounting dashboard...');
       wsService.connect(handleMessage, handleError);
@@ -238,8 +273,10 @@ export default {
       error,
       pollingInterval,
       switchingScene,
+      interfaceMode,
       updateContainerStatus,
-      handleSceneSwitching
+      handleSceneSwitching,
+      toggleInterface
     };
   }
 };
@@ -271,11 +308,52 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 20px;
 }
 
 .header h1 {
   font-size: 1.75rem;
   color: #f1f5f9;
+  font-weight: 600;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.interface-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: #334155;
+  border: 2px solid #475569;
+  border-radius: 8px;
+  color: #e2e8f0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.interface-toggle:hover {
+  background: #475569;
+  border-color: #64748b;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.interface-toggle:active {
+  transform: translateY(0);
+}
+
+.toggle-icon {
+  font-size: 1.2rem;
+}
+
+.toggle-text {
   font-weight: 600;
 }
 
@@ -350,17 +428,6 @@ body {
     flex-direction: column;
     gap: 15px;
     align-items: flex-start;
-  }
-  
-  .header-controls {
-    width: 100%;
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  
-  .interface-toggle {
-    width: 100%;
-    justify-content: center;
   }
   
   .header-controls {
