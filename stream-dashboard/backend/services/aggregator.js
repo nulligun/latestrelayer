@@ -14,6 +14,12 @@ class AggregatorService {
     this.pollingInterval = config.pollingInterval || 2000;
     this.clients = new Set();
     
+    // Camera configuration from environment
+    this.rtmpDomain = config.rtmpDomain;
+    this.rtmpPort = config.rtmpPort;
+    this.rtmpStreamKey = config.rtmpStreamKey;
+    this.srtPort = config.srtPort;
+    
     // Stream status tracking
     this.streamStatus = {
       isOnline: false,
@@ -64,6 +70,23 @@ class AggregatorService {
       // Calculate duration on current scene (seconds)
       const sceneDurationSeconds = Math.floor((Date.now() - this.sceneStatus.sceneChangeTimestamp) / 1000);
 
+      // Calculate camera configuration based on ffmpeg-srt status
+      const srtContainer = containers.find(c => c.name === 'ffmpeg-srt');
+      const isSrtRunning = srtContainer && srtContainer.running;
+      
+      const cameraUrl = isSrtRunning
+        ? `srt://${this.rtmpDomain}:${this.srtPort}`
+        : `rtmps://${this.rtmpDomain}:${this.rtmpPort}/live/${this.rtmpStreamKey}`;
+      
+      const cameraConfig = {
+        rtmpUrl: cameraUrl,
+        domain: this.rtmpDomain,
+        port: isSrtRunning ? this.srtPort : this.rtmpPort,
+        streamKey: this.rtmpStreamKey,
+        protocol: isSrtRunning ? 'srt' : 'rtmps',
+        srtRunning: isSrtRunning
+      };
+
       return {
         timestamp,
         containers: containers.map(c => ({
@@ -84,7 +107,8 @@ class AggregatorService {
           isOnline,
           durationSeconds
         },
-        sceneDurationSeconds
+        sceneDurationSeconds,
+        cameraConfig
       };
     } catch (error) {
       console.error('[aggregator] Error aggregating data:', error.message);

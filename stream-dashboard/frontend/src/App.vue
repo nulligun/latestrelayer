@@ -20,6 +20,7 @@
           :metrics="data.systemMetrics"
           :containers="data.containers"
           :rtmpStats="data.rtmpStats"
+          :cameraConfig="data.cameraConfig"
         />
         <StreamStats
           :stats="data.rtmpStats"
@@ -100,7 +101,8 @@ export default {
         isOnline: false,
         durationSeconds: 0
       },
-      sceneDurationSeconds: 0
+      sceneDurationSeconds: 0,
+      cameraConfig: null
     });
 
     const formatTime = (timestamp) => {

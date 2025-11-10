@@ -35,7 +35,11 @@ const aggregator = new AggregatorService({
   controllerUrl: CONTROLLER_API,
   switcherUrl: MUXER_API,
   nginxStatsUrl: NGINX_STATS,
-  pollingInterval: POLLING_INTERVAL
+  pollingInterval: POLLING_INTERVAL,
+  rtmpDomain: RTMP_DOMAIN,
+  rtmpPort: RTMP_PORT,
+  rtmpStreamKey: RTMP_STREAM_KEY,
+  srtPort: SRT_PORT
 });
 
 const controller = new ControllerService(CONTROLLER_API);

@@ -137,9 +137,17 @@ export default {
       default: () => ({
         streams: {}
       })
+    },
+    cameraConfig: {
+      type: Object,
+      default: null
     }
   },
   computed: {
+    rtmpUrl() {
+      // Use camera config from WebSocket if available, otherwise use local state
+      return this.cameraConfig?.rtmpUrl || this.localRtmpUrl || 'Loading...';
+    },
     statusWarnings() {
       const warnings = [];
       
@@ -189,22 +197,25 @@ export default {
   },
   data() {
     return {
-      rtmpUrl: '',
+      localRtmpUrl: '',
       copySuccess: false
     };
   },
   mounted() {
-    this.fetchRtmpConfig();
+    // Fetch initial config as fallback if WebSocket data isn't available yet
+    if (!this.cameraConfig) {
+      this.fetchRtmpConfig();
+    }
   },
   methods: {
     async fetchRtmpConfig() {
       try {
         const response = await fetch('/api/config');
         const config = await response.json();
-        this.rtmpUrl = config.rtmpUrl;
+        this.localRtmpUrl = config.rtmpUrl;
       } catch (error) {
         console.error('Error fetching RTMP config:', error);
-        this.rtmpUrl = 'Error loading URL';
+        this.localRtmpUrl = 'Error loading URL';
       }
     },
     async copyToClipboard() {
