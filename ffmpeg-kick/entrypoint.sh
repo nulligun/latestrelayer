@@ -86,13 +86,50 @@ while [ "$STREAM_READY" = "false" ]; do
     sleep $INTERVAL
 done
 
-# Start FFmpeg - using exec to make it PID 1 for proper health checks
+# Signal handler for graceful shutdown
+cleanup() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Received SIGTERM, shutting down FFmpeg..."
+    if [ -n "$FFMPEG_PID" ] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
+        # Send SIGTERM to ffmpeg
+        kill -TERM "$FFMPEG_PID" 2>/dev/null || true
+        
+        # Wait up to 3 seconds for graceful shutdown
+        local wait_time=0
+        while kill -0 "$FFMPEG_PID" 2>/dev/null && [ $wait_time -lt 3 ]; do
+            sleep 0.5
+            wait_time=$((wait_time + 1))
+        done
+        
+        # Force kill if still running
+        if kill -0 "$FFMPEG_PID" 2>/dev/null; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FFmpeg didn't exit gracefully, forcing shutdown..."
+            kill -KILL "$FFMPEG_PID" 2>/dev/null || true
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FFmpeg exited gracefully"
+        fi
+    fi
+    exit 0
+}
+
+# Register signal handler
+trap cleanup SIGTERM SIGINT
+
+# Start FFmpeg in background to allow signal handling
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting FFmpeg to stream to Kick..."
-exec ffmpeg -nostdin -loglevel info -progress pipe:1 -nostats \
+ffmpeg -nostdin -loglevel info -progress pipe:1 -nostats \
   -probesize 10M \
   -analyzeduration 5000000 \
   -rtmp_buffer 5000 \
   -i rtmp://nginx-rtmp:1936/live/program \
   -c:v copy -c:a copy \
   -rtmp_buffer 5000 \
-  -f flv "${KICK_URL}/${KICK_KEY}"
+  -f flv "${KICK_URL}/${KICK_KEY}" &
+
+FFMPEG_PID=$!
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] FFmpeg started with PID: $FFMPEG_PID"
+
+# Wait for ffmpeg to exit
+wait $FFMPEG_PID
+EXIT_CODE=$?
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] FFmpeg exited with code: $EXIT_CODE"
+exit $EXIT_CODE

@@ -135,6 +135,7 @@ services:
 
   # Auto-Switcher - Monitors streams and automatically switches based on quality
   stream-auto-switcher:
+    profiles: ["manual"]
     build:
       context: ./stream-auto-switcher
       dockerfile: Dockerfile
@@ -167,7 +168,7 @@ services:
   # FFmpeg Kick Pusher - Manual start only
   ffmpeg-kick:
     profiles: ["manual"]
-    stop_grace_period: 10s
+    stop_grace_period: 5s
     build:
       context: ./ffmpeg-kick
       dockerfile: Dockerfile

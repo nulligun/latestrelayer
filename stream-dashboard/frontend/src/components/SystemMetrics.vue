@@ -30,9 +30,6 @@
         <div class="metric-value">
           {{ metrics.load[0]?.toFixed(2) || '0.00' }}
         </div>
-        <div class="metric-detail">
-          5min: {{ metrics.load[1]?.toFixed(2) || '0.00' }} | 15min: {{ metrics.load[2]?.toFixed(2) || '0.00' }}
-        </div>
       </div>
 
       <div class="metric">
