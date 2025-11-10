@@ -113,9 +113,21 @@ export default {
     // Computed: Display scene
     const displayScene = computed(() => {
       if (!props.currentScene) return 'UNKNOWN';
+      
+      // Check if scene is camera-related
       if (props.currentScene === 'cam-raw' || props.currentScene === 'cam') {
-        return 'Camera';
+        // Verify if the camera stream is actually active
+        const isCamRawActive = props.rtmpStats.streams['cam-raw']?.active;
+        const isCamActive = props.rtmpStats.streams['cam']?.active;
+        
+        // Show "Camera" only if at least one camera stream is active
+        if (isCamRawActive || isCamActive) {
+          return 'Camera';
+        }
+        // Otherwise show "CAMERA OFFLINE"
+        return 'CAMERA OFFLINE';
       }
+      
       return props.currentScene.toUpperCase();
     });
 
