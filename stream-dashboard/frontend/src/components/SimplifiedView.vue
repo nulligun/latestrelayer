@@ -9,7 +9,7 @@
       <div class="privacy-icon">🔒</div>
       <div class="privacy-content">
         <h2>PRIVACY MODE ACTIVE</h2>
-        <p>Your camera is currently disabled. Click "Activate Camera" below to return to normal streaming.</p>
+        <p>Your camera is currently disabled. Click "Deactivate Privacy Mode" below to return to normal streaming.</p>
       </div>
     </div>
 
@@ -38,7 +38,6 @@
         {{ privacyActionMessage }}
       </div>
     </div>
-
 
     <!-- Main Stream Control -->
     <div class="control-section">
@@ -385,7 +384,6 @@ export default {
 
 .main-button {
   width: 100%;
-  max-width: 500px;
   padding: 30px 40px;
   font-size: 2rem;
   font-weight: bold;
@@ -497,11 +495,11 @@ export default {
 
 .privacy-section {
   text-align: center;
+  margin-bottom: 40px;
 }
 
 .privacy-button {
   width: 100%;
-  max-width: 500px;
   padding: 20px 30px;
   font-size: 1.5rem;
   font-weight: bold;
