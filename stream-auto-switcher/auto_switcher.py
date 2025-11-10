@@ -149,11 +149,9 @@ def parse_stream_stats(xml_bytes):
                     nclients = 0
                 
                 # Check if actively publishing
-                # Different nginx-rtmp versions use different values
-                is_publishing = (
-                    publishing_text.lower() in ("active", "1", "true", "on") or
-                    nclients >= 1  # If clients are connected, likely publishing
-                )
+                # Only trust the actual publishing field, NOT client count
+                # (muxer connecting as client doesn't mean camera is publishing)
+                is_publishing = publishing_text.lower() in ("active", "1", "true", "on")
                 
                 return {
                     "exists": True,
@@ -214,6 +212,12 @@ def is_cam_alive_and_healthy(stats, muxer_health):
         return False
     
     if not stats["publishing"]:
+        print("[state] Camera stream exists but NOT publishing. Will not switch.", flush=True)
+        return False
+    
+    # Check bitrate - this handles both bw_video = 0 and below threshold
+    if stats["bw_video"] == 0:
+        print("[state] Camera is publishing but bw_video = 0. Will not switch.", flush=True)
         return False
     
     return check_bitrate_sufficient(stats["bw_video"])
