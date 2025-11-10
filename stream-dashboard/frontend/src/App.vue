@@ -352,7 +352,19 @@ body {
     align-items: flex-start;
   }
   
+  .header-controls {
+    width: 100%;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .interface-toggle {
+    width: 100%;
+    justify-content: center;
+  }
+  
   .connection-status {
+    width: 100%;
     align-items: flex-start;
   }
   
