@@ -825,7 +825,72 @@ class Switcher:
         return True
 
     def stop(self):
-        self.pipeline.set_state(Gst.State.NULL)
+        """
+        Properly stop the pipeline with EOS handling.
+        This ensures all elements flush their buffers before shutdown.
+        """
+        print("[shutdown] Initiating pipeline shutdown...")
+        
+        # Step 1: Send EOS (End-of-Stream) event to pipeline
+        # This tells all elements to flush their buffers cleanly
+        print("[shutdown] Sending EOS event to pipeline...")
+        eos_sent = self.pipeline.send_event(Gst.Event.new_eos())
+        
+        if not eos_sent:
+            print("[shutdown] WARNING: Failed to send EOS event, proceeding anyway")
+        else:
+            print("[shutdown] EOS event sent successfully")
+            
+            # Step 2: Wait for EOS message on bus (with 3 second timeout)
+            # This ensures all elements have processed the EOS
+            print("[shutdown] Waiting for EOS message on bus...")
+            start_time = time.time()
+            eos_timeout = 3.0  # seconds
+            eos_received = False
+            
+            while (time.time() - start_time) < eos_timeout:
+                msg = self.bus.timed_pop_filtered(
+                    Gst.SECOND,
+                    Gst.MessageType.EOS | Gst.MessageType.ERROR
+                )
+                
+                if msg:
+                    msg_type = msg.type
+                    if msg_type == Gst.MessageType.EOS:
+                        print("[shutdown] ✓ Received EOS message from pipeline")
+                        eos_received = True
+                        break
+                    elif msg_type == Gst.MessageType.ERROR:
+                        err, dbg = msg.parse_error()
+                        print(f"[shutdown] Error during EOS wait: {err}")
+                        break
+            
+            if not eos_received:
+                elapsed = time.time() - start_time
+                print(f"[shutdown] EOS not received after {elapsed:.1f}s, continuing shutdown")
+        
+        # Step 3: Transition pipeline to NULL state
+        print("[shutdown] Setting pipeline to NULL state...")
+        ret = self.pipeline.set_state(Gst.State.NULL)
+        
+        if ret == Gst.StateChangeReturn.FAILURE:
+            print("[shutdown] WARNING: Failed to set pipeline to NULL state")
+            return
+        
+        # Step 4: Wait for state change to complete (with timeout)
+        print("[shutdown] Waiting for pipeline to reach NULL state...")
+        ret, state, pending = self.pipeline.get_state(5 * Gst.SECOND)
+        
+        if ret == Gst.StateChangeReturn.SUCCESS:
+            print("[shutdown] ✓ Pipeline stopped cleanly")
+        elif ret == Gst.StateChangeReturn.ASYNC:
+            print("[shutdown] WARNING: Pipeline still shutting down asynchronously")
+        elif ret == Gst.StateChangeReturn.TIMEOUT:
+            print("[shutdown] WARNING: Timeout waiting for NULL state")
+        else:
+            print(f"[shutdown] WARNING: Pipeline state change returned: {ret}")
+        
+        print("[shutdown] Pipeline shutdown complete")
 
 switcher = Switcher()
 
