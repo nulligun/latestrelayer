@@ -94,7 +94,7 @@ export default {
     // Interface mode with localStorage persistence
     const STORAGE_KEY = 'streamDashboardMode';
     const storedMode = localStorage.getItem(STORAGE_KEY);
-    const interfaceMode = ref(storedMode || 'full'); // 'simplified' or 'full'
+    const interfaceMode = ref(storedMode || 'simplified'); // 'simplified' or 'full'
     
     const wsService = new WebSocketService();
     const wsConnected = ref(false);

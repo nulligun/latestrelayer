@@ -13,25 +13,6 @@
       </div>
     </div>
 
-    <!-- Main Stream Control -->
-    <div class="control-section">
-      <h1>Stream Control</h1>
-      
-      <button 
-        @click="toggleStream"
-        :disabled="streamActionPending"
-        class="main-button"
-        :class="streamButtonClass"
-      >
-        <span class="button-icon">{{ streamButtonIcon }}</span>
-        <span class="button-text">{{ streamButtonText }}</span>
-      </button>
-
-      <div v-if="streamActionPending" class="action-message">
-        {{ streamActionMessage }}
-      </div>
-    </div>
-
     <!-- Scene Display -->
     <div class="scene-section">
       <div class="scene-label">Current Scene</div>
@@ -55,6 +36,24 @@
 
       <div v-if="privacyActionPending" class="action-message">
         {{ privacyActionMessage }}
+      </div>
+    </div>
+
+
+    <!-- Main Stream Control -->
+    <div class="control-section">
+      <button 
+        @click="toggleStream"
+        :disabled="streamActionPending"
+        class="main-button"
+        :class="streamButtonClass"
+      >
+        <span class="button-icon">{{ streamButtonIcon }}</span>
+        <span class="button-text">{{ streamButtonText }}</span>
+      </button>
+
+      <div v-if="streamActionPending" class="action-message">
+        {{ streamActionMessage }}
       </div>
     </div>
   </div>
@@ -140,7 +139,7 @@ export default {
     // Computed: Privacy button properties
     const privacyButtonText = computed(() => {
       if (privacyActionPending.value) return 'Processing...';
-      return isPrivacyMode.value ? 'Activate Camera' : 'Privacy Mode';
+      return isPrivacyMode.value ? 'Deactivate Privacy Mode' : 'Activate Privacy Mode';
     });
 
     const privacyButtonIcon = computed(() => {
