@@ -9,7 +9,7 @@ echo "Target: rtmp://nginx-rtmp:1936/live/cam"
 sleep 5
 
 # Stream the camera simulation video in a loop
-exec ffmpeg -nostdin -loglevel info pipe:1 -nostats \
+exec ffmpeg -nostdin -loglevel info -nostats \
   -re -stream_loop -1 -i /videos/offline2.mp4 \
   -c:v libx264 -pix_fmt yuv420p -preset veryfast \
   -b:v 3000k -maxrate 3000k -bufsize 6000k \

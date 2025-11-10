@@ -108,7 +108,7 @@ while true; do
     # -ac: Audio channels (stereo)
     # -f flv: Output format (FLV for RTMP)
     
-    ffmpeg -nostdin -loglevel info pipe:1 -nostats \
+    ffmpeg -nostdin -loglevel info -nostats \
         -i rtmp://nginx-rtmp:1936/live/cam-raw \
         -c:v libx264 \
         -profile:v main \

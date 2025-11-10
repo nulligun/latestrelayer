@@ -11,7 +11,7 @@ sleep 5
 
 # Listen for SRT stream and relay to RTMP with stream copy (no transcoding)
 # The ffmpeg-cam-normalized service will handle normalization for GStreamer
-exec ffmpeg -nostdin -loglevel info pipe:1 -nostats \
+exec ffmpeg -nostdin -loglevel info -nostats \
   -i "srt://0.0.0.0:9000?mode=listener" \
   -c copy \
   -f flv rtmp://nginx-rtmp:1936/live/cam-raw

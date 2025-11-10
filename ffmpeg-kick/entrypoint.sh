@@ -116,7 +116,7 @@ trap cleanup SIGTERM SIGINT
 
 # Start FFmpeg in background to allow signal handling
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting FFmpeg to stream to Kick..."
-ffmpeg -nostdin -loglevel info pipe:1 -nostats \
+ffmpeg -nostdin -loglevel info -nostats \
   -probesize 10M \
   -analyzeduration 5000000 \
   -rtmp_buffer 5000 \
