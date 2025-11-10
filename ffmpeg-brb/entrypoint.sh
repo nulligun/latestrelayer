@@ -30,7 +30,7 @@ sleep 2
 echo "Starting FFmpeg stream to rtmp://nginx-rtmp:1936/live/brb"
 
 # Stream the BRB video in a loop with verbose logging
-exec ffmpeg -nostdin -loglevel info -progress pipe:1 -nostats \
+exec ffmpeg -nostdin -loglevel info pipe:1 -nostats \
   -re -stream_loop -1 -i /videos/offline.mp4 \
   -c:v libx264 -pix_fmt yuv420p -preset veryfast \
   -b:v 3000k -maxrate 3000k -bufsize 6000k \
