@@ -5,6 +5,9 @@ echo "Starting NGINX RTMP server..."
 echo "RTMP will listen on port 1936"
 echo "HTTP stats will be available on port 8080"
 
+# Trap SIGTERM and SIGINT to forward to nginx process
+trap 'echo "Received shutdown signal, stopping nginx..."; kill -TERM $NGINX_PID 2>/dev/null || true; wait $NGINX_PID; exit 0' SIGTERM SIGINT
+
 # Start nginx in foreground
 nginx -g "daemon off;" &
 NGINX_PID=$!

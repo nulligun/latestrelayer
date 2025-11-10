@@ -1,6 +1,7 @@
 services:
   # NGINX RTMP Server - Central relay hub
   nginx-rtmp:
+    stop_grace_period: 2s
     build:
       context: ./nginx-rtmp
       dockerfile: Dockerfile
@@ -191,6 +192,7 @@ services:
 
   # Container Controller - REST API for container lifecycle management
   stream-controller:
+    stop_grace_period: 2s
     build:
       context: ./stream-controller
       dockerfile: Dockerfile
@@ -215,6 +217,7 @@ services:
 
   # Stream Dashboard - Web UI for monitoring and control
   stream-dashboard:
+    stop_grace_period: 2s
     build:
       context: ./stream-dashboard
       dockerfile: Dockerfile

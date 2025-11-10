@@ -224,7 +224,19 @@ server.listen(PORT, '0.0.0.0', () => {
 process.on('SIGTERM', () => {
   console.log('[main] SIGTERM received, shutting down gracefully');
   aggregator.stopPolling();
+  
+  // Close all WebSocket connections immediately
+  console.log(`[main] Closing ${wss.clients.size} WebSocket connection(s)`);
+  wss.clients.forEach(client => client.terminate());
+  
+  // Try to close server gracefully, but force exit after 1 second
+  const forceExitTimer = setTimeout(() => {
+    console.log('[main] Force exiting after timeout');
+    process.exit(0);
+  }, 1000);
+  
   server.close(() => {
+    clearTimeout(forceExitTimer);
     console.log('[main] Server closed');
     process.exit(0);
   });
@@ -233,7 +245,19 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   console.log('[main] SIGINT received, shutting down gracefully');
   aggregator.stopPolling();
+  
+  // Close all WebSocket connections immediately
+  console.log(`[main] Closing ${wss.clients.size} WebSocket connection(s)`);
+  wss.clients.forEach(client => client.terminate());
+  
+  // Try to close server gracefully, but force exit after 1 second
+  const forceExitTimer = setTimeout(() => {
+    console.log('[main] Force exiting after timeout');
+    process.exit(0);
+  }, 1000);
+  
   server.close(() => {
+    clearTimeout(forceExitTimer);
     console.log('[main] Server closed');
     process.exit(0);
   });
