@@ -45,14 +45,6 @@
             >
               {{ actionPending[container.name] === 'stop' ? 'Stopping...' : 'Stop' }}
             </button>
-            
-            <button
-              @click="restartContainer(container.name)"
-              :disabled="!container.running || actionPending[container.name] || isTransitional(container)"
-              class="btn btn-restart"
-            >
-              {{ actionPending[container.name] === 'restart' ? 'Restarting...' : 'Restart' }}
-            </button>
           </template>
         </div>
         
@@ -173,10 +165,6 @@ export default {
     
     stopContainer(name) {
       this.performAction(name, 'stop');
-    },
-    
-    restartContainer(name) {
-      this.performAction(name, 'restart');
     },
     
     createAndStartContainer(name) {
@@ -348,15 +336,6 @@ h2 {
 
 .btn-stop:hover:not(:disabled) {
   background: #dc2626;
-}
-
-.btn-restart {
-  background: #3b82f6;
-  color: white;
-}
-
-.btn-restart:hover:not(:disabled) {
-  background: #2563eb;
 }
 
 .btn-create {

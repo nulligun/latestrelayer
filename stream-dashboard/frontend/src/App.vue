@@ -37,6 +37,9 @@
           :containers="data.containers"
           @container-status-changed="updateContainerStatus"
         />
+        <ContainerLogs
+          :containers="data.containers"
+        />
       </div>
     </main>
 
@@ -52,13 +55,15 @@ import { WebSocketService } from './services/websocket.js';
 import SystemMetrics from './components/SystemMetrics.vue';
 import StreamStats from './components/StreamStats.vue';
 import ContainerGrid from './components/ContainerGrid.vue';
+import ContainerLogs from './components/ContainerLogs.vue';
 
 export default {
   name: 'App',
   components: {
     SystemMetrics,
     StreamStats,
-    ContainerGrid
+    ContainerGrid,
+    ContainerLogs
   },
   setup() {
     const wsService = new WebSocketService();

@@ -139,6 +139,16 @@ app.get('/api/config', async (req, res) => {
 });
 
 // Container control endpoints (proxy to stream-controller)
+app.get('/api/container/:name/logs', async (req, res) => {
+  try {
+    const tail = req.query.tail || 500;
+    const result = await controller.getContainerLogs(req.params.name, tail);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/container/:name/start', async (req, res) => {
   try {
     const result = await controller.startContainer(req.params.name);

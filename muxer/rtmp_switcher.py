@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, threading, time, socket, json
+import sys, threading, time, socket, json, signal
 from urllib.parse import urlparse, parse_qs
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -929,6 +929,18 @@ if __name__ == "__main__":
     print("[main] HTTP API server started")
     
     loop = GLib.MainLoop()
+    
+    # Signal handler for graceful shutdown
+    def signal_handler(signum, frame):
+        signame = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+        print(f"[main] Received {signame} signal, initiating graceful shutdown...")
+        loop.quit()
+    
+    # Register signal handlers for SIGTERM (Docker stop) and SIGINT (Ctrl+C)
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    print("[main] Signal handlers registered (SIGTERM, SIGINT)")
+    
     try:
         if not switcher.start():
             raise RuntimeError("Failed to start pipeline")
@@ -939,8 +951,6 @@ if __name__ == "__main__":
         print("[main] ✓ Stream switcher is now running")
         print("[main] ✓ Monitoring thread active - will detect stream changes")
         loop.run()
-    except KeyboardInterrupt:
-        print("[main] Received interrupt signal")
     except Exception as e:
         print(f"[main] ERROR: {e}", file=sys.stderr)
         import traceback

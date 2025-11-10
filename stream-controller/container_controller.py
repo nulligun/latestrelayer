@@ -500,6 +500,43 @@ class ContainerController:
             "container": short_name,
             "message": f"Container {short_name} is being created and started"
         }
+    
+    def get_logs(self, short_name, tail=500):
+        """Get logs from a container."""
+        container_name = self.get_container_name(short_name)
+        
+        try:
+            container = self.client.containers.get(container_name)
+            
+            # Get logs with timestamps
+            logs = container.logs(
+                tail=tail,
+                timestamps=True,
+                stream=False
+            )
+            
+            # Decode logs from bytes to string
+            logs_str = logs.decode('utf-8', errors='replace')
+            
+            # Split into lines and filter empty lines
+            log_lines = [line for line in logs_str.split('\n') if line.strip()]
+            
+            print(f"[controller] Retrieved {len(log_lines)} log lines for {container_name}")
+            
+            return {
+                "container": short_name,
+                "logs": log_lines,
+                "count": len(log_lines)
+            }
+            
+        except docker.errors.NotFound:
+            error_msg = f"Container not found: {short_name}"
+            print(f"[controller] ERROR: {error_msg}", file=sys.stderr)
+            raise ValueError(error_msg)
+        except docker.errors.APIError as e:
+            error_msg = f"Docker API error: {str(e)}"
+            print(f"[controller] ERROR: {error_msg}", file=sys.stderr)
+            raise RuntimeError(error_msg)
 
 
 # Initialize the compose parser and controller
@@ -635,6 +672,33 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(error, 500)
             return
         
+        # Container logs endpoint: /container/<name>/logs
+        if len(path_parts) == 3 and path_parts[0] == "container" and path_parts[2] == "logs":
+            short_name = path_parts[1]
+            
+            # Parse query parameters for tail parameter
+            from urllib.parse import parse_qs
+            query_params = parse_qs(parsed.query)
+            tail = int(query_params.get('tail', ['500'])[0])
+            
+            print(f"[http] Logs request for container: {short_name} (tail={tail})")
+            
+            try:
+                result = controller.get_logs(short_name, tail=tail)
+                self.send_json(result)
+            except (BrokenPipeError, ConnectionResetError) as e:
+                # Client closed connection - don't try to send error response
+                print(f"[http] Client disconnected during logs request: {e.__class__.__name__}", file=sys.stderr)
+            except ValueError as e:
+                error = {"error": str(e)}
+                print(f"[http] ERROR: {error['error']}", file=sys.stderr)
+                self.send_json(error, 404)
+            except Exception as e:
+                error = {"error": str(e)}
+                print(f"[http] ERROR: {error['error']}", file=sys.stderr)
+                self.send_json(error, 500)
+            return
+        
         # Unknown endpoint
         error = {"error": "Not found"}
         self.send_json(error, 404)
@@ -650,6 +714,7 @@ def run_http():
     print("[http]   POST /container/<name>/restart         - Restart a container")
     print("[http]   POST /container/<name>/create-and-start - Create and start a container")
     print("[http]   GET  /container/<name>/status          - Get container status")
+    print("[http]   GET  /container/<name>/logs?tail=N     - Get container logs")
     print("[http]   GET  /containers                       - List all containers")
     print("[http]   GET  /health                           - Health check")
     print("[http] Ready to accept requests")

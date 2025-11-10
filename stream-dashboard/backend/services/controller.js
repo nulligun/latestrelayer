@@ -86,6 +86,19 @@ class ControllerService {
       return { error: error.message };
     }
   }
+
+  async getContainerLogs(containerName, tail = 500) {
+    try {
+      const response = await axios.get(
+        `${this.controllerUrl}/container/${containerName}/logs?tail=${tail}`,
+        { timeout: 10000 }
+      );
+      return response.data;
+    } catch (error) {
+      console.error(`[controller] Error getting logs for ${containerName}:`, error.message);
+      return { error: error.message, logs: [] };
+    }
+  }
 }
 
 module.exports = ControllerService;
