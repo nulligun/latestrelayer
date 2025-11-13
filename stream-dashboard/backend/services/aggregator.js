@@ -1,36 +1,40 @@
 const axios = require('axios');
 const metricsService = require('./metrics');
 const ControllerService = require('./controller');
-const RtmpParserService = require('./rtmpParser');
 
 /**
- * Aggregates data from all sources (containers, metrics, RTMP stats, scene)
+ * Aggregates data from all sources (containers, metrics, srt-switcher)
  */
 class AggregatorService {
   constructor(config) {
     this.controllerService = new ControllerService(config.controllerUrl);
-    this.rtmpParser = new RtmpParserService(config.nginxStatsUrl, config.switcherUrl);
     this.switcherUrl = config.switcherUrl;
     this.pollingInterval = config.pollingInterval || 2000;
     this.clients = new Set();
     
-    // Camera configuration from environment
-    this.rtmpDomain = config.rtmpDomain;
-    this.rtmpPort = config.rtmpPort;
-    this.rtmpStreamKey = config.rtmpStreamKey;
+    // SRT configuration from environment
     this.srtPort = config.srtPort;
+    this.srtDomain = config.srtDomain;
     
     // Stream status tracking
     this.streamStatus = {
-      isOnline: false,
+      currentSource: null,
+      srtConnected: false,
       stateChangeTimestamp: Date.now()
     };
-    
-    // Scene status tracking
-    this.sceneStatus = {
-      currentScene: null,
-      sceneChangeTimestamp: Date.now()
-    };
+  }
+
+  /**
+   * Get data from srt-switcher health endpoint
+   */
+  async getSwitcherHealth() {
+    try {
+      const response = await axios.get(`${this.switcherUrl}/health`, { timeout: 3000 });
+      return response.data;
+    } catch (error) {
+      console.error('[aggregator] Error fetching srt-switcher health:', error.message);
+      return null;
+    }
   }
 
   /**
@@ -40,52 +44,37 @@ class AggregatorService {
     const timestamp = new Date().toISOString();
 
     try {
-      const [containers, systemMetrics, rtmpStats] = await Promise.all([
-        this.controllerService.listContainers(),
+      const [containers, systemMetrics, switcherHealth] = await Promise.all([
+        this.controllerService.listContainers().catch(err => {
+          console.error('[aggregator] Error listing containers:', err.message);
+          return [];
+        }),
         metricsService.getSystemMetrics(),
-        this.rtmpParser.getStats()
+        this.getSwitcherHealth()
       ]);
 
-      // Check if ffmpeg-kick is running to determine stream status
-      const ffmpegKick = containers.find(c => c.name === 'ffmpeg-kick');
-      const isOnline = ffmpegKick ? ffmpegKick.running : false;
+      // Get current state from srt-switcher
+      const currentSource = switcherHealth?.current_source || 'unknown';
+      const srtConnected = switcherHealth?.srt_connected || false;
       
       // Track state changes and update timestamp
-      if (isOnline !== this.streamStatus.isOnline) {
-        this.streamStatus.isOnline = isOnline;
+      if (currentSource !== this.streamStatus.currentSource || 
+          srtConnected !== this.streamStatus.srtConnected) {
+        this.streamStatus.currentSource = currentSource;
+        this.streamStatus.srtConnected = srtConnected;
         this.streamStatus.stateChangeTimestamp = Date.now();
-        console.log(`[aggregator] Stream status changed to ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
+        console.log(`[aggregator] State changed: source=${currentSource}, srt_connected=${srtConnected}`);
       }
       
       // Calculate duration in current state (seconds)
       const durationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
 
-      // Track scene changes and update timestamp
-      if (rtmpStats.currentScene !== this.sceneStatus.currentScene) {
-        this.sceneStatus.currentScene = rtmpStats.currentScene;
-        this.sceneStatus.sceneChangeTimestamp = Date.now();
-        console.log(`[aggregator] Scene changed to ${rtmpStats.currentScene}`);
-      }
+      // Determine if stream is online (srt-switcher is running and pipeline is playing)
+      const switcherContainer = containers.find(c => c.name === 'srt-switcher');
+      const isOnline = switcherContainer?.running && switcherHealth?.status === 'healthy';
       
-      // Calculate duration on current scene (seconds)
-      const sceneDurationSeconds = Math.floor((Date.now() - this.sceneStatus.sceneChangeTimestamp) / 1000);
-
-      // Calculate camera configuration based on ffmpeg-srt status
-      const srtContainer = containers.find(c => c.name === 'ffmpeg-srt');
-      const isSrtRunning = srtContainer && srtContainer.running;
-      
-      const cameraUrl = isSrtRunning
-        ? `srt://${this.rtmpDomain}:${this.srtPort}`
-        : `rtmps://${this.rtmpDomain}:${this.rtmpPort}/live/${this.rtmpStreamKey}`;
-      
-      const cameraConfig = {
-        rtmpUrl: cameraUrl,
-        domain: this.rtmpDomain,
-        port: isSrtRunning ? this.srtPort : this.rtmpPort,
-        streamKey: this.rtmpStreamKey,
-        protocol: isSrtRunning ? 'srt' : 'rtmps',
-        srtRunning: isSrtRunning
-      };
+      // Get kick streaming state from switcher health
+      const kickStreamingEnabled = switcherHealth?.kick_streaming_enabled || false;
 
       return {
         timestamp,
@@ -99,37 +88,47 @@ class AggregatorService {
           id: c.id
         })),
         systemMetrics,
-        rtmpStats,
-        currentScene: rtmpStats.currentScene,
-        sourceAvailability: rtmpStats.sourceAvailability || null,
-        muxerStatus: rtmpStats.muxerStatus || null,
+        switcherHealth: switcherHealth || {
+          status: 'unavailable',
+          current_source: 'unknown',
+          srt_connected: false,
+          kick_streaming_enabled: false
+        },
+        currentScene: currentSource,
         streamStatus: {
           isOnline,
-          durationSeconds
+          durationSeconds,
+          srtConnected,
+          kickStreamingEnabled
         },
-        sceneDurationSeconds,
-        cameraConfig
+        cameraConfig: {
+          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
+        }
       };
     } catch (error) {
       console.error('[aggregator] Error aggregating data:', error.message);
       
       // Calculate duration even on error
       const durationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
-      const sceneDurationSeconds = Math.floor((Date.now() - this.sceneStatus.sceneChangeTimestamp) / 1000);
       
       return {
         timestamp,
         containers: [],
         systemMetrics: { cpu: 0, memory: 0, load: [0] },
-        rtmpStats: { inboundBandwidth: 0, streams: {} },
-        currentScene: null,
-        sourceAvailability: null,
-        muxerStatus: null,
-        streamStatus: {
-          isOnline: this.streamStatus.isOnline,
-          durationSeconds
+        switcherHealth: {
+          status: 'error',
+          current_source: 'unknown',
+          srt_connected: false
         },
-        sceneDurationSeconds,
+        currentScene: null,
+        streamStatus: {
+          isOnline: false,
+          durationSeconds,
+          srtConnected: false
+        },
+        cameraConfig: {
+          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
+        },
         error: error.message
       };
     }

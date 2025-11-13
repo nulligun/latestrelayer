@@ -10,36 +10,29 @@ const SceneService = require('./services/scene');
 // Configuration from environment variables
 const PORT = process.env.PORT || 3000;
 const CONTROLLER_API = process.env.CONTROLLER_API || 'http://stream-controller:8089';
-const MUXER_API = process.env.MUXER_API || 'http://muxer:8088';
-const NGINX_STATS = process.env.NGINX_STATS || 'http://nginx-rtmp:8080/stat';
+const MUXER_API = process.env.MUXER_API || 'http://srt-switcher:8088';
 const POLLING_INTERVAL = parseInt(process.env.POLLING_INTERVAL || '2000');
-const RTMP_DOMAIN = process.env.RTMP_DOMAIN || 'localhost';
-const RTMP_PORT = process.env.RTMP_PORT || '1936';
-const RTMP_STREAM_KEY = process.env.RTMP_STREAM_KEY || 'cam';
 const SRT_PORT = process.env.SRT_PORT || '1937';
+const SRT_DOMAIN = process.env.SRT_DOMAIN || 'localhost';
+const KICK_CHANNEL = process.env.KICK_CHANNEL || '';
 
 console.log('='.repeat(60));
 console.log('Stream Dashboard Backend - Starting Up');
 console.log('='.repeat(60));
 console.log(`[config] Port: ${PORT}`);
 console.log(`[config] Controller API: ${CONTROLLER_API}`);
-console.log(`[config] Muxer API: ${MUXER_API}`);
-console.log(`[config] NGINX Stats: ${NGINX_STATS}`);
+console.log(`[config] Switcher API: ${MUXER_API}`);
 console.log(`[config] Polling Interval: ${POLLING_INTERVAL}ms`);
-console.log(`[config] RTMP URL: rtmps://${RTMP_DOMAIN}:${RTMP_PORT}/live/${RTMP_STREAM_KEY}`);
-console.log(`[config] SRT URL: srt://${RTMP_DOMAIN}:${SRT_PORT}`);
+console.log(`[config] SRT: srt://${SRT_DOMAIN}:${SRT_PORT}`);
 console.log('='.repeat(60));
 
 // Initialize services
 const aggregator = new AggregatorService({
   controllerUrl: CONTROLLER_API,
   switcherUrl: MUXER_API,
-  nginxStatsUrl: NGINX_STATS,
   pollingInterval: POLLING_INTERVAL,
-  rtmpDomain: RTMP_DOMAIN,
-  rtmpPort: RTMP_PORT,
-  rtmpStreamKey: RTMP_STREAM_KEY,
-  srtPort: SRT_PORT
+  srtPort: SRT_PORT,
+  srtDomain: SRT_DOMAIN
 });
 
 const controller = new ControllerService(CONTROLLER_API);
@@ -107,38 +100,19 @@ app.get('/api/data', async (req, res) => {
   }
 });
 
-// Get RTMP/SRT configuration
+// Get SRT configuration
 app.get('/api/config', async (req, res) => {
   try {
-    // Check if ffmpeg-srt container is running
-    const containers = await controller.listContainers();
-    const srtContainer = containers.find(c => c.name === 'ffmpeg-srt');
-    const isSrtRunning = srtContainer && srtContainer.running;
-
-    // Return SRT URL if ffmpeg-srt is running, otherwise RTMPS URL
-    const cameraUrl = isSrtRunning
-      ? `srt://${RTMP_DOMAIN}:${SRT_PORT}`
-      : `rtmps://${RTMP_DOMAIN}:${RTMP_PORT}/live/${RTMP_STREAM_KEY}`;
-
     res.json({
-      rtmpUrl: cameraUrl,
-      domain: RTMP_DOMAIN,
-      port: isSrtRunning ? SRT_PORT : RTMP_PORT,
-      streamKey: RTMP_STREAM_KEY,
-      protocol: isSrtRunning ? 'srt' : 'rtmps',
-      srtRunning: isSrtRunning
+      srtUrl: `srt://${SRT_DOMAIN}:${SRT_PORT}`,
+      srtPort: SRT_PORT,
+      srtDomain: SRT_DOMAIN,
+      protocol: 'srt',
+      kickChannel: KICK_CHANNEL
     });
   } catch (error) {
     console.error('[api] Error getting config:', error.message);
-    // Fallback to RTMPS URL on error
-    res.json({
-      rtmpUrl: `rtmps://${RTMP_DOMAIN}:${RTMP_PORT}/live/${RTMP_STREAM_KEY}`,
-      domain: RTMP_DOMAIN,
-      port: RTMP_PORT,
-      streamKey: RTMP_STREAM_KEY,
-      protocol: 'rtmps',
-      srtRunning: false
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -189,7 +163,7 @@ app.post('/api/container/:name/create-and-start', async (req, res) => {
   }
 });
 
-// Scene switching endpoints (proxy to muxer)
+// Scene switching endpoints (proxy to srt-switcher)
 app.post('/api/scene/switch', async (req, res) => {
   try {
     const { scene } = req.body;
@@ -212,6 +186,76 @@ app.get('/api/scene/current', async (req, res) => {
   }
 });
 
+app.get('/api/scene/mode', async (req, res) => {
+  try {
+    const result = await sceneService.getSceneMode();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/scene/camera', async (req, res) => {
+  try {
+    const result = await sceneService.setCameraMode();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/scene/privacy', async (req, res) => {
+  try {
+    const result = await sceneService.setPrivacyMode();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Kick streaming control endpoints (proxy to srt-switcher)
+app.post('/api/kick/start', async (req, res) => {
+  try {
+    console.log('[api] Proxying Kick start request to srt-switcher');
+    const response = await fetch(`${MUXER_API}/kick/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Switcher returned error: ${errorText}`);
+    }
+    
+    const result = await response.json();
+    res.json(result);
+  } catch (error) {
+    console.error('[api] Error starting Kick stream:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/kick/stop', async (req, res) => {
+  try {
+    console.log('[api] Proxying Kick stop request to srt-switcher');
+    const response = await fetch(`${MUXER_API}/kick/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Switcher returned error: ${errorText}`);
+    }
+    
+    const result = await response.json();
+    res.json(result);
+  } catch (error) {
+    console.error('[api] Error stopping Kick stream:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Serve frontend for all other routes (SPA fallback)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'frontend/dist/index.html'));
@@ -227,6 +271,11 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('[http]   POST /api/container/:name/start');
   console.log('[http]   POST /api/container/:name/stop');
   console.log('[http]   POST /api/container/:name/restart');
+  console.log('[http]   POST /api/scene/switch');
+  console.log('[http]   GET  /api/scene/current');
+  console.log('[http]   GET  /api/scene/mode');
+  console.log('[http]   POST /api/scene/camera');
+  console.log('[http]   POST /api/scene/privacy');
   console.log('[ws] WebSocket server ready');
   
   // Start polling and broadcasting

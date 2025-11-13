@@ -1,367 +1,133 @@
-# RTMP Stream Relay System
+# SRT Stream Relay System
 
-A Docker-based RTMP relay system with two input streams and switchable output to Kick streaming platform.
+A simplified Docker-based streaming solution with automatic SRT failover to looping video and direct output to Kick.
 
 ## Architecture
 
 ```
 ┌─────────────────┐
-│  Video Files    │
-│ (Host System)   │
+│  SRT Source     │ (OBS, Camera, etc.)
+│  Port 1937      │
 └────────┬────────┘
          │
-    ┌────┴─────┐
-    │          │
-┌───▼───┐  ┌──▼────┐      ┌─────────────┐
-│brb│  │brb│      │ External    │
-│  .mp4 │  │ 2.mp4 │      │ SRT Source  │
-└───┬───┘  └───┬───┘      └──────┬──────┘
-    │          │                 │
-    │      ┌───▼────────────┐    │
-    │      │ ffmpeg-cam-dev │    │
-    │      │  (manual)      │    │
-    │      └───┬────────────┘    │
-    │          │                 │
-┌───▼──────────▼────┐      ┌────▼────────┐
-│  ffmpeg-brb   │      │ ffmpeg-srt  │
-└───┬───────────────┘      └────┬────────┘
-    │                           │
-    │      ┌────────────────┐   │
-    └──────► NGINX-RTMP     │◄──┘
-           │   Server       │◄──┐
-           │ Port 1936      │   │
-           └───┬────────────┘   │
-               │                │
-        ┌──────▼────────┐       │
-        │ Stream        │       │
-        │ Switcher      │───────┘
-        │ (GStreamer)   │
-        │ API: 8088     │
-        └──────┬────────┘
-               │
-        ┌──────▼────────┐
-        │ ffmpeg-kick   │◄────────┐
-        │   Pusher      │         │
-        └──────┬────────┘         │
-               │          ┌───────┴────────┐
-        ┌──────▼────────┐ │    Stream      │
-        │  Kick Server  │ │  Controller    │
-        └───────────────┘ │  (Docker API)  │
-                          │  API: 8089     │
-                          └────────────────┘
+         ▼
+┌─────────────────────────────────┐
+│     srt-switcher                │
+│  Single Python/GStreamer App    │
+│                                 │
+│  ┌─────────────┐               │
+│  │ SRT Branch  │──┐            │
+│  └─────────────┘  │            │
+│                   ├─► Selector │
+│  ┌─────────────┐  │      │     │
+│  │ Fallback    │──┘      │     │
+│  │ Video Loop  │         ▼     │
+│  └─────────────┘    Encoder    │
+│                        │        │
+│  API: 8088            │        │
+└────────────────────────┼────────┘
+                         │
+                         ▼
+                  ┌──────────────┐
+                  │ Kick Server  │
+                  │   (RTMPS)    │
+                  └──────────────┘
+
+        ┌─────────────────┐
+        │stream-controller│  ◄──┐
+        │  Port: 8089     │     │
+        └─────────────────┘     │
+                                │
+        ┌─────────────────┐     │
+        │stream-dashboard │     │
+        │  Port: 3000     │─────┘
+        │  (Vue.js UI)    │
+        └─────────────────┘
 ```
 
 ## Services
 
-### 1. nginx-rtmp
-- **Purpose**: Central RTMP relay hub
-- **Ports**: 1936 (RTMP), 8080 (HTTP stats)
-- **Streams**:
-  - `rtmp://nginx-rtmp:1936/live/brb` - Offline video loop
-  - `rtmp://nginx-rtmp:1936/live/cam-raw` - Raw camera input (Moblin, SRT, etc.)
-  - `rtmp://nginx-rtmp:1936/live/cam` - Normalized camera feed (for muxer)
-  - `rtmp://nginx-rtmp:1936/live/program` - Output stream
+### 1. srt-switcher
+- **Purpose**: Single-process streaming with automatic source switching
+- **Technology**: Python 3 + GStreamer
+- **Ports**: 1937 (SRT UDP), 8088 (HTTP API)
+- **Features**:
+  - SRT listener with automatic connection detection
+  - Looping fallback video (brb.mp4)
+  - Instant switching via input-selector
+  - Direct encode to Kick RTMPS
+  - Full audio/video synchronization
+  - HTTP API for monitoring and control
 
-### 2. ffmpeg-brb
-- **Purpose**: Continuously streams brb.mp4
-- **Output**: `rtmp://nginx-rtmp:1936/live/brb`
-- **Profiles**: All (default and dev)
-
-### 3. ffmpeg-cam-dev
-- **Purpose**: Simulates camera feed using brb2.mp4
-- **Output**: `rtmp://nginx-rtmp:1936/live/cam`
-- **Profiles**: manual (requires explicit start)
-
-### 4. ffmpeg-srt
-- **Purpose**: Accepts external SRT streams and relays to RTMP
-- **Input**: `srt://0.0.0.0:1937?mode=listener` (configurable via `SRT_PORT`)
-- **Output**: `rtmp://nginx-rtmp:1936/live/cam-raw`
-- **Profiles**: All (default)
-- **Use Case**: Bridge for external SRT encoders/cameras to send live video
-- **Note**: Outputs to cam-raw which gets normalized by ffmpeg-cam-normalized
-
-### 5. ffmpeg-cam-normalized
-- **Purpose**: Normalizes camera streams for GStreamer compatibility
-- **Input**: `rtmp://nginx-rtmp:1936/live/cam-raw`
-- **Output**: `rtmp://nginx-rtmp:1936/live/cam`
-- **Profiles**: All (default)
-- **Key Features**:
-  - Transcodes to GStreamer-compatible H.264 (Main profile, no B-frames)
-  - Handles hardware encoder quirks from mobile devices (Moblin, iOS)
-  - Auto-reconnects when input stream disconnects
-  - Configurable bitrate and quality settings
-- **Use Case**: Fixes black screen issues with Moblin/mobile hardware encoders
-
-### 6. muxer
-- **Purpose**: Switches between input streams using GStreamer
-- **API Port**: 8088
-- **Output**: `rtmp://nginx-rtmp:1936/live/program`
-- **Default**: Starts with brb stream
-
-### 7. ffmpeg-kick
-- **Purpose**: Relays program stream to Kick
-- **Output**: Kick RTMPS server
-- **Profiles**: manual (requires explicit start)
-
-### 8. stream-auto-switcher
-- **Purpose**: Automatically switches between camera and brb streams based on availability and quality
-- **Monitors**: nginx-rtmp stats for stream presence and bitrate
-- **Profiles**: auto (optional, can be run manually or omitted)
-- **Key Features**:
-  - XML-based parsing of nginx-rtmp statistics
-  - Configurable minimum bitrate threshold (default: 300 kbps)
-  - Grace period for stream stability before switching
-  - Automatic fallback to brb when camera quality degrades
-
-### 9. stream-controller
+### 2. stream-controller
 - **Purpose**: Container lifecycle management via REST API
-- **API Port**: 8089
+- **Port**: 8089
 - **Capabilities**: Start/stop/restart/status for all containers
 
-### 10. stream-dashboard
-- **Purpose**: Web UI for monitoring and controlling the streaming system
-- **Port**: 3000 (HTTP/WebSocket)
-- **Features**:
-  - Real-time system metrics (CPU, memory, load)
-  - RTMP bandwidth monitoring
-  - Current scene display
-  - Container start/stop/restart controls
-  - Live updates via WebSocket every 2 seconds
+### 3. stream-dashboard
+- **Purpose**: Web UI for monitoring and control
+- **Port**: 3000 (HTTP + WebSocket)
 - **Technology**: Vue.js 3 + Express + WebSocket
+- **Features**:
+  - Real-time system metrics
+  - Stream status monitoring
+  - Container controls
+  - Live updates every 2 seconds
 
 ## Prerequisites
 
 - Docker and Docker Compose
-- Video files:
-  - `/home/mulligan/brb.mp4` - Main brb video
-  - `/home/mulligan/brb2.mp4` - Dev camera simulation
+- Fallback video file (e.g., `/home/mulligan/offline.mp4`)
+- Kick streaming credentials
 
 ## Configuration
 
-### Single Instance Setup
-
-Edit [`.env`](.env:1) file:
+Edit [`.env`](.env) file:
 
 ```bash
 # Instance Identification
 COMPOSE_PROJECT_NAME=relayer
 
 # Kick Configuration
-KICK_URL=rtmps://fa723fc1b171.global-contribute.live-video.net/app
-KICK_KEY=sk_us-west-2_xXX3uY9mOSJP_eZTBNAACIwJSKv3EMu6Dhh2La1XZ1s
+KICK_URL=rtmps://your-server.live-video.net/app
+KICK_KEY=your_stream_key
 
-# Exposed Ports (change these for multiple instances)
+# Ports
 SRT_PORT=1937
-RTMP_PORT=1936
-HTTP_STATS_PORT=8080
-SWITCHER_API_PORT=8088
+MUXER_API_PORT=8088
 CONTROLLER_API_PORT=8089
 DASHBOARD_PORT=3000
 
-# Video Files
-BRB_VIDEO_PATH=/home/mulligan/brb.mp4
-BRB_VIDEO_PATH_2=/home/mulligan/brb2.mp4
+# Fallback Video
+BRB_VIDEO_PATH=/home/mulligan/offline.mp4
+
+# Video Settings
+OUT_RES=1080
+OUT_FPS=30
+VID_BITRATE=3000
 ```
-
-### Multi-Instance Setup
-
-To run multiple instances on the same server, each instance needs unique ports. Example configurations are provided:
-
-- [`.env.instance1`](.env.instance1:1) - Instance 1 (ports: 1936, 8080, 8088)
-- [`.env.instance2`](.env.instance2:1) - Instance 2 (ports: 2036, 8180, 8188)
-- [`.env.instance3`](.env.instance3:1) - Instance 3 (ports: 2136, 8280, 8288)
-
-**Port Mapping:**
-
-| Instance | SRT Port | RTMP Port | HTTP Stats | Switcher API | Controller API | Dashboard |
-|----------|----------|-----------|------------|--------------|----------------|-----------|
-| 1        | 1937     | 1936      | 8080       | 8088         | 8089           | 3000      |
-| 2        | 2037     | 2036      | 8180       | 8188         | 8189           | 3100      |
-| 3        | 2137     | 2136      | 8280       | 8288         | 8289           | 3200      |
-
-**Important:** Each instance must have a unique `COMPOSE_PROJECT_NAME` to avoid container name conflicts.
 
 ## Usage
 
-### External Camera Setup (Moblin, OBS, etc.)
+### Start All Services
 
-**For Moblin or other mobile streaming apps:**
-
-Stream to the **cam-raw** endpoint instead of cam directly:
-```
-RTMP URL: rtmp://YOUR_SERVER_IP:1936/live/cam-raw
-```
-
-**Why cam-raw?**
-- Mobile hardware encoders (iOS, Android) use H.264 High profile with B-frames
-- GStreamer (used by the muxer) struggles with these encoding parameters
-- The ffmpeg-cam-normalized service normalizes the stream to GStreamer-compatible format
-- This fixes black screen and no audio issues
-
-**For OBS Studio (SRT mode):**
-```
-SRT URL: srt://YOUR_SERVER_IP:1937
-Mode: Caller
-```
-The ffmpeg-srt service receives SRT and sends to cam-raw automatically.
-
-**Stream Flow:**
-```
-Moblin → /live/cam-raw → ffmpeg-cam-normalized → /live/cam → muxer → /live/program → Kick
-```
-
-### Start Services
-
-**Production Mode** (core services only):
 ```bash
 docker compose up -d
 ```
 
-**With Auto-Switcher** (automatically manages stream switching):
+### Send SRT Stream
+
+**With FFmpeg:**
 ```bash
-docker compose --profile auto up -d
+ffmpeg -re -i input.mp4 -c:v libx264 -c:a aac \
+  -f mpegts "srt://localhost:1937?mode=caller"
 ```
 
-### Start Manual Services
-
-Some services are configured with the `manual` profile and won't start automatically. You can start them when needed:
-
-**Start ffmpeg-kick pusher** (push to Kick streaming service):
-```bash
-docker compose --profile manual up -d ffmpeg-kick
-```
-
-**Start ffmpeg-cam-dev** (simulated camera feed for testing):
-```bash
-docker compose --profile manual up -d ffmpeg-cam-dev
-```
-
-**Start both manual services together**:
-```bash
-docker compose --profile manual up -d
-```
-
-**Combine with auto profile**:
-```bash
-docker compose --profile auto --profile manual up -d
-```
-
-**Alternative: Use the Container Controller API or Web Dashboard to start/stop these services dynamically without restarting Docker Compose.**
-
-### Switch Between Streams
-
-#### Manual Switching
-
-The stream switcher exposes an HTTP API on port 8088:
-
-**Switch to brb stream:**
-```bash
-curl "http://localhost:8088/switch?src=brb"
-```
-
-**Switch to camera stream:**
-```bash
-curl "http://localhost:8088/switch?src=cam"
-```
-
-**Health check:**
-```bash
-curl "http://localhost:8088/health"
-```
-
-#### Automatic Switching
-
-When running with the `auto` profile, the auto-switcher service automatically manages stream switching based on:
-
-- **Stream Availability**: Detects when camera stream starts/stops
-- **Bitrate Quality**: Monitors video bitrate and switches away if below threshold
-- **Stability Period**: Waits for camera to be stable before switching to it
-- **Grace Period**: Allows temporary quality degradation before switching away
-
-**Configuration** (via `.env` file):
-```bash
-# Minimum bitrate threshold in kbps (default: 300)
-MIN_BITRATE_KBPS=300
-
-# How often to poll nginx stats in seconds (default: 0.5)
-AUTO_SWITCHER_POLL_SECS=0.5
-
-# Seconds to wait before switching away from degraded camera (default: 3.0)
-AUTO_SWITCHER_CAM_MISS_TIMEOUT=3.0
-
-# Seconds camera must be stable before switching to it (default: 2.0)
-AUTO_SWITCHER_CAM_BACK_STABILITY=2.0
-
-# Muxer health endpoint URL to check for fallback status (default: http://muxer:8088/health)
-MUXER_HEALTH_URL=http://muxer:8088/health
-```
-
-**View auto-switcher logs:**
-```bash
-docker compose logs -f stream-auto-switcher
-```
-
-### Web Dashboard
-
-Access the web dashboard for a visual interface:
-
-```bash
-# Open in browser
-http://localhost:3000
-```
-
-The dashboard provides:
-- Real-time system metrics (CPU, memory, load)
-- RTMP stream statistics and bandwidth
-- Current active scene indicator
-- Visual container control (start/stop/restart buttons)
-- Live updates every 2 seconds via WebSocket
-
-### Container Control API
-
-The stream controller exposes an HTTP API on port 8089 for managing container lifecycle:
-
-**Start the kick stream:**
-```bash
-curl -X POST "http://localhost:8089/container/ffmpeg-kick/start"
-```
-
-**Stop the kick stream:**
-```bash
-curl -X POST "http://localhost:8089/container/ffmpeg-kick/stop"
-```
-
-**Restart the kick stream:**
-```bash
-curl -X POST "http://localhost:8089/container/ffmpeg-kick/restart"
-```
-
-**Check kick stream status:**
-```bash
-curl "http://localhost:8089/container/ffmpeg-kick/status"
-```
-
-**List all containers:**
-```bash
-curl "http://localhost:8089/containers"
-```
-
-**Health check:**
-```bash
-curl "http://localhost:8089/health"
-```
-
-**Control other containers:**
-```bash
-# Stop brb stream
-curl -X POST "http://localhost:8089/container/ffmpeg-brb/stop"
-
-# Start dev camera stream
-curl -X POST "http://localhost:8089/container/ffmpeg-cam-dev/start"
-
-# Check stream switcher status
-curl "http://localhost:8089/container/muxer/status"
-```
+**With OBS Studio:**
+- Settings → Stream
+- Service: Custom
+- Server: `srt://YOUR_SERVER_IP:1937`
+- Stream Key: (leave empty)
 
 ### Monitor Services
 
@@ -371,22 +137,26 @@ curl "http://localhost:8089/container/muxer/status"
 docker compose logs -f
 
 # Specific service
-docker compose logs -f muxer
-docker compose logs -f ffmpeg-kick
+docker compose logs -f srt-switcher
 ```
 
-**NGINX RTMP stats:**
+**Stream switcher health:**
 ```bash
-curl http://localhost:8080/stat
-# Or open in browser: http://localhost:8080/stat
+curl http://localhost:8088/health
 ```
 
-**Health check all services:**
+**Get current scene:**
 ```bash
-curl http://localhost:8080/health  # nginx-rtmp
-curl http://localhost:8088/health  # muxer
-curl http://localhost:8089/health  # stream-controller
-curl http://localhost:3000/api/health  # stream-dashboard
+curl http://localhost:8088/scene
+```
+
+**Manual switch:**
+```bash
+# Switch to SRT source
+curl "http://localhost:8088/switch?src=srt"
+
+# Switch to fallback
+curl "http://localhost:8088/switch?src=fallback"
 ```
 
 **Web Dashboard:**
@@ -395,256 +165,70 @@ curl http://localhost:3000/api/health  # stream-dashboard
 http://localhost:3000
 ```
 
+### Container Control API
+
+**Start/stop/restart containers:**
+```bash
+# Start a container
+curl -X POST "http://localhost:8089/container/srt-switcher/start"
+
+# Stop a container
+curl -X POST "http://localhost:8089/container/srt-switcher/stop"
+
+# Restart a container
+curl -X POST "http://localhost:8089/container/srt-switcher/restart"
+
+# Check status
+curl "http://localhost:8089/container/srt-switcher/status"
+
+# List all containers
+curl "http://localhost:8089/containers"
+```
+
 ### Stop Services
 
 ```bash
 docker compose down
 ```
 
-## Running Multiple Instances
+## How It Works
 
-### Start Multiple Instances Simultaneously
+### SRT Switcher Pipeline
 
-**Instance 1 (default ports):**
-```bash
-docker compose --env-file .env.instance1 up -d
-```
+The `srt-switcher` service runs a single GStreamer pipeline with two input branches:
 
-**Instance 2 (offset ports):**
-```bash
-docker compose --env-file .env.instance2 up -d
-```
+1. **SRT Listener Branch**
+   - `srtsrc` listens on port 9000 (internal, mapped to 1937 externally)
+   - `decodebin` automatically detects codec
+   - Normalizes to 1080p30, I420 format
+   - When connection detected → auto-switch to this source
 
-**Instance 3 (offset ports):**
-```bash
-docker compose --env-file .env.instance3 up -d
-```
+2. **Fallback Loop Branch**
+   - `filesrc` reads the mounted video file
+   - Continuously loops via seek on EOS
+   - Same normalization to 1080p30
+   - Active when no SRT connection
 
-### Access Different Instances
+3. **Input Selector**
+   - Both branches feed into video and audio selectors
+   - Instant switching without pipeline restart
+   - No dropped frames during transition
 
-Each instance exposes its services on different ports:
+4. **Output Encoding**
+   - x264 encoder: 3000kbps bitrate, zerolatency tune
+   - AAC audio: 128kbps, 48kHz stereo
+   - FLV container for RTMP/RTMPS
+   - Direct push to Kick
 
-**Instance 1:**
-```bash
-# Stream switching
-curl "http://localhost:8088/switch?src=brb"
+### Auto-Switching Logic
 
-# RTMP stream
-rtmp://localhost:1936/live/program
+- **SRT Connects**: Detected via `pad-added` signal → switch to SRT
+- **SRT Disconnects**: Detected via ERROR message → switch to fallback
+- **Fallback Loops**: On EOS event → seek back to timestamp 0
+- **Manual Override**: HTTP API allows forcing specific source
 
-# Stats
-curl http://localhost:8080/stat
-```
+## Stream Specifications
 
-**Instance 2:**
-```bash
-# Stream switching
-curl "http://localhost:8188/switch?src=brb"
-
-# RTMP stream
-rtmp://localhost:2036/live/program
-
-# Stats
-curl http://localhost:8180/stat
-```
-
-**Instance 3:**
-```bash
-# Stream switching
-curl "http://localhost:8288/switch?src=brb"
-
-# RTMP stream
-rtmp://localhost:2136/live/program
-
-# Stats
-curl http://localhost:8280/stat
-```
-
-### Stop Specific Instance
-
-```bash
-# Stop instance 1
-docker compose --env-file .env.instance1 down
-
-# Stop instance 2
-docker compose --env-file .env.instance2 down
-
-# Stop instance 3
-docker compose --env-file .env.instance3 down
-```
-
-### View Logs for Specific Instance
-
-```bash
-# Instance 1 logs
-docker compose --env-file .env.instance1 logs -f
-
-# Instance 2 logs
-docker compose --env-file .env.instance2 logs -f
-```
-
-### Custom Port Configuration
-
-To use custom ports, create your own `.env.custom` file:
-
-```bash
-# Copy an existing template
-cp .env.instance1 .env.custom
-
-# Edit ports to avoid conflicts
-# RTMP_PORT=3036
-# HTTP_STATS_PORT=8380
-# SWITCHER_API_PORT=8388
-
-# Start with custom config
-docker compose --env-file .env.custom up -d
-```
-
-## Service Startup Order
-
-1. **nginx-rtmp** - Starts first and waits for health check
-2. **ffmpeg-brb** - Starts after nginx-rtmp is healthy
-3. **ffmpeg-srt** - Starts after nginx-rtmp is healthy (listens for external SRT input)
-4. **muxer** - Starts after nginx-rtmp and ffmpeg-brb
-5. **stream-auto-switcher** - Starts after muxer is healthy (auto profile only)
-6. **stream-controller** - Starts independently (no dependencies)
-7. **stream-dashboard** - Starts after stream-controller and nginx-rtmp are healthy
-
-**Manual Services** (require explicit start with `--profile manual`):
-- **ffmpeg-cam-dev** - Simulated camera stream (starts after nginx-rtmp is healthy)
-- **ffmpeg-kick** - Kick streaming pusher (starts after muxer is healthy)
-
-## Troubleshooting
-
-### Stream not switching
-
-**Manual switching:**
-- Check if the desired input stream is running:
-  ```bash
-  docker compose logs ffmpeg-brb
-  docker compose logs ffmpeg-cam-dev
-  ```
-- Verify muxer is running:
-  ```bash
-  curl http://localhost:8088/health
-  ```
-
-**Automatic switching:**
-- Check if auto-switcher is running:
-  ```bash
-  docker compose logs stream-auto-switcher
-  ```
-- Verify camera stream has sufficient bitrate:
-  ```bash
-  curl http://localhost:8080/stat | grep -A5 "cam"
-  ```
-- Check auto-switcher configuration in [`.env`](.env:1)
-- Ensure `MIN_BITRATE_KBPS` threshold is appropriate for your stream
-
-### No output to Kick
-- Check if ffmpeg-kick is running:
-  ```bash
-  curl http://localhost:8089/container/ffmpeg-kick/status
-  ```
-- Check ffmpeg-kick logs:
-  ```bash
-  docker compose logs ffmpeg-kick
-  ```
-- Verify Kick credentials in [`.env`](.env:1)
-- Ensure muxer is outputting to program stream
-
-### Container control issues
-- Check if stream-controller is running:
-  ```bash
-  curl http://localhost:8089/health
-  ```
-- Verify Docker socket access:
-  ```bash
-  docker compose logs stream-controller
-  ```
-- Check container status:
-  ```bash
-  curl http://localhost:8089/containers
-  ```
-
-### Service won't start
-- Check service health:
-  ```bash
-  docker compose ps
-  ```
-- View specific service logs:
-  ```bash
-  docker compose logs <service-name>
-  ```
-- Rebuild containers if needed:
-  ```bash
-  docker compose build --no-cache
-  docker compose up -d
-  ```
-
-### Video files not found
-- Verify file paths in [`.env`](.env:1) match actual file locations
-- Ensure files are readable by Docker:
-  ```bash
-  ls -l /home/mulligan/brb.mp4
-  ls -l /home/mulligan/brb2.mp4
-  ```
-
-## Development
-
-### Rebuild specific service
-```bash
-docker compose build muxer
-docker compose up -d muxer
-```
-
-### Test without Kick output
-Comment out the `ffmpeg-kick` service in [`docker-compose.yml`](docker-compose.yml:1) and restart.
-
-### View RTMP streams locally
-Use VLC or ffplay to view streams:
-```bash
-ffplay rtmp://localhost:1936/live/brb          # BRB video loop
-ffplay rtmp://localhost:1936/live/cam-raw      # Raw camera input (before normalization)
-ffplay rtmp://localhost:1936/live/cam          # Normalized camera (GStreamer-compatible)
-ffplay rtmp://localhost:1936/live/program      # Final mixed output
-```
-
-## Technical Details
-
-### Auto-Switcher Architecture
-
-The auto-switcher monitors nginx-rtmp statistics and muxer health to automatically control the stream switcher:
-
-**Monitoring Process:**
-1. Polls nginx-rtmp `/stat` endpoint every 0.5 seconds
-2. Polls muxer `/health` endpoint to check for fallback sources
-3. Parses XML response from nginx using `xml.etree.ElementTree`
-4. Parses JSON response from muxer health endpoint
-5. Extracts stream presence, publishing status, and video bitrate
-6. Checks if cam is using fallback test source (black video + silence)
-7. Compares bitrate against `MIN_BITRATE_KBPS` threshold
-
-**State Machine:**
-- **OFFLINE_ACTIVE**: Currently showing brb stream
-- **WAITING_FOR_CAM**: Camera detected with good quality, waiting for stability
-- **CAM_STABLE**: Camera stream is active and meeting quality requirements
-- **CAM_UNSTABLE**: Camera exists but below bitrate threshold
-
-**Decision Logic:**
-- Switch TO camera: When stream is present, publishing, has sufficient bitrate, is NOT using fallback source, and stable for `CAM_BACK_STABILITY` seconds
-- Switch FROM camera: When stream is missing, not publishing, below bitrate threshold, or using fallback source for `CAM_MISS_TIMEOUT` seconds
-
-**Quality Monitoring:**
-- Parses `<bw_video>` element from nginx-rtmp stats (bytes/sec)
-- Converts to kbps: `(bytes_per_sec * 8) / 1000`
-- Compares against configurable threshold (default: 300 kbps)
-- Checks muxer health for `using_fallback` status
-- Prevents switching to degraded camera feeds
-- Prevents auto-switching to cam when using fallback test source
-- Allows manual switch to cam in fallback, but auto-switches back to brb after timeout
-
-### Stream Specifications
 - **Resolution**: 1920x1080 (1080p)
 - **Frame Rate**: 30 fps
 - **Video Codec**: H.264 (x264)
@@ -654,44 +238,90 @@ The auto-switcher monitors nginx-rtmp statistics and muxer health to automatical
 - **Audio Sample Rate**: 48000 Hz
 - **Audio Channels**: 2 (stereo)
 
-### GStreamer Pipeline
-The muxer uses GStreamer's input-selector element for seamless switching:
-- Decodes both input streams to raw video/audio
-- Normalizes to 1080p30 format
-- Uses input-selector for instant switching
-- Re-encodes to H.264/AAC
-- Outputs to FLV/RTMP
+## Troubleshooting
 
-### Buffering Configuration
+### SRT switcher won't start
 
-The system is optimized for **smooth playback** over ultra-low latency:
+```bash
+# Check logs
+docker compose logs srt-switcher
 
-**NGINX RTMP Server:**
-- `chunk_size 8192` - Doubled from default 4096 for better throughput and less overhead
-- `buflen 10s` - 10 second server-side buffer to smooth out bursty input from GStreamer
-- `max_message 10M` - Handles large video frames (especially keyframes) without dropping
-- `wait_key on` - Waits for keyframe before starting playback (prevents partial GOP)
-- `wait_video on` - Ensures video is present before starting playback
-- `sync 10ms` - Allows 10ms audio/video sync tolerance
-- **Expected latency**: 10-15 seconds total
-- **Benefit**: Server-side buffering absorbs encoder variations and network hiccups
+# Common issues:
+# - Fallback video not found → check BRB_VIDEO_PATH
+# - Port conflict → ensure 1937 and 8088 are free
+# - Missing Kick credentials → verify KICK_URL and KICK_KEY
+```
 
-**FFmpeg Kick Pusher:**
-- `-probesize 10M` - Analyzes 10MB of input for better stream detection
-- `-analyzeduration 5000000` - Analyzes 5 seconds of input before starting
-- `-rtmp_buffer 5000` - 5 second RTMP buffer (both input and output)
-- `-v info -stats` - Verbose logging to monitor frame drops and performance
-- No `-rtmp_live` flag - Removed to prevent aggressive frame dropping
-- **Expected latency**: 2-5 seconds
-- **Benefit**: Smooth, stutter-free playback on Kick with full diagnostic visibility
+### SRT stream not connecting
 
-**GStreamer Queue Buffers:**
-- Video queue: 30 buffers (10x increase from original 3)
-- Audio queue: 30 buffers (10x increase from original 3)
-- Leak policy: Upstream (drop new frames when full, keep recent complete frames)
-- **Benefit**: Better handling of temporary network variations and downstream processing delays
+```bash
+# Verify port is open
+nc -zvu localhost 1937
 
-These settings prioritize reliable, smooth streaming over minimal latency. The total latency is approximately 15-20 seconds end-to-end, which is acceptable for most live streaming scenarios. If you need lower latency, you can reduce the buffer sizes, but this may reintroduce stuttering under network stress.
+# Check for connection in logs
+docker compose logs -f srt-switcher | grep srt
 
-### Network
-All services run in a dedicated Docker bridge network [`rtmp-network`](docker-compose.yml:93) for internal communication.
+# Test with simple source
+ffplay -f mpegts "srt://localhost:1937?mode=caller"
+```
+
+### No output to Kick
+
+```bash
+# Check health status
+curl http://localhost:8088/health
+
+# Verify pipeline is playing
+# Look for: "pipeline_state": "playing"
+
+# Check for encoding errors
+docker compose logs srt-switcher | grep ERROR
+```
+
+### Dashboard not loading
+
+```bash
+# Check dashboard health
+curl http://localhost:3000/api/health
+
+# Verify controller is running
+curl http://localhost:8089/health
+
+# Check dashboard logs
+docker compose logs stream-dashboard
+```
+
+## Development
+
+### Rebuild specific service
+
+```bash
+docker compose build srt-switcher
+docker compose up -d srt-switcher
+```
+
+### Test locally without Docker
+
+```bash
+cd srt-switcher
+SRT_PORT=9000 \
+FALLBACK_VIDEO=/path/to/video.mp4 \
+KICK_URL=rtmps://server/app \
+KICK_KEY=key \
+python3 switcher.py
+```
+
+## Architecture Benefits
+
+Compared to the previous 10-container system:
+
+1. **Simplicity**: 3 containers vs 10 containers
+2. **Lower Latency**: Direct SRT → encode → Kick (no RTMP relay)
+3. **Resource Efficiency**: One GStreamer process instead of multiple FFmpeg processes
+4. **Easier Debugging**: All streaming logic in one place
+5. **Instant Switching**: Hardware-level pad switching (no re-encoding delay)
+6. **No Dependencies**: Self-contained, no nginx-rtmp needed
+
+## Technical Details
+
+See [`srt-switcher/README.md`](srt-switcher/README.md) for detailed implementation documentation.

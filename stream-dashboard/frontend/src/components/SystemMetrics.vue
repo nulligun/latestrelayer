@@ -66,20 +66,7 @@
       </div>
     </div>
 
-    <div class="rtmp-url-section">
-      <h3 class="section-title">Camera Address</h3>
-      <div class="url-container">
-        <div class="url-display">{{ rtmpUrl }}</div>
-        <button
-          class="copy-button"
-          :class="{ copied: copySuccess }"
-          @click="copyToClipboard"
-          :disabled="!rtmpUrl"
-        >
-          {{ copySuccess ? 'Copied!' : 'Copy' }}
-        </button>
-      </div>
-      
+    <div class="stream-info">
       <div v-if="statusSuccess.length > 0" class="status-success">
         <div
           v-for="(success, index) in statusSuccess"
@@ -135,50 +122,30 @@ export default {
     rtmpStats: {
       type: Object,
       default: () => ({
+        inboundBandwidth: 0,
         streams: {}
       })
     },
-    cameraConfig: {
+    streamStatus: {
       type: Object,
-      default: null
+      default: () => ({
+        isOnline: false,
+        durationSeconds: 0,
+        kickStreamingEnabled: false
+      })
     }
   },
   computed: {
-    rtmpUrl() {
-      // Use camera config from WebSocket if available, otherwise use local state
-      return this.cameraConfig?.rtmpUrl || this.localRtmpUrl || 'Loading...';
-    },
     statusWarnings() {
       const warnings = [];
       
-      // Check if ffmpeg-kick is running AND healthy
-      const kickContainer = this.containers.find(c => c.name === 'ffmpeg-kick');
-      if (!kickContainer || !kickContainer.running || kickContainer.health === 'unhealthy') {
+      if (!this.streamStatus?.kickStreamingEnabled) {
         warnings.push('NOT LIVE ON KICK!');
       }
       
-      // Check if auto-switcher is running
-      const autoSwitcherContainer = this.containers.find(c => c.name === 'auto-switcher');
-      if (!autoSwitcherContainer || !autoSwitcherContainer.running) {
-        warnings.push('Auto Scene Switching NOT RUNNING');
-      }
-      
-      // Check if camera stream is connected
       const camStream = this.rtmpStats?.streams?.cam;
       if (!camStream || !camStream.active || !camStream.publishing) {
         warnings.push('CAMERA NOT CONNECTED');
-      }
-      
-      // Check if program stream exists
-      const programStream = this.rtmpStats?.streams?.program;
-      if (!programStream) {
-        warnings.push('The program stream is missing. Please restart Muxer');
-      } else if (!programStream.active || !programStream.publishing) {
-        if (!kickContainer || !kickContainer.running) {
-          warnings.push('Program stream not connected. Waiting to go live.');
-        } else {
-          warnings.push('Program stream NOT CONNECTED. Restart muxer.');
-        }
       }
       
       return warnings;
@@ -186,69 +153,14 @@ export default {
     statusSuccess() {
       const successes = [];
       
-      // Check if ffmpeg-kick is running AND healthy
-      const kickContainer = this.containers.find(c => c.name === 'ffmpeg-kick');
-      if (kickContainer && kickContainer.running && kickContainer.health === 'healthy') {
+      if (this.streamStatus?.kickStreamingEnabled) {
         successes.push("WE'RE LIVE ON KICK!");
       }
       
       return successes;
     }
   },
-  data() {
-    return {
-      localRtmpUrl: '',
-      copySuccess: false
-    };
-  },
-  mounted() {
-    // Fetch initial config as fallback if WebSocket data isn't available yet
-    if (!this.cameraConfig) {
-      this.fetchRtmpConfig();
-    }
-  },
   methods: {
-    async fetchRtmpConfig() {
-      try {
-        const response = await fetch('/api/config');
-        const config = await response.json();
-        this.localRtmpUrl = config.rtmpUrl;
-      } catch (error) {
-        console.error('Error fetching RTMP config:', error);
-        this.localRtmpUrl = 'Error loading URL';
-      }
-    },
-    async copyToClipboard() {
-      if (!this.rtmpUrl || this.rtmpUrl === 'Error loading URL') return;
-      
-      try {
-        await navigator.clipboard.writeText(this.rtmpUrl);
-        this.copySuccess = true;
-        setTimeout(() => {
-          this.copySuccess = false;
-        }, 2000);
-      } catch (error) {
-        console.error('Failed to copy to clipboard:', error);
-        // Fallback for older browsers
-        const textArea = document.createElement('textarea');
-        textArea.value = this.rtmpUrl;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-999999px';
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        try {
-          document.execCommand('copy');
-          this.copySuccess = true;
-          setTimeout(() => {
-            this.copySuccess = false;
-          }, 2000);
-        } catch (err) {
-          console.error('Fallback copy failed:', err);
-        }
-        document.body.removeChild(textArea);
-      }
-    },
     getCpuClass(cpu) {
       if (cpu > 80) return 'metric-danger';
       if (cpu > 60) return 'metric-warning';
@@ -363,123 +275,50 @@ h2 {
   color: #64748b;
 }
 
-.rtmp-url-section {
+.stream-info {
   margin-top: 20px;
-  padding-top: 20px;
-  border-top: 1px solid #334155;
-}
-
-.section-title {
-  font-size: 1rem;
-  color: #f1f5f9;
-  margin-bottom: 12px;
-  font-weight: 600;
-}
-
-.url-container {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  margin-top: 10px;
-}
-
-.url-display {
-  flex: 1;
-  background: #0f172a;
-  border: 1px solid #334155;
-  border-radius: 6px;
-  padding: 12px 15px;
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 0.875rem;
-  color: #3b82f6;
-  word-break: break-all;
-  overflow-x: auto;
-  white-space: nowrap;
-}
-
-.copy-button {
-  flex-shrink: 0;
-  padding: 12px 24px;
-  background: #3b82f6;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-  min-width: 85px;
-}
-
-.copy-button:hover:not(:disabled) {
-  background: #2563eb;
-}
-
-.copy-button:active:not(:disabled) {
-  transform: scale(0.98);
-}
-
-.copy-button:disabled {
-  background: #475569;
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.copy-button.copied {
-  background: #10b981;
-}
-
-.copy-button.copied:hover {
-  background: #059669;
 }
 
 .status-success {
-  margin-top: 15px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  background: rgba(16, 185, 129, 0.1);
+  border: 2px solid #10b981;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 15px;
 }
 
 .success-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 15px;
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid #10b981;
-  border-radius: 6px;
-  color: #10b981;
-  font-size: 0.875rem;
+  font-size: 1.1rem;
   font-weight: 600;
+  color: #10b981;
+  padding: 5px 0;
 }
 
 .success-icon {
-  font-size: 1.2rem;
-  flex-shrink: 0;
+  font-size: 1.5rem;
 }
 
 .status-warnings {
-  margin-top: 15px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 2px solid #ef4444;
+  border-radius: 8px;
+  padding: 15px;
 }
 
 .warning-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 15px;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid #ef4444;
-  border-radius: 6px;
-  color: #ef4444;
-  font-size: 0.875rem;
+  font-size: 1.1rem;
   font-weight: 600;
+  color: #ef4444;
+  padding: 5px 0;
 }
 
 .warning-icon {
-  font-size: 1.2rem;
-  flex-shrink: 0;
+  font-size: 1.5rem;
 }
 </style>

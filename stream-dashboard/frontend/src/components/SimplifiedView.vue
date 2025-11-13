@@ -4,65 +4,93 @@
       <strong>Error:</strong> {{ error }}
     </div>
 
+    <!-- Go Live Button - Only shown when stream is OFF -->
+    <div v-if="!isKickLive" class="control-section go-live-section">
+      <button
+        @click="handleKickToggle"
+        :disabled="kickActionPending"
+        class="main-button button-start"
+      >
+        <span class="button-icon">▶</span>
+        <span class="button-text">Go Live</span>
+      </button>
+    </div>
+
     <!-- Privacy Mode Banner -->
     <div v-if="isPrivacyMode" class="privacy-banner">
       <div class="privacy-icon">🔒</div>
       <div class="privacy-content">
         <h2>PRIVACY MODE ACTIVE</h2>
-        <p>Your camera is currently disabled. Click "Deactivate Privacy Mode" below to return to normal streaming.</p>
+        <p>Your camera is currently disabled. Toggle Privacy Mode below to return to normal streaming.</p>
       </div>
     </div>
 
     <!-- Scene Display -->
     <div class="scene-section">
-      <div class="scene-label">Current Scene</div>
+      <div class="scene-label">
+        {{ isKickLive ? '🔴 LIVE ON KICK' : 'KICK OFFLINE' }}
+      </div>
       <div class="scene-value">{{ displayScene }}</div>
       <div v-if="sceneDurationSeconds > 0" class="scene-duration">
         {{ formatDuration(sceneDurationSeconds) }}
       </div>
     </div>
 
-    <!-- Privacy Mode Control -->
-    <div class="privacy-section">
-      <button 
-        @click="togglePrivacyMode"
+    <!-- Kick Stream Control - HIDDEN IN SIMPLIFIED VIEW -->
+    <!-- Scene Control Panel - HIDDEN IN SIMPLIFIED VIEW -->
+
+    <!-- Activate Privacy Mode Button - Only shown when Camera scene AND not in privacy mode -->
+    <div v-if="isCameraScene && !isPrivacyMode" class="control-section">
+      <button
+        @click="handlePrivacyToggle"
         :disabled="privacyActionPending"
-        class="privacy-button"
-        :class="{ 'privacy-active': isPrivacyMode }"
+        class="main-button button-privacy"
       >
-        <span class="button-icon">{{ privacyButtonIcon }}</span>
-        <span class="button-text">{{ privacyButtonText }}</span>
+        <span class="button-icon">🔒</span>
+        <span class="button-text">Activate Privacy Mode</span>
       </button>
 
       <div v-if="privacyActionPending" class="action-message">
-        {{ privacyActionMessage }}
+        Activating privacy mode...
       </div>
     </div>
 
-    <!-- Main Stream Control -->
-    <div class="control-section">
-      <button 
-        @click="toggleStream"
-        :disabled="streamActionPending"
-        class="main-button"
-        :class="streamButtonClass"
+    <!-- End Stream Button - Only shown when stream is LIVE -->
+    <div v-if="isKickLive" class="control-section">
+      <button
+        @click="handleKickToggle"
+        :disabled="kickActionPending"
+        class="main-button button-stop"
       >
-        <span class="button-icon">{{ streamButtonIcon }}</span>
-        <span class="button-text">{{ streamButtonText }}</span>
+        <span class="button-icon">⏹</span>
+        <span class="button-text">End Stream</span>
       </button>
 
-      <div v-if="streamActionPending" class="action-message">
-        {{ streamActionMessage }}
+      <div v-if="kickActionPending" class="action-message">
+        Ending stream...
       </div>
     </div>
+    
+    <ConfirmationModal
+      :isVisible="showKickConfirmModal"
+      :title="kickConfirmTitle"
+      :message="kickConfirmMessage"
+      :isProcessing="kickActionPending"
+      @confirm="confirmKickToggle"
+      @cancel="cancelKickToggle"
+    />
   </div>
 </template>
 
 <script>
-import { ref, computed, watch } from 'vue';
+import { ref, computed } from 'vue';
+import ConfirmationModal from './ConfirmationModal.vue';
 
 export default {
   name: 'SimplifiedView',
+  components: {
+    ConfirmationModal
+  },
   props: {
     containers: {
       type: Array,
@@ -79,56 +107,84 @@ export default {
     rtmpStats: {
       type: Object,
       default: () => ({ streams: {} })
+    },
+    switcherHealth: {
+      type: Object,
+      default: () => ({})
+    },
+    streamStatus: {
+      type: Object,
+      default: () => ({})
     }
   },
   setup(props) {
     const error = ref(null);
     const streamActionPending = ref(false);
     const privacyActionPending = ref(false);
+    const kickActionPending = ref(false);
     const streamActionMessage = ref('');
     const privacyActionMessage = ref('');
+    const showKickConfirmModal = ref(false);
+    const pendingKickAction = ref(null);
+    const kickChannelUrl = ref(null);
 
-    // Computed: Find ffmpeg-kick container
-    const kickContainer = computed(() => {
-      return props.containers.find(c => c.name === 'ffmpeg-kick');
-    });
-
-    // Computed: Find stream-auto-switcher container
-    const autoSwitcherContainer = computed(() => {
-      return props.containers.find(c => c.name === 'stream-auto-switcher');
-    });
-
-    // Computed: Is stream online
-    const isStreamOnline = computed(() => {
-      return kickContainer.value?.running || false;
+    // Computed: Is Kick live
+    const isKickLive = computed(() => {
+      return props.switcherHealth?.kick_streaming_enabled || false;
     });
 
     // Computed: Is privacy mode active (auto-switcher stopped AND scene is BRB)
     const isPrivacyMode = computed(() => {
-      const autoSwitcherStopped = !autoSwitcherContainer.value?.running;
-      const sceneIsBRB = props.currentScene === 'brb';
-      return autoSwitcherStopped && sceneIsBRB;
+      const sceneMode = props.switcherHealth?.scene_mode || 'camera';
+      const currentScene = props.currentScene;
+      return sceneMode === 'privacy' && currentScene === 'fallback';
+    });
+
+    // Computed: Is current scene Camera (SRT)
+    const isCameraScene = computed(() => {
+      return props.currentScene === 'srt';
     });
 
     // Computed: Display scene
     const displayScene = computed(() => {
       if (!props.currentScene) return 'UNKNOWN';
       
-      // Check if scene is camera-related
-      if (props.currentScene === 'cam-raw' || props.currentScene === 'cam') {
-        // Verify if the camera stream is actually active
-        const isCamRawActive = props.rtmpStats.streams['cam-raw']?.active;
-        const isCamActive = props.rtmpStats.streams['cam']?.active;
-        
-        // Show "Camera" only if at least one camera stream is active
-        if (isCamRawActive || isCamActive) {
-          return 'Camera';
+      // Get scene_mode and srt_connected from switcherHealth
+      const sceneMode = props.switcherHealth?.scene_mode || 'camera';
+      const srtConnected = props.switcherHealth?.srt_connected || false;
+      
+      // Check if scene is fallback - show PRIVACY or BRB based on scene_mode
+      if (props.currentScene === 'fallback') {
+        if (!srtConnected) {
+          return 'Camera Not Connected';
         }
-        // Otherwise show "CAMERA OFFLINE"
-        return 'CAMERA OFFLINE';
+        return sceneMode === 'privacy' ? 'PRIVACY' : 'BRB';
       }
       
+      // Check if scene is srt (camera feed)
+      if (props.currentScene === 'srt') {
+        // Show Camera or Camera Not Connected based on SRT connection status
+        return srtConnected ? 'Camera' : 'Camera Not Connected';
+      }
+      
+      // Fallback for any unknown scene
       return props.currentScene.toUpperCase();
+    });
+
+    // Computed: Is stream online (same as isKickLive for backwards compatibility)
+    const isStreamOnline = computed(() => {
+      return isKickLive.value;
+    });
+    
+    // Computed: Kick confirmation modal properties
+    const kickConfirmTitle = computed(() => {
+      return pendingKickAction.value === 'start' ? 'GO LIVE ON KICK?' : 'END KICK STREAM?';
+    });
+    
+    const kickConfirmMessage = computed(() => {
+      return pendingKickAction.value === 'start'
+        ? 'Are you SURE you want to GO LIVE on KICK?'
+        : 'Are you SURE you want to END KICK STREAM?';
     });
 
     // Computed: Stream button properties
@@ -147,18 +203,53 @@ export default {
       return isStreamOnline.value ? 'button-stop' : 'button-start';
     });
 
-    // Computed: Privacy button properties
-    const privacyButtonText = computed(() => {
-      if (privacyActionPending.value) return 'Processing...';
-      return isPrivacyMode.value ? 'Deactivate Privacy Mode' : 'Activate Privacy Mode';
-    });
-
-    const privacyButtonIcon = computed(() => {
-      if (privacyActionPending.value) return '⟳';
-      return isPrivacyMode.value ? '📹' : '🔒';
-    });
-
     // Methods
+    const handleKickToggle = (event) => {
+      event.preventDefault();
+      pendingKickAction.value = isKickLive.value ? 'stop' : 'start';
+      showKickConfirmModal.value = true;
+    };
+    
+    const cancelKickToggle = () => {
+      showKickConfirmModal.value = false;
+      pendingKickAction.value = null;
+    };
+    
+    const confirmKickToggle = async () => {
+      kickActionPending.value = true;
+      
+      try {
+        const endpoint = pendingKickAction.value === 'start'
+          ? '/api/kick/start'
+          : '/api/kick/stop';
+        
+        console.log(`[SimplifiedView] ${pendingKickAction.value === 'start' ? 'Starting' : 'Stopping'} Kick stream...`);
+        
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || `Failed to ${pendingKickAction.value} stream`);
+        }
+        
+        console.log(`[SimplifiedView] Kick stream ${pendingKickAction.value} successful`);
+      } catch (err) {
+        console.error('[SimplifiedView] Kick toggle error:', err);
+        error.value = err.message;
+      } finally {
+        kickActionPending.value = false;
+        showKickConfirmModal.value = false;
+        pendingKickAction.value = null;
+      }
+    };
+    
+    const handlePrivacyToggle = () => {
+      togglePrivacyMode();
+    };
+    
     const formatDuration = (seconds) => {
       if (seconds < 60) return `${seconds}s`;
       if (seconds < 3600) {
@@ -239,14 +330,13 @@ export default {
           // Wait a moment for auto-switcher to start
           await new Promise(resolve => setTimeout(resolve, 1000));
 
-          // Switch to camera scene (prefer cam-raw, fallback to cam)
-          const targetScene = props.rtmpStats.streams['cam-raw'] ? 'cam-raw' : 'cam';
-          console.log(`[SimplifiedView] Switching to ${targetScene}...`);
+          // Switch to srt scene (camera)
+          console.log('[SimplifiedView] Switching to srt...');
           
           const sceneResponse = await fetch('/api/scene/switch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ scene: targetScene })
+            body: JSON.stringify({ scene: 'srt' })
           });
 
           if (!sceneResponse.ok) {
@@ -259,17 +349,17 @@ export default {
           // Activate privacy mode
           privacyActionMessage.value = 'Activating privacy mode...';
 
-          // Switch to BRB scene first
-          console.log('[SimplifiedView] Switching to BRB...');
+          // Switch to fallback scene first
+          console.log('[SimplifiedView] Switching to fallback...');
           const sceneResponse = await fetch('/api/scene/switch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ scene: 'brb' })
+            body: JSON.stringify({ scene: 'fallback' })
           });
 
           if (!sceneResponse.ok) {
             const data = await sceneResponse.json();
-            throw new Error(data.error || 'Failed to switch to BRB');
+            throw new Error(data.error || 'Failed to switch to fallback');
           }
 
           // Wait a moment for scene to switch
@@ -298,23 +388,49 @@ export default {
       }
     };
 
+    // Fetch Kick channel configuration
+    const fetchKickChannel = async () => {
+      try {
+        const response = await fetch('/api/config');
+        const data = await response.json();
+        if (data.kickChannel) {
+          kickChannelUrl.value = `https://kick.com/${data.kickChannel}`;
+        }
+      } catch (err) {
+        console.error('[SimplifiedView] Error fetching Kick channel:', err);
+      }
+    };
+
+    // Fetch on mount
+    fetchKickChannel();
+
     return {
       error,
       streamActionPending,
       privacyActionPending,
+      kickActionPending,
       streamActionMessage,
       privacyActionMessage,
+      showKickConfirmModal,
+      pendingKickAction,
+      isKickLive,
       isStreamOnline,
       isPrivacyMode,
+      isCameraScene,
       displayScene,
       streamButtonText,
       streamButtonIcon,
       streamButtonClass,
-      privacyButtonText,
-      privacyButtonIcon,
+      kickConfirmTitle,
+      kickConfirmMessage,
       formatDuration,
       toggleStream,
-      togglePrivacyMode
+      togglePrivacyMode,
+      handleKickToggle,
+      cancelKickToggle,
+      confirmKickToggle,
+      handlePrivacyToggle,
+      kickChannelUrl
     };
   }
 };
@@ -387,6 +503,10 @@ export default {
   margin-bottom: 40px;
 }
 
+.go-live-section {
+  margin-bottom: 30px;
+}
+
 .control-section h1 {
   font-size: 2.5rem;
   margin: 0 0 30px 0;
@@ -444,6 +564,15 @@ export default {
   background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
 }
 
+.button-privacy {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: white;
+}
+
+.button-privacy:hover:not(:disabled) {
+  background: linear-gradient(135deg, #d97706 0%, #b45309 100%);
+}
+
 .button-processing {
   background: linear-gradient(135deg, #64748b 0%, #475569 100%);
   color: white;
@@ -486,8 +615,8 @@ export default {
 }
 
 .scene-label {
-  font-size: 1.2rem;
-  color: #94a3b8;
+  font-size: 1.5rem;
+  font-weight: bold;
   margin-bottom: 15px;
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -505,55 +634,135 @@ export default {
   color: #64748b;
 }
 
-.privacy-section {
-  text-align: center;
-  margin-bottom: 40px;
+.control-title {
+  font-size: 1.2rem;
+  color: #f1f5f9;
+  margin-bottom: 20px;
+  font-weight: 600;
 }
 
-.privacy-button {
-  width: 100%;
-  padding: 20px 30px;
-  font-size: 1.5rem;
-  font-weight: bold;
-  border: 2px solid #64748b;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.3s ease;
+.toggle-container {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 12px;
-  background: #1e293b;
+  justify-content: space-between;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+
+.toggle-label {
+  font-size: 1rem;
   color: #e2e8f0;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  flex: 1;
+  min-width: 200px;
 }
 
-.privacy-button:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
-  border-color: #94a3b8;
+.kick-link {
+  color: #10b981;
+  text-decoration: none;
+  font-weight: 600;
+  border-bottom: 2px solid transparent;
+  transition: border-color 0.2s ease, color 0.2s ease;
 }
 
-.privacy-button:active:not(:disabled) {
-  transform: translateY(0);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+.kick-link:hover {
+  color: #059669;
+  border-bottom-color: #059669;
 }
 
-.privacy-button:disabled {
-  opacity: 0.6;
+.toggle-control-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.toggle-slider-wrapper {
+  position: relative;
+}
+
+.toggle-checkbox {
+  display: none;
+}
+
+.toggle-switch {
+  display: block;
+  width: 100px;
+  height: 50px;
+  background: #475569;
+  border-radius: 25px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.3s ease;
+  user-select: none;
+}
+
+.toggle-checkbox:checked + .toggle-switch {
+  background: #10b981;
+}
+
+.toggle-checkbox:disabled + .toggle-switch {
+  opacity: 0.5;
   cursor: not-allowed;
-  transform: none;
 }
 
-.privacy-button.privacy-active {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+.toggle-switch::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  width: 40px;
+  height: 40px;
+  background: white;
+  border-radius: 20px;
+  transition: transform 0.3s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.toggle-checkbox:checked + .toggle-switch::before {
+  transform: translateX(50px);
+}
+
+.toggle-text-off,
+.toggle-text-on {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.75rem;
+  font-weight: 600;
   color: white;
-  border-color: #10b981;
+  transition: opacity 0.3s ease;
 }
 
-.privacy-button.privacy-active:hover:not(:disabled) {
-  background: linear-gradient(135deg, #059669 0%, #047857 100%);
-  border-color: #059669;
+.toggle-text-off {
+  left: 12px;
+  opacity: 1;
+}
+
+.toggle-text-on {
+  right: 14px;
+  opacity: 0;
+}
+
+.toggle-checkbox:checked + .toggle-switch .toggle-text-off {
+  opacity: 0;
+}
+
+.toggle-checkbox:checked + .toggle-switch .toggle-text-on {
+  opacity: 1;
+}
+
+.toggle-status-text {
+  font-size: 1rem;
+  font-weight: 500;
+  color: #94a3b8;
+  text-align: center;
+  transition: color 0.3s ease;
+}
+
+.toggle-status-text.active {
+  color: #10b981;
+  font-weight: 600;
 }
 
 @media (max-width: 768px) {
@@ -593,6 +802,20 @@ export default {
 
   .privacy-content p {
     font-size: 1rem;
+  }
+  
+  .toggle-container {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .toggle-label {
+    text-align: center;
+    margin-bottom: 10px;
+  }
+  
+  .toggle-slider-wrapper {
+    align-self: center;
   }
 }
 </style>

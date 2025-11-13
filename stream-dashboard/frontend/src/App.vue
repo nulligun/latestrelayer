@@ -32,6 +32,8 @@
         :currentScene="data.currentScene"
         :sceneDurationSeconds="data.sceneDurationSeconds"
         :rtmpStats="data.rtmpStats"
+        :switcherHealth="data.switcherHealth"
+        :streamStatus="data.streamStatus"
       />
 
       <!-- Full Interface -->
@@ -42,6 +44,7 @@
             :containers="data.containers"
             :rtmpStats="data.rtmpStats"
             :cameraConfig="data.cameraConfig"
+            :streamStatus="data.streamStatus"
           />
           <StreamStats
             :stats="data.rtmpStats"
@@ -50,6 +53,9 @@
             :sceneDurationSeconds="data.sceneDurationSeconds"
             :switchingScene="switchingScene"
             :sourceAvailability="data.sourceAvailability"
+            :containers="data.containers"
+            :cameraConfig="data.cameraConfig"
+            :switcherHealth="data.switcherHealth"
             @scene-switching="handleSceneSwitching"
           />
         </div>
@@ -131,7 +137,14 @@ export default {
         durationSeconds: 0
       },
       sceneDurationSeconds: 0,
-      cameraConfig: null
+      cameraConfig: null,
+      switcherHealth: {
+        status: 'unavailable',
+        current_source: 'unknown',
+        srt_connected: false,
+        kick_streaming_enabled: false,
+        scene_mode: 'camera'
+      }
     });
 
     const formatTime = (timestamp) => {
@@ -403,11 +416,21 @@ body {
   color: #ef4444;
 }
 
+.privacy-toggle span {
+  display: none;
+}
+
 .dashboard-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+  grid-template-columns: 50% 50%;
   gap: 20px;
   margin-bottom: 20px;
+}
+
+@media (max-width: 1200px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .containers-section {
