@@ -44,9 +44,10 @@ class CompositorManager:
         self.srt_ever_connected = False
         self.restart_scheduled = False
         
-        # Fade control references
-        self.cam_alpha = None
-        self.cam_vol = None
+        # Fade control references (compositor/audiomixer pad references)
+        self.srt_compositor_pad = None
+        self.srt_mixer_pad = None
+        self.cam_vol = None  # Keep volume element for now
         
     def _build_fallback_sources(self):
         """Create always-running fallback sources (black + silence)."""
@@ -227,7 +228,7 @@ class CompositorManager:
             dts_str = f"{dts/Gst.SECOND:.3f}s" if dts != Gst.CLOCK_TIME_NONE else "NONE"
             dur_str = f"{duration/Gst.MSECOND:.1f}ms" if duration != Gst.CLOCK_TIME_NONE else "NONE"
             
-            print(f"[probe] {name:20s} | PTS={pts_str:12s} DTS={dts_str:12s} DUR={dur_str:10s} size={buffer.get_size()}", flush=True)
+            #print(f"[probe] {name:20s} | PTS={pts_str:12s} DTS={dts_str:12s} DUR={dur_str:10s} size={buffer.get_size()}", flush=True)
             return Gst.PadProbeReturn.OK
         
         # Get elements for probing
@@ -275,7 +276,7 @@ class CompositorManager:
         audio_mux_queue_src.add_probe(Gst.PadProbeType.BUFFER, lambda p, i: buffer_probe_detailed(p, i, "audio_q→mux"))
         
         # Probe muxer inputs
-        print("[probe] Note: muxer input pads will be probed once linked", flush=True)
+        #print("[probe] Note: muxer input pads will be probed once linked", flush=True)
         
         # Probe muxer output
         mux_src = mpegtsmux.get_static_pad("src")
@@ -298,20 +299,20 @@ class CompositorManager:
         
         decode = Gst.ElementFactory.make("decodebin", "decode")
         
-        # Video chain
+        # Video chain with leaky queue for buffer draining during fade
         video_queue = Gst.ElementFactory.make("queue", "video_q")
+        video_queue.set_property("max-size-time", 1000000000)  # 1 second buffer (shorter for faster drain)
+        video_queue.set_property("max-size-buffers", 0)  # unlimited buffers (time-based only)
+        video_queue.set_property("leaky", 2)  # downstream leak - drops old buffers if downstream is slow
         videoconvert = Gst.ElementFactory.make("videoconvert", "vconv")
         videoscale = Gst.ElementFactory.make("videoscale", "vscale")
         videorate = Gst.ElementFactory.make("videorate", "vrate")
         videorate.set_property("drop-only", True)
         
-        self.cam_alpha = Gst.ElementFactory.make("alpha", "cam_alpha")
-        self.cam_alpha.set_property("alpha", 0.0)  # start invisible
-        
-        # Audio chain
+        # Audio chain with 2-second buffer for smooth fade-out (matches video buffer)
         audio_queue = Gst.ElementFactory.make("queue", "audio_q")
-        audio_queue.set_property("max-size-time", 0)
-        audio_queue.set_property("max-size-buffers", 0)
+        audio_queue.set_property("max-size-time", 2000000000)  # 2 second buffer (in nanoseconds)
+        audio_queue.set_property("max-size-buffers", 0)  # unlimited buffers (time-based only)
         audioconvert = Gst.ElementFactory.make("audioconvert", "aconv")
         audioresample = Gst.ElementFactory.make("audioresample", "ares")
         
@@ -325,7 +326,6 @@ class CompositorManager:
             'videoconvert': videoconvert,
             'videoscale': videoscale,
             'videorate': videorate,
-            'cam_alpha': self.cam_alpha,
             'audio_queue': audio_queue,
             'audioconvert': audioconvert,
             'audioresample': audioresample,
@@ -339,11 +339,10 @@ class CompositorManager:
         # Link SRT source to decodebin
         srt_src.link(decode)
         
-        # Link video chain
+        # Link video chain (videorate will link to compositor pad dynamically)
         video_queue.link(videoconvert)
         videoconvert.link(videoscale)
         videoscale.link(videorate)
-        videorate.link(self.cam_alpha)
         
         # Link audio chain
         audio_queue.link(audioconvert)
@@ -381,12 +380,14 @@ class CompositorManager:
                 ret = pad.link(sinkpad)
                 print(f"[srt] Video pad link result: {ret}", flush=True)
                 
-                # Link cam_alpha to compositor
+                # Link videorate to compositor and save pad reference
                 compositor = self.output_elements['compositor']
-                cam_pad = compositor.request_pad_simple("sink_%u")
-                alpha_src = self.cam_alpha.get_static_pad("src")
-                alpha_src.link(cam_pad)
-                print("[srt] ✓ Video linked to compositor", flush=True)
+                self.srt_compositor_pad = compositor.request_pad_simple("sink_%u")
+                self.srt_compositor_pad.set_property("alpha", 0.0)  # Start invisible
+                videorate = self.srt_elements['videorate']
+                vrate_src = videorate.get_static_pad("src")
+                vrate_src.link(self.srt_compositor_pad)
+                print(f"[srt] ✓ Video linked to compositor pad (alpha=0.0)", flush=True)
                 
         elif name.startswith("audio/"):
             # Link decode → audio_queue
@@ -395,16 +396,22 @@ class CompositorManager:
                 ret = pad.link(sinkpad)
                 print(f"[srt] Audio pad link result: {ret}", flush=True)
                 
-                # Link cam_vol to audiomixer
+                # Link cam_vol to audiomixer and save pad reference
                 audiomixer = self.output_elements['audiomixer']
-                mixer_pad = audiomixer.request_pad_simple("sink_%u")
+                self.srt_mixer_pad = audiomixer.request_pad_simple("sink_%u")
                 vol_src = self.cam_vol.get_static_pad("src")
-                vol_src.link(mixer_pad)
+                vol_src.link(self.srt_mixer_pad)
                 print("[srt] ✓ Audio linked to audiomixer", flush=True)
     
     def _on_video_probe(self, pad, info):
         """Track SRT buffer flow and trigger fade-in when reconnecting."""
         self.last_srt_buf_time = time.time()
+        
+        # DIAGNOSTIC: Log buffer flow during critical states
+        if self.state == STATE_SRT_TRANSITIONING:
+            buffer = info.get_buffer()
+            alpha_val = self.srt_compositor_pad.get_property("alpha") if self.srt_compositor_pad else 0.0
+            print(f"[probe] TRANSITIONING: buffer flowing, pad_alpha={alpha_val:.2f}, pts={buffer.pts/Gst.SECOND:.3f}s", flush=True)
         
         # If we were in FALLBACK_ONLY, trigger fade-in
         if self.state == STATE_FALLBACK_ONLY:
@@ -426,7 +433,8 @@ class CompositorManager:
             self.pipeline.remove(elem)
         
         self.srt_elements = None
-        self.cam_alpha = None
+        self.srt_compositor_pad = None
+        self.srt_mixer_pad = None
         self.cam_vol = None
         
         print("[srt] ✓ SRT elements removed", flush=True)
@@ -456,13 +464,14 @@ class CompositorManager:
     def start_fade_out(self):
         """Fade out SRT video/audio (1.0 → 0.0 over 1 second)."""
         if self.state in (STATE_SRT_TRANSITIONING, STATE_FALLBACK_ONLY):
+            print(f"[fade] start_fade_out blocked (already in state: {self.state})", flush=True)
             return
         print("[fade] Starting fade-out", flush=True)
         self.state = STATE_SRT_TRANSITIONING
         self._fade(1.0, 0.0, 1.0, 0.0, 1000, STATE_FALLBACK_ONLY)
     
     def _fade(self, alpha_start, alpha_end, vol_start, vol_end, duration_ms, next_state):
-        """Generic fade helper using GLib timeouts."""
+        """Generic fade helper using GLib timeouts - controls compositor pad alpha directly."""
         steps = 10
         step_ms = max(1, duration_ms // steps)
         step = {"i": 0}
@@ -473,16 +482,21 @@ class CompositorManager:
             alpha = alpha_start + (alpha_end - alpha_start) * t
             vol = vol_start + (vol_end - vol_start) * t
             
-            if self.cam_alpha:
-                self.cam_alpha.set_property("alpha", alpha)
+            # Control compositor pad alpha (fades what's already composited)
+            if self.srt_compositor_pad:
+                self.srt_compositor_pad.set_property("alpha", alpha)
+                # DIAGNOSTIC: Log each fade step
+                print(f"[fade] Step {i}/{steps}: pad_alpha={alpha:.2f}, vol={vol:.2f}, state={self.state}", flush=True)
+            
+            # Control audio volume
             if self.cam_vol:
                 self.cam_vol.set_property("volume", vol)
             
             step["i"] += 1
             if step["i"] > steps:
                 # Set final values
-                if self.cam_alpha:
-                    self.cam_alpha.set_property("alpha", alpha_end)
+                if self.srt_compositor_pad:
+                    self.srt_compositor_pad.set_property("alpha", alpha_end)
                 if self.cam_vol:
                     self.cam_vol.set_property("volume", vol_end)
                 
@@ -505,9 +519,9 @@ class CompositorManager:
         now = time.time()
         delta = now - self.last_srt_buf_time
         
-        if self.state in (STATE_SRT_CONNECTED, STATE_SRT_TRANSITIONING) and delta > 1.0:
-            # No SRT data for >1 second
-            print(f"[watchdog] No SRT data for {delta:.1f}s, triggering fade-out", flush=True)
+        if self.state in (STATE_SRT_CONNECTED, STATE_SRT_TRANSITIONING) and delta > 0.2:
+            # No SRT data for >0.2 seconds (quick detection enables smooth fade with buffered video)
+            print(f"[watchdog] No SRT data for {delta:.1f}s, state={self.state}, triggering fade-out", flush=True)
             self.start_fade_out()
         
         return True  # Keep timeout running
