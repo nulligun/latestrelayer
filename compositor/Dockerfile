@@ -28,6 +28,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Expose ports
 EXPOSE 1937/udp
+EXPOSE 1940/tcp
 EXPOSE 5000/tcp
 
 # Run the application

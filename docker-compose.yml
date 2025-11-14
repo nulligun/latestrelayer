@@ -8,7 +8,11 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-relayer}-compositor
     ports:
       - "${SRT_PORT:-1937}:1937/udp"  # SRT listener port
+      - "${VIDEO_TCP_PORT:-1940}:1940"  # Video fallback TCP server port
       - "5000:5000"  # TCP server port for VLC testing
+    environment:
+      - FALLBACK_SOURCE=${FALLBACK_SOURCE:-}
+      - VIDEO_TCP_PORT=${VIDEO_TCP_PORT:-1940}
     networks:
       - rtmp-network
     restart: unless-stopped

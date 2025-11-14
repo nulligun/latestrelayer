@@ -2,18 +2,20 @@
 
 GStreamer-based video compositor with hybrid architecture for reliable streaming.
 
-**Version: 2.0.0**
+**Version: 2.1.0**
 
 ## Features
 
 - **Immediate Startup**: Pipeline starts instantly with black screen + silence output
+- **Video Fallback** (Optional): TCP server for looping video fallback (replaces black screen)
 - **SRT Input**: Listens on port 1937 for incoming SRT streams
 - **Automatic Fade Control**:
-  - Fades in (1 second) when SRT stream connects
-  - Fades out (1 second) after 1 second of no SRT data
-  - Returns to black screen fallback when no input
-- **Hybrid Architecture**: Separate fallback and SRT pipelines sharing single output
-- **TCP Output**: Always streaming to TCP port 5000 (even before SRT connects)
+  - Fades in (1 second) when video/SRT stream connects
+  - Fades out (1 second) after 200ms of no data
+  - Returns to appropriate fallback when input disconnects
+  - SRT always takes priority over video fallback
+- **Hybrid Architecture**: Separate fallback, video, and SRT pipelines sharing single output
+- **TCP Output**: Always streaming to TCP port 5000 (even before any input connects)
 - **Resolution**: 1920x1080 @ 30fps
 
 ## Quick Start
@@ -115,19 +117,37 @@ vlc tcp://localhost:5000
 
 ## State Machine
 
+### Without Video Fallback (FALLBACK_SOURCE not set)
 ```
-FALLBACK_ONLY (black) → TRANSITIONING (fade 1s) → SRT_CONNECTED
-     ↑                                                  ↓
-     └──────────── SRT disconnects (fade 1s) ───────────┘
+FALLBACK_ONLY (black) → SRT_TRANSITIONING (fade 1s) → SRT_CONNECTED
+     ↑                                                        ↓
+     └────────────── SRT disconnects (fade 1s) ──────────────┘
 ```
 
-**Key Improvement in v2.0.0**: The output stream is **always active**, even before the first SRT connection. The previous version blocked until SRT connected.
+### With Video Fallback (FALLBACK_SOURCE=video)
+```
+FALLBACK_ONLY (black)
+     ↓ TCP connects
+VIDEO_TRANSITIONING (fade 1s)
+     ↓
+VIDEO_CONNECTED (video loop)
+     ↓ SRT connects              ↓ TCP disconnects
+SRT_TRANSITIONING  ←→  VIDEO_TRANSITIONING
+     ↓                            ↓
+SRT_CONNECTED              FALLBACK_ONLY
+     ↓ SRT disconnects
+VIDEO_TRANSITIONING (if video still connected)
+  or
+FALLBACK_ONLY (if video disconnected)
+```
+
+**Key Improvement in v2.1.0**: Optional video fallback layer between black screen and SRT feed, allowing for a "Be Right Back" video instead of black screen.
 
 ## Architecture
 
-### Hybrid Pipeline Design (v2.0.0)
+### Hybrid Pipeline Design (v2.1.0)
 
-The compositor uses a **hybrid architecture** with three independent stages:
+The compositor uses a **hybrid architecture** with independent stages:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -137,19 +157,25 @@ The compositor uses a **hybrid architecture** with three independent stages:
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
-│ SRT ELEMENTS (Dynamic - Added on startup)                   │
-│   srtserversrc:1937 → decodebin ─┬→ queue → alpha ─────┐   │
+│ VIDEO ELEMENTS (Optional - when FALLBACK_SOURCE=video)      │
+│   tcpserversrc:1940 → decodebin ─┬→ queue → alpha ─────┐   │
 │                                   └→ queue → volume ────┤   │
 └───────────────────────────────────────────────────────────┼─┘
                                                             │
-┌───────────────────────────────────────────────────────────┼─┐
+┌─────────────────────────────────────────────────────────┐ │
+│ SRT ELEMENTS (Dynamic - Added on startup)               │ │
+│   srtserversrc:1937 → decodebin ─┬→ queue → alpha ─────┤ │
+│                                   └→ queue → volume ────┤ │
+└─────────────────────────────────────────────────────────┼─┤
+                                                            │ │
+┌───────────────────────────────────────────────────────────┼─┤
 │ SHARED OUTPUT (Always Running)                           │ │
-│   compositor ←──────────────────────────────────────────┐│ │
-│       ↓                                                  ││ │
-│   x264enc → mpegtsmux → tcpserversink:5000              ││ │
-│       ↑           ↑                                      ││ │
-│   audiomixer ←───────────────────────────────────────────┘│ │
-└─────────────────────────────────────────────────────────────┘
+│   compositor ←──────────────────────────────────────────┴─┘
+│       ↓                                                    │
+│   x264enc → mpegtsmux → tcpserversink:5000                │
+│       ↑                                                    │
+│   audiomixer ←────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Components
@@ -159,27 +185,36 @@ The compositor uses a **hybrid architecture** with three independent stages:
 - **audiotestsrc**: Silence (48kHz stereo)
 - Always linked to output, ensures stream never stops
 
+**Video Stage** (optional - enabled with FALLBACK_SOURCE=video):
+- **tcpserversrc**: TCP server listening on port 1940
+- **decodebin**: Automatically decodes incoming MPEG-TS stream
+- **alpha**: Controls video transparency (0.0 = invisible, 1.0 = opaque)
+- **volume**: Controls audio level (0.0 = muted, 1.0 = full)
+- Can be removed/re-added to reset TCP server after disconnect
+
 **SRT Stage** (dynamically managed):
 - **srtserversrc**: Listens for SRT on port 1937
 - **decodebin**: Automatically decodes incoming streams
 - **alpha**: Controls video transparency (0.0 = invisible, 1.0 = opaque)
 - **volume**: Controls audio level (0.0 = muted, 1.0 = full)
+- Takes priority over video fallback when connected
 - Can be removed/re-added without affecting output
 
 **Output Stage** (always running):
-- **compositor**: Blends fallback + SRT video
-- **audiomixer**: Mixes fallback + SRT audio
+- **compositor**: Blends layers (black → video → SRT)
+- **audiomixer**: Mixes audio from all sources
 - **x264enc**: H.264 encoding with low-latency settings
 - **mpegtsmux**: MPEG-TS container
 - **tcpserversink**: Always streaming on port 5000
 
 ### Benefits of Hybrid Architecture
 
-✅ **Immediate startup** - No waiting for SRT connection
-✅ **Reliable output** - Stream never stops, even during SRT issues
-✅ **Clean isolation** - SRT problems don't affect fallback or output
+✅ **Immediate startup** - No waiting for any connection
+✅ **Reliable output** - Stream never stops, even during source issues
+✅ **Clean isolation** - Problems in one stage don't affect others
 ✅ **Easy debugging** - Each stage can be inspected independently
-✅ **Graceful transitions** - Fade in/out between fallback and SRT
+✅ **Graceful transitions** - Fade in/out between layers
+✅ **Flexible fallback** - Choose between black screen or looping video
 
 ## Troubleshooting
 
@@ -243,19 +278,71 @@ docker compose logs compositor | grep -i error
 
 ## Configuration
 
+### Environment Variables
+
+Configure in [`.env`](.env) file:
+
+- **FALLBACK_SOURCE**: Set to `video` to enable video fallback (default: empty/black screen)
+- **VIDEO_TCP_PORT**: Port for video TCP server (default: 1940)
+
+### Code Settings
+
 Key settings in [`compositor.py`](compositor.py):
 
-- **Version**: 2.0.0 (line 19)
+- **Version**: 2.1.0 (line 25)
 - **SRT Port**: 1937 (in `add_srt_elements` method)
-- **TCP Port**: 5000 (in `_build_output_stage` method)
+- **Video TCP Port**: 1940 (configurable via VIDEO_TCP_PORT env var)
+- **Output TCP Port**: 5000 (in `_build_output_stage` method)
 - **Resolution**: 1920x1080 @ 30fps (in `_build_fallback_sources` method)
 - **Sample Rate**: 48kHz stereo (in `_build_fallback_sources` method)
 - **Video Bitrate**: 2500 kbps (in `_build_output_stage` method)
 - **Audio Bitrate**: 128 kbps (in `_build_output_stage` method)
 - **Fade Duration**: 1000ms (in `_fade` method)
-- **Watchdog Timeout**: 1000ms (in `watchdog_cb` method)
+- **Watchdog Timeout**: 200ms (in `watchdog_cb` and `video_watchdog_cb` methods)
 
 To modify these, edit the appropriate method in [`compositor.py`](compositor.py) and rebuild the container.
+
+## Video Fallback Feature
+
+The video fallback feature allows you to display a looping video (e.g., "Be Right Back" screen) instead of a black screen when no SRT feed is active.
+
+### Enabling Video Fallback
+
+1. Set environment variable in `.env`:
+   ```bash
+   FALLBACK_SOURCE=video
+   VIDEO_TCP_PORT=1940
+   ```
+
+2. Rebuild and restart compositor:
+   ```bash
+   docker compose up --build -d compositor
+   ```
+
+3. Send video stream using ffmpeg:
+   ```bash
+   ffmpeg \
+     -re -stream_loop -1 \
+     -i /home/mulligan/offline.mp4 \
+     -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p \
+     -c:a aac -b:a 128k -ar 48000 -ac 2 \
+     -f mpegts tcp://localhost:1940
+   ```
+
+### Testing Video Fallback
+
+See [`VIDEO_FALLBACK_TESTING.md`](VIDEO_FALLBACK_TESTING.md) for comprehensive testing scenarios including:
+- Black screen vs video fallback behavior
+- State transitions between black → video → SRT
+- TCP reconnection handling
+- ffmpeg command examples
+
+### How It Works
+
+1. **TCP Server Mode**: Compositor runs a TCP server on port 1940
+2. **Client Connection**: ffmpeg connects as a TCP client and sends MPEG-TS stream
+3. **Automatic Reset**: When client disconnects, server resets and waits for new connection
+4. **Priority System**: SRT feed always takes priority over video fallback
 
 ## Development
 
