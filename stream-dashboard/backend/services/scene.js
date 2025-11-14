@@ -1,30 +1,17 @@
 const axios = require('axios');
 
 /**
- * Proxy service for muxer scene switching
+ * Proxy service for compositor scene and privacy control
  */
 class SceneService {
-  constructor(muxerUrl) {
-    this.muxerUrl = muxerUrl;
-  }
-
-  async switchScene(sceneName) {
-    try {
-      const response = await axios.get(
-        `${this.muxerUrl}/switch?src=${sceneName}`,
-        { timeout: 5000 }
-      );
-      return { success: true, scene: sceneName, message: response.data };
-    } catch (error) {
-      console.error(`[scene] Error switching to ${sceneName}:`, error.message);
-      throw new Error(`Failed to switch scene: ${error.message}`);
-    }
+  constructor(compositorUrl) {
+    this.compositorUrl = compositorUrl;
   }
 
   async getCurrentScene() {
     try {
       const response = await axios.get(
-        `${this.muxerUrl}/scene`,
+        `${this.compositorUrl}/scene`,
         { timeout: 5000 }
       );
       return response.data;
@@ -34,44 +21,30 @@ class SceneService {
     }
   }
 
-  async getSceneMode() {
-    try {
-      const response = await axios.get(
-        `${this.muxerUrl}/scene/mode`,
-        { timeout: 5000 }
-      );
-      return response.data;
-    } catch (error) {
-      console.error('[scene] Error getting scene mode:', error.message);
-      throw new Error(`Failed to get scene mode: ${error.message}`);
-    }
-  }
-
-  async setCameraMode() {
+  async setPrivacyMode(enabled) {
     try {
       const response = await axios.post(
-        `${this.muxerUrl}/scene/camera`,
-        {},
-        { timeout: 5000 }
-      );
-      return response.data;
-    } catch (error) {
-      console.error('[scene] Error setting camera mode:', error.message);
-      throw new Error(`Failed to set camera mode: ${error.message}`);
-    }
-  }
-
-  async setPrivacyMode() {
-    try {
-      const response = await axios.post(
-        `${this.muxerUrl}/scene/privacy`,
-        {},
+        `${this.compositorUrl}/privacy`,
+        { enabled },
         { timeout: 5000 }
       );
       return response.data;
     } catch (error) {
       console.error('[scene] Error setting privacy mode:', error.message);
       throw new Error(`Failed to set privacy mode: ${error.message}`);
+    }
+  }
+
+  async getPrivacyMode() {
+    try {
+      const response = await axios.get(
+        `${this.compositorUrl}/privacy`,
+        { timeout: 5000 }
+      );
+      return response.data;
+    } catch (error) {
+      console.error('[scene] Error getting privacy mode:', error.message);
+      throw new Error(`Failed to get privacy mode: ${error.message}`);
     }
   }
 }

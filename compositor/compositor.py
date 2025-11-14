@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
 GStreamer Compositor with Hybrid Architecture
-Version: 2.2.0
+Version: 2.3.0
 
 Architecture:
 - Fallback pipeline (always running): black screen + silence
 - Video fallback pipeline (optional): TCP server for looping video
 - SRT pipeline (dynamic): added on startup, can be removed/re-added
 - Shared output (always running): compositor + audiomixer + encoders + TCP sink
+- HTTP API (port 8088): scene status and privacy mode control
 
 The pipeline starts immediately with fallback output, and SRT feed composites
 over the fallback when available. When FALLBACK_SOURCE=video, a video fallback
 layer is added between black screen and SRT.
 
-New in v2.2.0:
-- 500ms buffer delay before fade-in for smooth playback
-- True crossfade support between video and SRT layers
-- Enhanced logging for debugging crossfade behavior
+New in v2.3.0:
+- HTTP API for scene status and privacy mode control
+- Privacy mode: prevents SRT camera from showing even when connected
+- Privacy state persists across container restarts
 """
 import gi
 gi.require_version("Gst", "1.0")
@@ -24,15 +25,22 @@ gi.require_version("GLib", "2.0")
 from gi.repository import Gst, GLib
 import time
 import os
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
 
 Gst.init(None)
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 # Environment variables
 FALLBACK_SOURCE = os.getenv("FALLBACK_SOURCE", "").lower()
 VIDEO_TCP_PORT = int(os.getenv("VIDEO_TCP_PORT", "1940"))
 BUFFER_DELAY_MS = int(os.getenv("BUFFER_DELAY_MS", "500"))
+VIDEO_WATCHDOG_TIMEOUT = float(os.getenv("VIDEO_WATCHDOG_TIMEOUT", "2.0"))
+HTTP_API_PORT = int(os.getenv("HTTP_API_PORT", "8088"))
+PRIVACY_STATE_FILE = "/app/privacy_state.json"
 
 # State constants
 STATE_FALLBACK_ONLY = "FALLBACK_ONLY"
@@ -79,6 +87,56 @@ class CompositorManager:
         self.srt_mixer_pad = None
         self.cam_vol = None
         
+        # Privacy mode state
+        self.privacy_enabled = False
+        self._load_privacy_state()
+        
+    def _load_privacy_state(self):
+        """Load privacy state from JSON file."""
+        try:
+            if os.path.exists(PRIVACY_STATE_FILE):
+                with open(PRIVACY_STATE_FILE, 'r') as f:
+                    data = json.load(f)
+                    self.privacy_enabled = data.get('enabled', False)
+                    print(f"[privacy] Loaded privacy state: enabled={self.privacy_enabled}", flush=True)
+            else:
+                print("[privacy] No saved privacy state found, starting with privacy disabled", flush=True)
+        except Exception as e:
+            print(f"[privacy] Error loading privacy state: {e}", flush=True)
+            self.privacy_enabled = False
+    
+    def _save_privacy_state(self):
+        """Save privacy state to JSON file."""
+        try:
+            with open(PRIVACY_STATE_FILE, 'w') as f:
+                json.dump({'enabled': self.privacy_enabled}, f)
+            print(f"[privacy] Saved privacy state: enabled={self.privacy_enabled}", flush=True)
+        except Exception as e:
+            print(f"[privacy] Error saving privacy state: {e}", flush=True)
+    
+    def set_privacy_mode(self, enabled):
+        """Enable or disable privacy mode."""
+        self.privacy_enabled = enabled
+        self._save_privacy_state()
+        
+        if enabled:
+            print("[privacy] Privacy mode ENABLED - SRT camera will not be shown", flush=True)
+            # If SRT is currently showing, fade it out
+            if self.state in (STATE_SRT_CONNECTED, STATE_SRT_TRANSITIONING):
+                print("[privacy] Fading out SRT camera due to privacy mode activation", flush=True)
+                self.start_fade_out("srt")
+        else:
+            print("[privacy] Privacy mode DISABLED - normal camera operation resumed", flush=True)
+    
+    def get_current_scene(self):
+        """Get the current scene name based on compositor state."""
+        if self.state == STATE_SRT_CONNECTED or self.state == STATE_SRT_TRANSITIONING:
+            return "SRT"
+        elif self.state == STATE_VIDEO_CONNECTED or self.state == STATE_VIDEO_TRANSITIONING:
+            return "VIDEO"
+        else:
+            return "BLACK"
+    
     def _build_fallback_sources(self):
         """Create always-running fallback sources (black + silence)."""
         print("[build] Creating fallback sources (black + silence)...", flush=True)
@@ -395,8 +453,19 @@ class CompositorManager:
         
         print("[video] Removing video TCP elements from pipeline...", flush=True)
         
+        # Set all elements to NULL and wait for state change to complete
         for elem in self.video_elements.values():
+            elem_name = elem.get_name()
             elem.set_state(Gst.State.NULL)
+            # Wait up to 2 seconds for state change to complete
+            ret, state, pending = elem.get_state(2 * Gst.SECOND)
+            if ret == Gst.StateChangeReturn.FAILURE:
+                print(f"[video] Warning: {elem_name} state change to NULL failed", flush=True)
+            elif ret == Gst.StateChangeReturn.SUCCESS:
+                print(f"[video] {elem_name} → NULL (success)", flush=True)
+        
+        # Now remove from pipeline
+        for elem in self.video_elements.values():
             self.pipeline.remove(elem)
         
         self.video_elements = None
@@ -411,10 +480,29 @@ class CompositorManager:
         print("[video] Restarting video TCP server...", flush=True)
         self.video_restart_scheduled = False
         
+        # Remove elements with proper state transition waiting
         self.remove_video_elements()
-        self.add_video_elements()
         
-        print("[video] ✓ Video TCP server restart complete, waiting for connection...", flush=True)
+        # Reset ALL buffer tracking state to prevent stale state
+        self.video_first_buffer_time = None
+        self.video_buffer_scheduled = False
+        print("[video] Reset buffer tracking state", flush=True)
+        
+        # Ensure state is reset to appropriate state
+        if self.state not in (STATE_FALLBACK_ONLY, STATE_SRT_CONNECTED, STATE_SRT_TRANSITIONING):
+            self.state = STATE_FALLBACK_ONLY
+            print(f"[video] Reset state to {self.state}", flush=True)
+        
+        # CRITICAL FIX: Wait 500ms for OS to release TCP port 1940
+        # The port may be in TIME_WAIT state after closing the previous connection
+        def delayed_add():
+            print("[video] Port release delay complete, recreating TCP server...", flush=True)
+            self.add_video_elements()
+            print("[video] ✓ Video TCP server restart complete, waiting for connection...", flush=True)
+            return False
+        
+        print("[video] Waiting 500ms for port release...", flush=True)
+        GLib.timeout_add(500, delayed_add)
         return False
     
     def video_watchdog_cb(self):
@@ -422,14 +510,14 @@ class CompositorManager:
         now = time.time()
         delta = now - self.last_video_buf_time
         
-        if self.state in (STATE_VIDEO_CONNECTED, STATE_VIDEO_TRANSITIONING, STATE_VIDEO_BUFFERING) and delta > 0.2:
+        if self.state in (STATE_VIDEO_CONNECTED, STATE_VIDEO_TRANSITIONING, STATE_VIDEO_BUFFERING) and delta > VIDEO_WATCHDOG_TIMEOUT:
             if self.state == STATE_VIDEO_BUFFERING:
-                print(f"[watchdog] No video data during buffering for {delta:.1f}s, cancelling buffer", flush=True)
+                print(f"[watchdog] No video data during buffering for {delta:.1f}s (timeout={VIDEO_WATCHDOG_TIMEOUT}s), cancelling buffer", flush=True)
                 self.state = STATE_FALLBACK_ONLY
                 self.video_first_buffer_time = None
                 self.video_buffer_scheduled = False
             else:
-                print(f"[watchdog] No video TCP data for {delta:.1f}s, state={self.state}, triggering fade-out", flush=True)
+                print(f"[watchdog] No video TCP data for {delta:.1f}s (timeout={VIDEO_WATCHDOG_TIMEOUT}s), state={self.state}, triggering fade-out", flush=True)
                 self.start_fade_out("video")
         
         return True
@@ -751,6 +839,11 @@ class CompositorManager:
             self.state = STATE_VIDEO_TRANSITIONING
             self._crossfade(None, "video", 1000, STATE_VIDEO_CONNECTED)
         else:  # srt
+            # Check privacy mode first
+            if self.privacy_enabled:
+                print("[fade] SRT fade-in BLOCKED by privacy mode", flush=True)
+                return
+            
             if self.state in (STATE_SRT_TRANSITIONING, STATE_SRT_CONNECTED):
                 return
             
@@ -1044,8 +1137,97 @@ class CompositorManager:
             self.pipeline.set_state(Gst.State.NULL)
 
 
+class CompositorHTTPHandler(BaseHTTPRequestHandler):
+    """HTTP request handler for compositor API."""
+    
+    compositor_manager = None
+    
+    def log_message(self, format, *args):
+        """Override to use custom logging."""
+        print(f"[http] {self.address_string()} - {format % args}", flush=True)
+    
+    def send_json_response(self, data, status=200):
+        """Send JSON response."""
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+    
+    def do_OPTIONS(self):
+        """Handle CORS preflight."""
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+    
+    def do_GET(self):
+        """Handle GET requests."""
+        parsed = urlparse(self.path)
+        path = parsed.path
+        
+        if path == '/health':
+            self.send_json_response({'status': 'ok'})
+        
+        elif path == '/scene':
+            scene = self.compositor_manager.get_current_scene()
+            self.send_json_response({'scene': scene})
+        
+        elif path == '/privacy':
+            enabled = self.compositor_manager.privacy_enabled
+            self.send_json_response({'enabled': enabled})
+        
+        else:
+            self.send_json_response({'error': 'Not found'}, 404)
+    
+    def do_POST(self):
+        """Handle POST requests."""
+        parsed = urlparse(self.path)
+        path = parsed.path
+        
+        if path == '/privacy':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+            
+            try:
+                data = json.loads(body.decode()) if body else {}
+                enabled = data.get('enabled', False)
+                
+                self.compositor_manager.set_privacy_mode(enabled)
+                self.send_json_response({
+                    'success': True,
+                    'enabled': enabled,
+                    'message': f"Privacy mode {'enabled' if enabled else 'disabled'}"
+                })
+            except Exception as e:
+                print(f"[http] Error handling privacy request: {e}", flush=True)
+                self.send_json_response({'error': str(e)}, 400)
+        
+        else:
+            self.send_json_response({'error': 'Not found'}, 404)
+
+
+def run_http_server(compositor_manager):
+    """Run HTTP API server in background thread."""
+    CompositorHTTPHandler.compositor_manager = compositor_manager
+    server = HTTPServer(('0.0.0.0', HTTP_API_PORT), CompositorHTTPHandler)
+    print(f"[http] HTTP API server listening on port {HTTP_API_PORT}", flush=True)
+    print("[http] Endpoints:", flush=True)
+    print("[http]   GET  /health  - Health check", flush=True)
+    print("[http]   GET  /scene   - Get current scene (BLACK/VIDEO/SRT)", flush=True)
+    print("[http]   GET  /privacy - Get privacy mode status", flush=True)
+    print("[http]   POST /privacy - Set privacy mode (JSON: {\"enabled\": true/false})", flush=True)
+    server.serve_forever()
+
+
 def main():
     compositor = CompositorManager()
+    
+    # Start HTTP API server in background thread
+    http_thread = threading.Thread(target=run_http_server, args=(compositor,), daemon=True)
+    http_thread.start()
+    
     compositor.start_pipeline()
     compositor.run()
 

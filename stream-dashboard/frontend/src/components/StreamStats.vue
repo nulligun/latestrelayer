@@ -39,55 +39,6 @@
       </div>
     </div>
     
-    <div class="streams-grid">
-      <div
-        v-for="(stream, name) in stats.streams"
-        :key="name"
-        class="stream-item"
-        :class="{
-          'current-scene': name === currentScene,
-          'using-fallback': sourceAvailability && sourceAvailability[name] && sourceAvailability[name].using_fallback
-        }"
-      >
-        <div class="stream-header">
-          <span class="stream-name">{{ name }}</span>
-          <div class="stream-header-right">
-            <span v-if="sourceAvailability && sourceAvailability[name] && sourceAvailability[name].using_fallback"
-                  class="fallback-badge"
-                  title="Using fallback test source - waiting for real stream">
-              ⚠ FALLBACK
-            </span>
-            <span v-if="switchingScene === name" class="switching-spinner"></span>
-            <span class="stream-status" :class="{ active: stream.active, inactive: !stream.active }">
-              {{ stream.active ? '● LIVE' : '○ OFFLINE' }}
-            </span>
-          </div>
-        </div>
-        <div class="stream-details">
-          <div class="detail">
-            <span class="detail-label">Bandwidth:</span>
-            <span class="detail-value">{{ stream.bandwidth.toLocaleString() }} kbps</span>
-          </div>
-          <div class="detail">
-            <span class="detail-label">Clients:</span>
-            <span class="detail-value">{{ stream.clients }}</span>
-          </div>
-          <div class="detail">
-            <span class="detail-label">Publishing:</span>
-            <span class="detail-value">{{ stream.publishing ? 'Yes' : 'No' }}</span>
-          </div>
-        </div>
-        <button
-          v-if="shouldShowSwitchButton(name)"
-          @click="switchScene(name)"
-          class="switch-button"
-          :disabled="switching || switchingScene"
-        >
-          {{ switching === name ? 'Switching...' : `Switch to ${name}` }}
-        </button>
-      </div>
-    </div>
-    
     <!-- Controls Grid -->
     <div class="controls-grid">
       <div class="control-section">
@@ -132,17 +83,17 @@
                 type="checkbox"
                 id="privacy-toggle"
                 class="toggle-checkbox"
-                :checked="sceneMode === 'privacy'"
+                :checked="privacyEnabled"
                 @change="handlePrivacyToggle"
-                :disabled="settingSceneMode"
+                :disabled="settingPrivacy"
               />
               <label for="privacy-toggle" class="toggle-switch">
                 <span class="toggle-text-off">Camera</span>
                 <span class="toggle-text-on">Privacy</span>
               </label>
             </div>
-            <div class="toggle-status-text" :class="{ active: sceneMode === 'privacy' }">
-              {{ sceneMode === 'privacy' ? 'Privacy' : 'Camera' }}
+            <div class="toggle-status-text" :class="{ active: privacyEnabled }">
+              {{ privacyEnabled ? 'Privacy' : 'Camera' }}
             </div>
           </div>
         </div>
@@ -215,8 +166,8 @@ export default {
   data() {
     return {
       switching: null,
-      sceneMode: 'camera',
-      settingSceneMode: null,
+      privacyEnabled: false,
+      settingPrivacy: false,
       kickActionPending: false,
       showKickConfirmModal: false,
       pendingKickAction: null,
@@ -242,7 +193,7 @@ export default {
     }
   },
   mounted() {
-    this.fetchSceneMode();
+    this.fetchPrivacyMode();
     this.fetchKickChannel();
     if (!this.cameraConfig) {
       this.fetchSrtConfig();
@@ -289,13 +240,13 @@ export default {
         document.body.removeChild(textArea);
       }
     },
-    async fetchSceneMode() {
+    async fetchPrivacyMode() {
       try {
-        const response = await fetch('/api/scene/mode');
+        const response = await fetch('/api/privacy');
         const data = await response.json();
-        this.sceneMode = data.mode || 'camera';
+        this.privacyEnabled = data.enabled || false;
       } catch (error) {
-        console.error('[StreamStats] Error fetching scene mode:', error);
+        console.error('[StreamStats] Error fetching privacy mode:', error);
       }
     },
     async fetchKickChannel() {
@@ -310,17 +261,18 @@ export default {
       }
     },
     handlePrivacyToggle(event) {
-      const newMode = event.target.checked ? 'privacy' : 'camera';
-      this.setSceneMode(newMode);
+      const enabled = event.target.checked;
+      this.setPrivacyMode(enabled);
     },
-    async setSceneMode(mode) {
-      if (this.settingSceneMode) return;
+    async setPrivacyMode(enabled) {
+      if (this.settingPrivacy) return;
       
-      this.settingSceneMode = mode;
-      console.log(`[StreamStats] Setting scene mode to: ${mode}`);
+      this.settingPrivacy = true;
+      console.log(`[StreamStats] Setting privacy mode to: ${enabled}`);
       
       try {
-        const response = await fetch(`/api/scene/${mode}`, {
+        const endpoint = enabled ? '/api/privacy/enable' : '/api/privacy/disable';
+        const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -329,17 +281,17 @@ export default {
         
         if (!response.ok) {
           const errorData = await response.json();
-          throw new Error(errorData.error || 'Failed to set scene mode');
+          throw new Error(errorData.error || 'Failed to set privacy mode');
         }
         
         const result = await response.json();
-        console.log(`[StreamStats] Scene mode set successfully:`, result);
-        this.sceneMode = mode;
+        console.log(`[StreamStats] Privacy mode set successfully:`, result);
+        this.privacyEnabled = enabled;
       } catch (error) {
-        console.error(`[StreamStats] Error setting scene mode:`, error);
-        alert(`Failed to set scene mode: ${error.message}`);
+        console.error(`[StreamStats] Error setting privacy mode:`, error);
+        alert(`Failed to set privacy mode: ${error.message}`);
       } finally {
-        this.settingSceneMode = null;
+        this.settingPrivacy = false;
       }
     },
     handleKickToggle(event) {
@@ -530,6 +482,12 @@ h2 {
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
   gap: 20px;
   margin-bottom: 20px;
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 20px;
 }
 
 .info-item {

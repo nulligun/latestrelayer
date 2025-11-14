@@ -10,7 +10,7 @@ const SceneService = require('./services/scene');
 // Configuration from environment variables
 const PORT = process.env.PORT || 3000;
 const CONTROLLER_API = process.env.CONTROLLER_API || 'http://stream-controller:8089';
-const MUXER_API = process.env.MUXER_API || 'http://srt-switcher:8088';
+const COMPOSITOR_API = process.env.COMPOSITOR_API || 'http://compositor:8088';
 const POLLING_INTERVAL = parseInt(process.env.POLLING_INTERVAL || '2000');
 const SRT_PORT = process.env.SRT_PORT || '1937';
 const SRT_DOMAIN = process.env.SRT_DOMAIN || 'localhost';
@@ -21,7 +21,7 @@ console.log('Stream Dashboard Backend - Starting Up');
 console.log('='.repeat(60));
 console.log(`[config] Port: ${PORT}`);
 console.log(`[config] Controller API: ${CONTROLLER_API}`);
-console.log(`[config] Switcher API: ${MUXER_API}`);
+console.log(`[config] Compositor API: ${COMPOSITOR_API}`);
 console.log(`[config] Polling Interval: ${POLLING_INTERVAL}ms`);
 console.log(`[config] SRT: srt://${SRT_DOMAIN}:${SRT_PORT}`);
 console.log('='.repeat(60));
@@ -29,14 +29,14 @@ console.log('='.repeat(60));
 // Initialize services
 const aggregator = new AggregatorService({
   controllerUrl: CONTROLLER_API,
-  switcherUrl: MUXER_API,
+  compositorUrl: COMPOSITOR_API,
   pollingInterval: POLLING_INTERVAL,
   srtPort: SRT_PORT,
   srtDomain: SRT_DOMAIN
 });
 
 const controller = new ControllerService(CONTROLLER_API);
-const sceneService = new SceneService(MUXER_API);
+const sceneService = new SceneService(COMPOSITOR_API);
 
 // Create Express app
 const app = express();
@@ -195,63 +195,30 @@ app.get('/api/scene/mode', async (req, res) => {
   }
 });
 
-app.post('/api/scene/camera', async (req, res) => {
+// Privacy mode endpoints (proxy to compositor)
+app.post('/api/privacy/enable', async (req, res) => {
   try {
-    const result = await sceneService.setCameraMode();
+    const result = await sceneService.setPrivacyMode(true);
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/scene/privacy', async (req, res) => {
+app.post('/api/privacy/disable', async (req, res) => {
   try {
-    const result = await sceneService.setPrivacyMode();
+    const result = await sceneService.setPrivacyMode(false);
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Kick streaming control endpoints (proxy to srt-switcher)
-app.post('/api/kick/start', async (req, res) => {
+app.get('/api/privacy', async (req, res) => {
   try {
-    console.log('[api] Proxying Kick start request to srt-switcher');
-    const response = await fetch(`${MUXER_API}/kick/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Switcher returned error: ${errorText}`);
-    }
-    
-    const result = await response.json();
+    const result = await sceneService.getPrivacyMode();
     res.json(result);
   } catch (error) {
-    console.error('[api] Error starting Kick stream:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/kick/stop', async (req, res) => {
-  try {
-    console.log('[api] Proxying Kick stop request to srt-switcher');
-    const response = await fetch(`${MUXER_API}/kick/stop`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Switcher returned error: ${errorText}`);
-    }
-    
-    const result = await response.json();
-    res.json(result);
-  } catch (error) {
-    console.error('[api] Error stopping Kick stream:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

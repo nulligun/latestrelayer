@@ -133,42 +133,38 @@ export default {
       return props.switcherHealth?.kick_streaming_enabled || false;
     });
 
-    // Computed: Is privacy mode active (auto-switcher stopped AND scene is BRB)
+    // Computed: Is privacy mode active
     const isPrivacyMode = computed(() => {
-      const sceneMode = props.switcherHealth?.scene_mode || 'camera';
-      const currentScene = props.currentScene;
-      return sceneMode === 'privacy' && currentScene === 'fallback';
+      return props.switcherHealth?.privacy_enabled || false;
     });
 
     // Computed: Is current scene Camera (SRT)
     const isCameraScene = computed(() => {
-      return props.currentScene === 'srt';
+      return props.currentScene === 'SRT';
     });
 
     // Computed: Display scene
     const displayScene = computed(() => {
       if (!props.currentScene) return 'UNKNOWN';
       
-      // Get scene_mode and srt_connected from switcherHealth
-      const sceneMode = props.switcherHealth?.scene_mode || 'camera';
+      // Get privacy status from switcherHealth (compositor health)
+      const privacyEnabled = props.switcherHealth?.privacy_enabled || false;
       const srtConnected = props.switcherHealth?.srt_connected || false;
       
-      // Check if scene is fallback - show PRIVACY or BRB based on scene_mode
-      if (props.currentScene === 'fallback') {
-        if (!srtConnected) {
-          return 'Camera Not Connected';
+      // Map scene names to display text
+      if (props.currentScene === 'SRT') {
+        return 'Camera';
+      } else if (props.currentScene === 'VIDEO') {
+        return privacyEnabled ? 'PRIVACY' : 'Video Fallback';
+      } else if (props.currentScene === 'BLACK') {
+        if (privacyEnabled) {
+          return 'PRIVACY';
         }
-        return sceneMode === 'privacy' ? 'PRIVACY' : 'BRB';
-      }
-      
-      // Check if scene is srt (camera feed)
-      if (props.currentScene === 'srt') {
-        // Show Camera or Camera Not Connected based on SRT connection status
-        return srtConnected ? 'Camera' : 'Camera Not Connected';
+        return srtConnected ? 'BRB' : 'Camera Not Connected';
       }
       
       // Fallback for any unknown scene
-      return props.currentScene.toUpperCase();
+      return props.currentScene;
     });
 
     // Computed: Is stream online (same as isKickLive for backwards compatibility)
@@ -313,68 +309,33 @@ export default {
       try {
         if (isPrivacyMode.value) {
           // Deactivate privacy mode
-          privacyActionMessage.value = 'Activating camera...';
-
-          // Start auto-switcher
-          console.log('[SimplifiedView] Starting auto-switcher...');
-          const switcherResponse = await fetch('/api/container/stream-auto-switcher/start', {
+          privacyActionMessage.value = 'Deactivating privacy mode...';
+          
+          console.log('[SimplifiedView] Disabling privacy mode...');
+          const response = await fetch('/api/privacy/disable', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' }
           });
 
-          if (!switcherResponse.ok) {
-            const data = await switcherResponse.json();
-            throw new Error(data.error || 'Failed to start auto-switcher');
+          if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Failed to disable privacy mode');
           }
 
-          // Wait a moment for auto-switcher to start
-          await new Promise(resolve => setTimeout(resolve, 1000));
-
-          // Switch to srt scene (camera)
-          console.log('[SimplifiedView] Switching to srt...');
-          
-          const sceneResponse = await fetch('/api/scene/switch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ scene: 'srt' })
-          });
-
-          if (!sceneResponse.ok) {
-            const data = await sceneResponse.json();
-            throw new Error(data.error || 'Failed to switch scene');
-          }
-
-          console.log('[SimplifiedView] Camera activated successfully');
+          console.log('[SimplifiedView] Privacy mode deactivated successfully');
         } else {
           // Activate privacy mode
           privacyActionMessage.value = 'Activating privacy mode...';
 
-          // Switch to fallback scene first
-          console.log('[SimplifiedView] Switching to fallback...');
-          const sceneResponse = await fetch('/api/scene/switch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ scene: 'fallback' })
-          });
-
-          if (!sceneResponse.ok) {
-            const data = await sceneResponse.json();
-            throw new Error(data.error || 'Failed to switch to fallback');
-          }
-
-          // Wait a moment for scene to switch
-          await new Promise(resolve => setTimeout(resolve, 500));
-
-          // Stop auto-switcher
-          console.log('[SimplifiedView] Stopping auto-switcher...');
-          const switcherResponse = await fetch('/api/container/stream-auto-switcher/stop', {
+          console.log('[SimplifiedView] Enabling privacy mode...');
+          const response = await fetch('/api/privacy/enable', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' }
           });
 
-          if (!switcherResponse.ok) {
-            const data = await switcherResponse.json();
-            throw new Error(data.error || 'Failed to stop auto-switcher');
+          if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Failed to enable privacy mode');
           }
 
           console.log('[SimplifiedView] Privacy mode activated successfully');

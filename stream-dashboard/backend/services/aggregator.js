@@ -3,12 +3,12 @@ const metricsService = require('./metrics');
 const ControllerService = require('./controller');
 
 /**
- * Aggregates data from all sources (containers, metrics, srt-switcher)
+ * Aggregates data from all sources (containers, metrics, compositor)
  */
 class AggregatorService {
   constructor(config) {
     this.controllerService = new ControllerService(config.controllerUrl);
-    this.switcherUrl = config.switcherUrl;
+    this.compositorUrl = config.compositorUrl;
     this.pollingInterval = config.pollingInterval || 2000;
     this.clients = new Set();
     
@@ -18,22 +18,34 @@ class AggregatorService {
     
     // Stream status tracking
     this.streamStatus = {
-      currentSource: null,
-      srtConnected: false,
+      currentScene: null,
       stateChangeTimestamp: Date.now()
     };
   }
 
   /**
-   * Get data from srt-switcher health endpoint
+   * Get current scene from compositor
    */
-  async getSwitcherHealth() {
+  async getCompositorScene() {
     try {
-      const response = await axios.get(`${this.switcherUrl}/health`, { timeout: 3000 });
-      return response.data;
+      const response = await axios.get(`${this.compositorUrl}/scene`, { timeout: 3000 });
+      return response.data.scene;
     } catch (error) {
-      console.error('[aggregator] Error fetching srt-switcher health:', error.message);
+      console.error('[aggregator] Error fetching compositor scene:', error.message);
       return null;
+    }
+  }
+
+  /**
+   * Get privacy mode status from compositor
+   */
+  async getCompositorPrivacy() {
+    try {
+      const response = await axios.get(`${this.compositorUrl}/privacy`, { timeout: 3000 });
+      return response.data.enabled;
+    } catch (error) {
+      console.error('[aggregator] Error fetching compositor privacy:', error.message);
+      return false;
     }
   }
 
@@ -44,37 +56,32 @@ class AggregatorService {
     const timestamp = new Date().toISOString();
 
     try {
-      const [containers, systemMetrics, switcherHealth] = await Promise.all([
+      const [containers, systemMetrics, currentScene, privacyEnabled] = await Promise.all([
         this.controllerService.listContainers().catch(err => {
           console.error('[aggregator] Error listing containers:', err.message);
           return [];
         }),
         metricsService.getSystemMetrics(),
-        this.getSwitcherHealth()
+        this.getCompositorScene(),
+        this.getCompositorPrivacy()
       ]);
 
-      // Get current state from srt-switcher
-      const currentSource = switcherHealth?.current_source || 'unknown';
-      const srtConnected = switcherHealth?.srt_connected || false;
-      
-      // Track state changes and update timestamp
-      if (currentSource !== this.streamStatus.currentSource || 
-          srtConnected !== this.streamStatus.srtConnected) {
-        this.streamStatus.currentSource = currentSource;
-        this.streamStatus.srtConnected = srtConnected;
+      // Track scene changes and update timestamp
+      if (currentScene !== this.streamStatus.currentScene) {
+        this.streamStatus.currentScene = currentScene;
         this.streamStatus.stateChangeTimestamp = Date.now();
-        console.log(`[aggregator] State changed: source=${currentSource}, srt_connected=${srtConnected}`);
+        console.log(`[aggregator] Scene changed: ${currentScene}`);
       }
       
-      // Calculate duration in current state (seconds)
-      const durationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
+      // Calculate duration in current scene (seconds)
+      const sceneDurationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
 
-      // Determine if stream is online (srt-switcher is running and pipeline is playing)
-      const switcherContainer = containers.find(c => c.name === 'srt-switcher');
-      const isOnline = switcherContainer?.running && switcherHealth?.status === 'healthy';
+      // Determine if compositor is online
+      const compositorContainer = containers.find(c => c.name === 'compositor');
+      const isOnline = compositorContainer?.running && compositorContainer?.health === 'healthy';
       
-      // Get kick streaming state from switcher health
-      const kickStreamingEnabled = switcherHealth?.kick_streaming_enabled || false;
+      // Map scene to user-friendly names
+      const srtConnected = currentScene === 'SRT';
 
       return {
         timestamp,
@@ -88,19 +95,20 @@ class AggregatorService {
           id: c.id
         })),
         systemMetrics,
-        switcherHealth: switcherHealth || {
-          status: 'unavailable',
-          current_source: 'unknown',
-          srt_connected: false,
-          kick_streaming_enabled: false
+        compositorHealth: {
+          status: isOnline ? 'healthy' : 'unavailable',
+          current_scene: currentScene,
+          srt_connected: srtConnected,
+          privacy_enabled: privacyEnabled
         },
-        currentScene: currentSource,
+        currentScene: currentScene,
         streamStatus: {
           isOnline,
-          durationSeconds,
+          durationSeconds: sceneDurationSeconds,
           srtConnected,
-          kickStreamingEnabled
+          privacyEnabled
         },
+        sceneDurationSeconds,
         cameraConfig: {
           srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
         }
@@ -115,17 +123,20 @@ class AggregatorService {
         timestamp,
         containers: [],
         systemMetrics: { cpu: 0, memory: 0, load: [0] },
-        switcherHealth: {
+        compositorHealth: {
           status: 'error',
-          current_source: 'unknown',
-          srt_connected: false
+          current_scene: 'unknown',
+          srt_connected: false,
+          privacy_enabled: false
         },
         currentScene: null,
         streamStatus: {
           isOnline: false,
           durationSeconds,
-          srtConnected: false
+          srtConnected: false,
+          privacyEnabled: false
         },
+        sceneDurationSeconds: durationSeconds,
         cameraConfig: {
           srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
         },

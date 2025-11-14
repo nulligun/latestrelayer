@@ -10,12 +10,104 @@ services:
       - "${SRT_PORT:-1937}:1937/udp"  # SRT listener port
       - "${VIDEO_TCP_PORT:-1940}:1940"  # Video fallback TCP server port
       - "5000:5000"  # TCP server port for VLC testing
+      - "8088:8088"  # HTTP API port for scene/privacy control
     environment:
       - FALLBACK_SOURCE=${FALLBACK_SOURCE:-}
       - VIDEO_TCP_PORT=${VIDEO_TCP_PORT:-1940}
+      - VIDEO_WATCHDOG_TIMEOUT=${VIDEO_WATCHDOG_TIMEOUT:-2.0}
     networks:
       - rtmp-network
     restart: unless-stopped
+
+  # Offline Video - Streams fallback video to compositor
+  offline-video:
+    profiles:
+      - manual
+    stop_grace_period: 5s
+    build:
+      context: ./offline-video
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-offline-video
+    volumes:
+      - ${BRB_VIDEO_PATH}:/video/offline.mp4:ro
+    environment:
+      - VIDEO_PATH=/video/offline.mp4
+      - COMPOSITOR_HOST=compositor
+      - COMPOSITOR_PORT=1940
+      - RETRY_DELAY=1
+      - MAX_RETRY_DELAY=10
+    networks:
+      - rtmp-network
+    depends_on:
+      compositor:
+        condition: service_started
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Offline Browser - Streams web page rendering to compositor
+  offline-browser:
+    profiles:
+      - manual
+    stop_grace_period: 5s
+    build:
+      context: ./offline-browser
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-offline-browser
+    environment:
+      - OFFLINE_SOURCE_URL=${OFFLINE_SOURCE_URL:-https://example.com}
+      - COMPOSITOR_HOST=compositor
+      - COMPOSITOR_PORT=1940
+      - DISPLAY_RESOLUTION=1920x1080
+      - FRAME_RATE=30
+      - RETRY_DELAY=1
+      - MAX_RETRY_DELAY=10
+    networks:
+      - rtmp-network
+    depends_on:
+      compositor:
+        condition: service_started
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Offline Image - Streams static image as video to compositor
+  offline-image:
+    profiles:
+      - manual
+    stop_grace_period: 5s
+    build:
+      context: ./offline-image
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-offline-image
+    volumes:
+      - ${BRB_IMAGE_PATH}:/image/offline.png:ro
+    environment:
+      - IMAGE_PATH=/image/offline.png
+      - COMPOSITOR_HOST=compositor
+      - COMPOSITOR_PORT=1940
+      - RETRY_DELAY=1
+      - MAX_RETRY_DELAY=10
+    networks:
+      - rtmp-network
+    depends_on:
+      compositor:
+        condition: service_started
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # Container Controller - REST API for container lifecycle management
   stream-controller:
@@ -56,7 +148,7 @@ services:
     environment:
       - PORT=3000
       - CONTROLLER_API=http://stream-controller:8089
-      - MUXER_API=http://compositor:5000
+      - COMPOSITOR_API=http://compositor:8088
       - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
       - SRT_PORT=${SRT_PORT:-1937}
     networks:

@@ -140,10 +140,9 @@ export default {
       cameraConfig: null,
       switcherHealth: {
         status: 'unavailable',
-        current_source: 'unknown',
+        current_scene: 'unknown',
         srt_connected: false,
-        kick_streaming_enabled: false,
-        scene_mode: 'camera'
+        privacy_enabled: false
       }
     });
 
