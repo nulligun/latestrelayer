@@ -433,6 +433,7 @@ class CompositorManager:
         audio_queue = Gst.ElementFactory.make("queue", "video_audio_q")
         audio_queue.set_property("max-size-time", 3000000000)  # 3 seconds (matched with video)
         audio_queue.set_property("max-size-buffers", 0)
+        audio_queue.set_property("leaky", 2)  # Drop old buffers to prevent audio blocking
         audioconvert = Gst.ElementFactory.make("audioconvert", "video_aconv")
         audioresample = Gst.ElementFactory.make("audioresample", "video_ares")
         
@@ -747,9 +748,16 @@ class CompositorManager:
         videorate = Gst.ElementFactory.make("videorate", "vrate")
         videorate.set_property("drop-only", True)
         
+        # Queue before compositor to prevent blocking
+        srt_comp_queue = Gst.ElementFactory.make("queue", "srt_comp_q")
+        srt_comp_queue.set_property("max-size-time", 500000000)  # 500ms
+        srt_comp_queue.set_property("max-size-buffers", 0)
+        srt_comp_queue.set_property("leaky", 2)  # Drop old buffers to prevent pipeline blocking
+        
         audio_queue = Gst.ElementFactory.make("queue", "audio_q")
         audio_queue.set_property("max-size-time", 2000000000)
         audio_queue.set_property("max-size-buffers", 0)
+        audio_queue.set_property("leaky", 2)  # Drop old buffers to prevent audio blocking
         audioconvert = Gst.ElementFactory.make("audioconvert", "aconv")
         audioresample = Gst.ElementFactory.make("audioresample", "ares")
         
@@ -763,6 +771,7 @@ class CompositorManager:
             'videoconvert': videoconvert,
             'videoscale': videoscale,
             'videorate': videorate,
+            'srt_comp_queue': srt_comp_queue,
             'audio_queue': audio_queue,
             'audioconvert': audioconvert,
             'audioresample': audioresample,
@@ -816,6 +825,7 @@ class CompositorManager:
         video_queue.link(videoconvert)
         videoconvert.link(videoscale)
         videoscale.link(videorate)
+        videorate.link(srt_comp_queue)
         audio_queue.link(audioconvert)
         audioconvert.link(audioresample)
         audioresample.link(self.cam_vol)
@@ -893,9 +903,9 @@ class CompositorManager:
                 compositor = self.output_elements['compositor']
                 self.srt_compositor_pad = compositor.request_pad_simple("sink_%u")
                 self.srt_compositor_pad.set_property("alpha", 0.0)
-                videorate = self.srt_elements['videorate']
-                vrate_src = videorate.get_static_pad("src")
-                vrate_src.link(self.srt_compositor_pad)
+                srt_comp_queue = self.srt_elements['srt_comp_queue']
+                comp_queue_src = srt_comp_queue.get_static_pad("src")
+                comp_queue_src.link(self.srt_compositor_pad)
                 print(f"[srt] ✓ Video linked to compositor pad (alpha=0.0)", flush=True)
                 
         elif name.startswith("audio/"):
