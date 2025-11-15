@@ -2,22 +2,25 @@
   <div class="stream-card">
     <h2>Camera Details</h2>
     
-    <!-- Camera Address Section -->
-    <div class="rtmp-url-section">
-      <div class="url-container">
-        <div class="url-display">{{ srtUrl }}</div>
-        <button
-          class="copy-button"
-          :class="{ copied: copySuccess }"
-          @click="copyToClipboard"
-          :disabled="!srtUrl"
-        >
-          {{ copySuccess ? 'Copied!' : 'Copy' }}
-        </button>
+    <!-- Camera Details - 3 Column Grid -->
+    <div class="camera-details-grid">
+      <!-- Column 1: Copy Button + RTMP URL -->
+      <div class="info-item url-item">
+        <div class="info-label">RTMP URL</div>
+        <div class="url-with-copy">
+          <button
+            class="copy-button"
+            :class="{ copied: copySuccess }"
+            @click="copyToClipboard"
+            :disabled="!srtUrl"
+          >
+            {{ copySuccess ? 'Copied!' : 'Copy' }}
+          </button>
+          <div class="url-display">{{ srtUrl }}</div>
+        </div>
       </div>
-    </div>
-    
-    <div class="stream-info">
+      
+      <!-- Column 2: Stream Status -->
       <div class="info-item">
         <div class="info-label">Stream Status</div>
         <div class="info-value status-badge" :class="isKickLive ? 'status-kick-live' : 'status-kick-offline'">
@@ -26,99 +29,31 @@
         <div v-if="isKickLive" class="duration-text">
           {{ formatDuration(streamStatus.durationSeconds) }}
         </div>
+        <div v-if="streamStatus.srtBitrateKbps > 0" class="duration-text">
+          Bitrate: {{ streamStatus.srtBitrateKbps }} Kbps
+        </div>
+        <div v-else-if="switcherHealth?.srt_connected" class="duration-text">
+          Bitrate: Calculating...
+        </div>
       </div>
       
+      <!-- Column 3: Current Scene -->
       <div class="info-item">
         <div class="info-label">Current Scene</div>
         <div class="info-value scene-value">
-          {{ currentScene ? currentScene.toUpperCase() : 'UNKNOWN' }}
+          {{ displayScene }}
         </div>
         <div class="duration-text">
           {{ formatDuration(sceneDurationSeconds) }}
         </div>
       </div>
     </div>
-    
-    <!-- Controls Grid -->
-    <div class="controls-grid">
-      <div class="control-section">
-        <h3 class="section-title">Kick Stream Control</h3>
-        <div class="toggle-container">
-          <label class="toggle-label">
-            Stream to
-            <a v-if="kickChannelUrl" :href="kickChannelUrl" target="_blank" rel="noopener noreferrer" class="kick-link">
-              Kick
-            </a>
-            <span v-else>Kick</span>
-          </label>
-          <div class="toggle-control-wrapper">
-            <div class="toggle-slider-wrapper">
-              <input
-                type="checkbox"
-                id="kick-toggle"
-                class="toggle-checkbox"
-                :checked="isKickLive"
-                @click="handleKickToggle"
-                :disabled="kickActionPending"
-              />
-              <label for="kick-toggle" class="toggle-switch">
-                <span class="toggle-text-off">OFF</span>
-                <span class="toggle-text-on">ON</span>
-              </label>
-            </div>
-            <div class="toggle-status-text" :class="{ active: isKickLive }">
-              {{ isKickLive ? 'Live on Kick' : 'Not Streaming' }}
-            </div>
-          </div>
-        </div>
-      </div>
-      
-      <div class="scene-selection-section">
-        <h3 class="section-title">Scene Selection</h3>
-        <div class="toggle-container">
-          <label class="toggle-label">Enable Privacy Mode</label>
-          <div class="toggle-control-wrapper">
-            <div class="toggle-slider-wrapper">
-              <input
-                type="checkbox"
-                id="privacy-toggle"
-                class="toggle-checkbox"
-                :checked="privacyEnabled"
-                @change="handlePrivacyToggle"
-                :disabled="settingPrivacy"
-              />
-              <label for="privacy-toggle" class="toggle-switch">
-                <span class="toggle-text-off">Camera</span>
-                <span class="toggle-text-on">Privacy</span>
-              </label>
-            </div>
-            <div class="toggle-status-text" :class="{ active: privacyEnabled }">
-              {{ privacyEnabled ? 'Privacy' : 'Camera' }}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-    
-    <ConfirmationModal
-      :isVisible="showKickConfirmModal"
-      :title="kickConfirmTitle"
-      :message="kickConfirmMessage"
-      :isProcessing="kickActionPending"
-      @confirm="confirmKickToggle"
-      @cancel="cancelKickToggle"
-    />
   </div>
 </template>
 
 <script>
-import ConfirmationModal from './ConfirmationModal.vue';
-
 export default {
   name: 'StreamStats',
-  components: {
-    ConfirmationModal
-  },
   props: {
     stats: {
       type: Object,
@@ -142,18 +77,6 @@ export default {
       type: Number,
       default: 0
     },
-    switchingScene: {
-      type: String,
-      default: null
-    },
-    sourceAvailability: {
-      type: Object,
-      default: null
-    },
-    containers: {
-      type: Array,
-      default: () => []
-    },
     cameraConfig: {
       type: Object,
       default: null
@@ -161,17 +84,19 @@ export default {
     switcherHealth: {
       type: Object,
       default: () => ({})
+    },
+    fallbackConfig: {
+      type: Object,
+      default: () => ({
+        source: 'BLACK',
+        imagePath: '/app/shared/offline.png',
+        videoPath: '/app/shared/offline.mp4',
+        browserUrl: 'https://example.com'
+      })
     }
   },
   data() {
     return {
-      switching: null,
-      privacyEnabled: false,
-      settingPrivacy: false,
-      kickActionPending: false,
-      showKickConfirmModal: false,
-      pendingKickAction: null,
-      kickChannelUrl: null,
       localSrtUrl: '',
       copySuccess: false
     };
@@ -183,18 +108,37 @@ export default {
     srtUrl() {
       return this.cameraConfig?.srtUrl || this.localSrtUrl || 'Loading...';
     },
-    kickConfirmTitle() {
-      return this.pendingKickAction === 'start' ? 'GO LIVE ON KICK?' : 'END KICK STREAM?';
-    },
-    kickConfirmMessage() {
-      return this.pendingKickAction === 'start'
-        ? 'Are you SURE you want to GO LIVE on KICK?'
-        : 'Are you SURE you want to END KICK STREAM?';
+    displayScene() {
+      if (!this.currentScene) return 'UNKNOWN';
+      
+      const scene = this.currentScene.toUpperCase();
+      
+      // Map scene names according to requirements
+      if (scene === 'SRT') {
+        return 'Camera';
+      } else if (scene === 'BLACK') {
+        return 'Black Screen';
+      } else if (scene === 'VIDEO') {
+        // Show fallback source based on configuration
+        const source = this.fallbackConfig?.source || 'BLACK';
+        
+        if (source === 'IMAGE') {
+          return 'Fallback: Static Image';
+        } else if (source === 'VIDEO') {
+          return 'Fallback: Video Loop';
+        } else if (source === 'BROWSER') {
+          return 'Fallback: Web Browser';
+        } else {
+          // Default fallback if source is BLACK or unknown
+          return 'Fallback: Black Screen';
+        }
+      }
+      
+      // Return original scene name in uppercase for any unknown scenes
+      return scene;
     }
   },
   mounted() {
-    this.fetchPrivacyMode();
-    this.fetchKickChannel();
     if (!this.cameraConfig) {
       this.fetchSrtConfig();
     }
@@ -240,102 +184,6 @@ export default {
         document.body.removeChild(textArea);
       }
     },
-    async fetchPrivacyMode() {
-      try {
-        const response = await fetch('/api/privacy');
-        const data = await response.json();
-        this.privacyEnabled = data.enabled || false;
-      } catch (error) {
-        console.error('[StreamStats] Error fetching privacy mode:', error);
-      }
-    },
-    async fetchKickChannel() {
-      try {
-        const response = await fetch('/api/config');
-        const data = await response.json();
-        if (data.kickChannel) {
-          this.kickChannelUrl = `https://kick.com/${data.kickChannel}`;
-        }
-      } catch (error) {
-        console.error('[StreamStats] Error fetching Kick channel:', error);
-      }
-    },
-    handlePrivacyToggle(event) {
-      const enabled = event.target.checked;
-      this.setPrivacyMode(enabled);
-    },
-    async setPrivacyMode(enabled) {
-      if (this.settingPrivacy) return;
-      
-      this.settingPrivacy = true;
-      console.log(`[StreamStats] Setting privacy mode to: ${enabled}`);
-      
-      try {
-        const endpoint = enabled ? '/api/privacy/enable' : '/api/privacy/disable';
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
-        
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || 'Failed to set privacy mode');
-        }
-        
-        const result = await response.json();
-        console.log(`[StreamStats] Privacy mode set successfully:`, result);
-        this.privacyEnabled = enabled;
-      } catch (error) {
-        console.error(`[StreamStats] Error setting privacy mode:`, error);
-        alert(`Failed to set privacy mode: ${error.message}`);
-      } finally {
-        this.settingPrivacy = false;
-      }
-    },
-    handleKickToggle(event) {
-      event.preventDefault();
-      this.pendingKickAction = this.isKickLive ? 'stop' : 'start';
-      this.showKickConfirmModal = true;
-    },
-    cancelKickToggle() {
-      this.showKickConfirmModal = false;
-      this.pendingKickAction = null;
-    },
-    async confirmKickToggle() {
-      this.kickActionPending = true;
-      
-      try {
-        const endpoint = this.pendingKickAction === 'start'
-          ? '/api/kick/start'
-          : '/api/kick/stop';
-        
-        console.log(`[StreamStats] ${this.pendingKickAction === 'start' ? 'Starting' : 'Stopping'} Kick stream...`);
-        
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
-        
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.error || `Failed to ${this.pendingKickAction} stream`);
-        }
-        
-        console.log(`[StreamStats] Kick stream ${this.pendingKickAction} successful`);
-      } catch (error) {
-        console.error('[StreamStats] Kick toggle error:', error);
-        alert(`Failed to ${this.pendingKickAction} Kick stream: ${error.message}`);
-      } finally {
-        this.kickActionPending = false;
-        this.showKickConfirmModal = false;
-        this.pendingKickAction = null;
-      }
-    },
-    getStatusClass(isOnline) {
-      return isOnline ? 'status-online' : 'status-offline';
-    },
     formatDuration(seconds) {
       if (seconds < 60) {
         return `${seconds}s`;
@@ -348,50 +196,6 @@ export default {
         const minutes = Math.floor((seconds % 3600) / 60);
         const secs = seconds % 60;
         return `${hours}h ${minutes}m ${secs}s`;
-      }
-    },
-    shouldShowSwitchButton(streamName) {
-      // Don't show button for "program" stream or current scene
-      return streamName !== 'program' && streamName !== this.currentScene;
-    },
-    async switchScene(sceneName) {
-      console.log(`[StreamStats] switchScene called for: ${sceneName}`);
-      console.log(`[StreamStats] switching=${this.switching}, switchingScene prop=${this.switchingScene}`);
-      
-      if (this.switching || this.switchingScene) {
-        console.log(`[StreamStats] Blocked - already switching`);
-        return;
-      }
-      
-      this.switching = sceneName;
-      console.log(`[StreamStats] Set local switching=${sceneName}`);
-      
-      // Emit event to parent to show loading indicator
-      console.log(`[StreamStats] Emitting scene-switching event`);
-      this.$emit('scene-switching', sceneName);
-      
-      try {
-        // Use proxied endpoint to avoid CORS issues
-        const response = await fetch('/api/scene/switch', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ scene: sceneName })
-        });
-        
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || 'Switch failed');
-        }
-        
-        const result = await response.json();
-        console.log(`[StreamStats] Switch successful:`, result);
-      } catch (error) {
-        console.error(`[StreamStats] Error switching scene:`, error);
-        alert(`Failed to switch scene: ${error.message}`);
-      } finally {
-        this.switching = null;
       }
     }
   }
@@ -412,32 +216,44 @@ h2 {
   color: #f1f5f9;
 }
 
-.rtmp-url-section {
-  margin-bottom: 20px;
+.camera-details-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
 }
 
-.url-container {
+@media (max-width: 1200px) {
+  .camera-details-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.info-item {
+  background: #0f172a;
+  border-radius: 6px;
+  padding: 15px;
+}
+
+.url-item {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.info-label {
+  font-size: 0.875rem;
+  color: #94a3b8;
+  margin-bottom: 8px;
+}
+
+.url-with-copy {
   display: flex;
   gap: 12px;
-  align-items: stretch;
-}
-
-.url-display {
-  flex: 1;
-  background: #0f172a;
-  border: 1px solid #334155;
-  border-radius: 6px;
-  padding: 12px 16px;
-  font-family: 'Courier New', monospace;
-  font-size: 0.875rem;
-  color: #e2e8f0;
-  word-break: break-all;
-  display: flex;
   align-items: center;
 }
 
 .copy-button {
-  padding: 12px 24px;
+  padding: 12px 20px;
   background: #3b82f6;
   color: white;
   border: none;
@@ -447,7 +263,8 @@ h2 {
   cursor: pointer;
   transition: all 0.2s ease;
   white-space: nowrap;
-  min-width: 90px;
+  min-width: 80px;
+  flex-shrink: 0;
 }
 
 .copy-button:hover:not(:disabled) {
@@ -477,29 +294,19 @@ h2 {
   opacity: 0.6;
 }
 
-.stream-info {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 20px;
-  margin-bottom: 20px;
-}
-
-.controls-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 20px;
-}
-
-.info-item {
+.url-display {
+  flex: 1;
   background: #0f172a;
+  border: 1px solid #334155;
   border-radius: 6px;
-  padding: 15px;
-}
-
-.info-label {
+  padding: 12px 16px;
+  font-family: 'Courier New', monospace;
   font-size: 0.875rem;
-  color: #94a3b8;
-  margin-bottom: 8px;
+  color: #e2e8f0;
+  word-break: break-all;
+  display: flex;
+  align-items: center;
+  min-width: 0;
 }
 
 .info-value {
@@ -513,169 +320,6 @@ h2 {
   padding: 8px 16px;
   border-radius: 6px;
   font-size: 1rem;
-}
-
-.status-online {
-  background: #10b981;
-  color: #fff;
-}
-
-.status-offline {
-  background: #ef4444;
-  color: #fff;
-}
-
-.duration-text {
-  margin-top: 8px;
-  font-size: 0.875rem;
-  color: #94a3b8;
-  font-weight: normal;
-}
-
-.bandwidth-value {
-  color: #3b82f6;
-}
-
-.scene-value {
-  color: #10b981;
-  font-weight: bold;
-}
-
-.streams-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 15px;
-}
-.stream-item.using-fallback {
-  border: 2px solid #f59e0b;
-  box-shadow: 0 0 10px rgba(245, 158, 11, 0.3);
-}
-
-.fallback-badge {
-  font-size: 0.65rem;
-  font-weight: bold;
-  padding: 3px 6px;
-  border-radius: 3px;
-  color: #fff;
-  background: #f59e0b;
-  margin-right: 6px;
-}
-
-
-.stream-item {
-  background: #0f172a;
-  border-radius: 6px;
-  padding: 15px;
-  border: 1px solid #334155;
-  position: relative;
-}
-
-.stream-item.current-scene {
-  border: 2px solid #10b981;
-  box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
-}
-
-.stream-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #334155;
-}
-
-.stream-header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.switching-spinner {
-  width: 12px;
-  height: 12px;
-  border: 2px solid #3b82f6;
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.stream-name {
-  font-weight: bold;
-  color: #f1f5f9;
-  text-transform: uppercase;
-  font-size: 0.875rem;
-}
-
-.stream-status {
-  font-size: 0.75rem;
-  font-weight: bold;
-  padding: 4px 8px;
-  border-radius: 4px;
-}
-
-.stream-status.active {
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.1);
-}
-
-.stream-status.inactive {
-  color: #64748b;
-  background: rgba(100, 116, 139, 0.1);
-}
-
-.stream-details {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.detail {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.875rem;
-}
-
-.detail-label {
-  color: #94a3b8;
-}
-
-.detail-value {
-  color: #e2e8f0;
-  font-weight: 500;
-}
-
-.switch-button {
-  margin-top: 12px;
-  width: 100%;
-  padding: 8px 16px;
-  background: #3b82f6;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.switch-button:hover:not(:disabled) {
-  background: #2563eb;
-}
-
-.switch-button:active:not(:disabled) {
-  background: #1d4ed8;
-}
-
-.switch-button:disabled {
-  background: #64748b;
-  cursor: not-allowed;
-  opacity: 0.6;
 }
 
 .status-kick-live {
@@ -698,144 +342,15 @@ h2 {
   }
 }
 
-.control-section,
-.scene-selection-section {
-  margin-top: 20px;
-  background: #0f172a;
-  border-radius: 6px;
-  padding: 15px;
-}
-
-.section-title {
-  font-size: 1rem;
-  color: #f1f5f9;
-  margin-bottom: 15px;
-  font-weight: 600;
-}
-
-.toggle-container {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 15px;
-}
-
-.toggle-label {
-  font-size: 0.9rem;
-  color: #e2e8f0;
-  flex: 1;
-}
-
-.kick-link {
-  color: #10b981;
-  text-decoration: none;
-  font-weight: 600;
-  border-bottom: 2px solid transparent;
-  transition: border-color 0.2s ease, color 0.2s ease;
-}
-
-.kick-link:hover {
-  color: #059669;
-  border-bottom-color: #059669;
-}
-
-.toggle-control-wrapper {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.toggle-slider-wrapper {
-  position: relative;
-}
-
-.toggle-checkbox {
-  display: none;
-}
-
-.toggle-switch {
-  display: block;
-  width: 100px;
-  height: 40px;
-  background: #475569;
-  border-radius: 20px;
-  position: relative;
-  cursor: pointer;
-  transition: background 0.3s ease;
-  user-select: none;
-}
-
-.toggle-switch span {
-  display: none;
-}
-
-.toggle-checkbox:checked + .toggle-switch {
-  background: #10b981;
-}
-
-.toggle-checkbox:disabled + .toggle-switch {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.toggle-switch::before {
-  content: '';
-  position: absolute;
-  top: 4px;
-  left: 4px;
-  width: 32px;
-  height: 32px;
-  background: white;
-  border-radius: 16px;
-  transition: transform 0.3s ease;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-}
-
-.toggle-checkbox:checked + .toggle-switch::before {
-  transform: translateX(60px);
-}
-
-.toggle-text-off,
-.toggle-text-on {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: white;
-  transition: opacity 0.3s ease;
-}
-
-.toggle-text-off {
-  left: 10px;
-  opacity: 1;
-}
-
-.toggle-text-on {
-  right: 12px;
-  opacity: 0;
-}
-
-.toggle-checkbox:checked + .toggle-switch .toggle-text-off {
-  opacity: 0;
-}
-
-.toggle-checkbox:checked + .toggle-switch .toggle-text-on {
-  opacity: 1;
-}
-
-.toggle-status-text {
+.duration-text {
+  margin-top: 8px;
   font-size: 0.875rem;
-  font-weight: 500;
   color: #94a3b8;
-  text-align: center;
-  transition: color 0.3s ease;
+  font-weight: normal;
 }
 
-.toggle-status-text.active {
+.scene-value {
   color: #10b981;
-  font-weight: 600;
+  font-weight: bold;
 }
 </style>

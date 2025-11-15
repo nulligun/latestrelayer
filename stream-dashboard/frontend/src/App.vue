@@ -1,16 +1,17 @@
 <template>
   <div class="app">
     <header class="header">
-      <h1>Stream Control Dashboard</h1>
+      <span>
+      <button
+        @click="toggleInterface"
+        class="interface-toggle"
+        :title="interfaceMode === 'simplified' ? 'Switch to Full View' : 'Switch to Simplified View'"
+      >
+        <span class="toggle-icon">{{ interfaceMode === 'simplified' ? '📊' : '⚡' }}</span>
+      </button>
+      <h1>Latest Relayer</h1>
+      </span>
       <div class="header-controls">
-        <button 
-          @click="toggleInterface"
-          class="interface-toggle"
-          :title="interfaceMode === 'simplified' ? 'Switch to Full View' : 'Switch to Simplified View'"
-        >
-          <span class="toggle-icon">{{ interfaceMode === 'simplified' ? '📊' : '⚡' }}</span>
-          <span class="toggle-text">{{ interfaceMode === 'simplified' ? 'Full' : 'Simple' }}</span>
-        </button>
         <div class="connection-status">
           <span class="status-indicator" :class="{ connected: wsConnected, disconnected: !wsConnected }">
             {{ wsConnected ? '● Connected' : '○ Disconnected' }}
@@ -38,27 +39,50 @@
 
       <!-- Full Interface -->
       <template v-else>
+        <div class="stream-info">
+          <div v-if="statusSuccess.length > 0" class="status-success">
+            <div
+              v-for="(success, index) in statusSuccess"
+              :key="index"
+              class="success-item"
+            >
+              <span class="success-icon">✅</span>
+              {{ success }}
+            </div>
+          </div>
+          
+          <div v-if="statusWarnings.length > 0" class="status-warnings">
+            <div
+              v-for="(warning, index) in statusWarnings"
+              :key="index"
+              class="warning-item"
+            >
+              <span class="warning-icon">⛔</span>
+              {{ warning }}
+            </div>
+          </div>
+        </div>
+
         <div class="dashboard-grid">
           <SystemMetrics
             :metrics="data.systemMetrics"
-            :containers="data.containers"
-            :rtmpStats="data.rtmpStats"
-            :cameraConfig="data.cameraConfig"
-            :streamStatus="data.streamStatus"
           />
           <StreamStats
             :stats="data.rtmpStats"
             :streamStatus="data.streamStatus"
             :currentScene="data.currentScene"
             :sceneDurationSeconds="data.sceneDurationSeconds"
-            :switchingScene="switchingScene"
-            :sourceAvailability="data.sourceAvailability"
-            :containers="data.containers"
             :cameraConfig="data.cameraConfig"
             :switcherHealth="data.switcherHealth"
-            @scene-switching="handleSceneSwitching"
+            :fallbackConfig="data.fallbackConfig"
+          />
+          <StreamControls
+            :switcherHealth="data.switcherHealth"
+            :fallbackConfig="data.fallbackConfig"
           />
         </div>
+
+        <KickSettings />
 
         <div class="containers-section">
           <ContainerGrid
@@ -73,16 +97,18 @@
     </main>
 
     <footer class="footer">
-      <p>Stream Dashboard v1.0 | Polling interval: {{ pollingInterval }}ms</p>
+      <p>Latest Relayer v1.0 | Polling interval: {{ pollingInterval }}ms</p>
     </footer>
   </div>
 </template>
 
 <script>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { WebSocketService } from './services/websocket.js';
 import SystemMetrics from './components/SystemMetrics.vue';
 import StreamStats from './components/StreamStats.vue';
+import StreamControls from './components/StreamControls.vue';
+import KickSettings from './components/KickSettings.vue';
 import ContainerGrid from './components/ContainerGrid.vue';
 import ContainerLogs from './components/ContainerLogs.vue';
 import SimplifiedView from './components/SimplifiedView.vue';
@@ -92,6 +118,8 @@ export default {
   components: {
     SystemMetrics,
     StreamStats,
+    StreamControls,
+    KickSettings,
     ContainerGrid,
     ContainerLogs,
     SimplifiedView
@@ -115,6 +143,32 @@ export default {
     const switchingScene = ref(null);
     let switchingTimeout = null;
     let previousScene = null;
+
+    // Computed properties for stream status
+    const statusWarnings = computed(() => {
+      const warnings = [];
+      
+      if (!data.value.streamStatus?.kickStreamingEnabled) {
+        warnings.push('NOT LIVE ON KICK!');
+      }
+      
+      const camStream = data.value.rtmpStats?.streams?.cam;
+      if (!camStream || !camStream.active || !camStream.publishing) {
+        warnings.push('CAMERA NOT CONNECTED');
+      }
+      
+      return warnings;
+    });
+
+    const statusSuccess = computed(() => {
+      const successes = [];
+      
+      if (data.value.streamStatus?.kickStreamingEnabled) {
+        successes.push("WE'RE LIVE ON KICK!");
+      }
+      
+      return successes;
+    });
     
     const data = ref({
       timestamp: null,
@@ -142,7 +196,14 @@ export default {
         status: 'unavailable',
         current_scene: 'unknown',
         srt_connected: false,
-        privacy_enabled: false
+        privacy_enabled: false,
+        kick_streaming_enabled: false
+      },
+      fallbackConfig: {
+        source: 'BLACK',
+        imagePath: '/app/shared/offline.png',
+        videoPath: '/app/shared/offline.mp4',
+        browserUrl: 'https://example.com'
       }
     });
 
@@ -206,9 +267,11 @@ export default {
         };
       });
       
+      // Map compositorHealth to switcherHealth for component compatibility
       data.value = {
         ...newData,
-        containers: processedContainers
+        containers: processedContainers,
+        switcherHealth: newData.compositorHealth || data.value.switcherHealth
       };
       lastUpdate.value = formatTime(newData.timestamp);
       wsConnected.value = true;
@@ -286,6 +349,8 @@ export default {
       pollingInterval,
       switchingScene,
       interfaceMode,
+      statusWarnings,
+      statusSuccess,
       updateContainerStatus,
       handleSceneSwitching,
       toggleInterface
@@ -324,6 +389,7 @@ body {
 }
 
 .header h1 {
+  display: inline-block;
   font-size: 1.75rem;
   color: #f1f5f9;
   font-weight: 600;
@@ -336,37 +402,18 @@ body {
 }
 
 .interface-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: #334155;
-  border: 2px solid #475569;
-  border-radius: 8px;
+  background: none;
+  border: none;
+  padding: 0;
   color: #e2e8f0;
-  font-size: 0.875rem;
-  font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s;
-}
-
-.interface-toggle:hover {
-  background: #475569;
-  border-color: #64748b;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-}
-
-.interface-toggle:active {
-  transform: translateY(0);
+  display: inline-block;
+  align-items: center;
 }
 
 .toggle-icon {
-  font-size: 1.2rem;
-}
-
-.toggle-text {
-  font-weight: 600;
+  font-size: 1.75rem;
+  line-height: 1;
 }
 
 .connection-status {
@@ -421,7 +468,7 @@ body {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: 50% 50%;
+  grid-template-columns: 100%;
   gap: 20px;
   margin-bottom: 20px;
 }
@@ -434,6 +481,53 @@ body {
 
 .containers-section {
   margin-top: 20px;
+}
+
+.stream-info {
+  margin-bottom: 20px;
+}
+
+.status-success {
+  background: rgba(16, 185, 129, 0.1);
+  border: 2px solid #10b981;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 15px;
+}
+
+.success-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #10b981;
+  padding: 5px 0;
+}
+
+.success-icon {
+  font-size: 1.5rem;
+}
+
+.status-warnings {
+  background: rgba(239, 68, 68, 0.1);
+  border: 2px solid #ef4444;
+  border-radius: 8px;
+  padding: 15px;
+}
+
+.warning-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #ef4444;
+  padding: 5px 0;
+}
+
+.warning-icon {
+  font-size: 1.5rem;
 }
 
 .footer {
@@ -459,8 +553,7 @@ body {
   }
   
   .interface-toggle {
-    width: 100%;
-    justify-content: center;
+    align-self: flex-start;
   }
   
   .connection-status {

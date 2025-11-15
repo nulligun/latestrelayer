@@ -65,30 +65,6 @@
         </div>
       </div>
     </div>
-
-    <div class="stream-info">
-      <div v-if="statusSuccess.length > 0" class="status-success">
-        <div
-          v-for="(success, index) in statusSuccess"
-          :key="index"
-          class="success-item"
-        >
-          <span class="success-icon">✅</span>
-          {{ success }}
-        </div>
-      </div>
-      
-      <div v-if="statusWarnings.length > 0" class="status-warnings">
-        <div
-          v-for="(warning, index) in statusWarnings"
-          :key="index"
-          class="warning-item"
-        >
-          <span class="warning-icon">⛔</span>
-          {{ warning }}
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -114,50 +90,6 @@ export default {
           status: 'error'
         }
       })
-    },
-    containers: {
-      type: Array,
-      default: () => []
-    },
-    rtmpStats: {
-      type: Object,
-      default: () => ({
-        inboundBandwidth: 0,
-        streams: {}
-      })
-    },
-    streamStatus: {
-      type: Object,
-      default: () => ({
-        isOnline: false,
-        durationSeconds: 0,
-        kickStreamingEnabled: false
-      })
-    }
-  },
-  computed: {
-    statusWarnings() {
-      const warnings = [];
-      
-      if (!this.streamStatus?.kickStreamingEnabled) {
-        warnings.push('NOT LIVE ON KICK!');
-      }
-      
-      const camStream = this.rtmpStats?.streams?.cam;
-      if (!camStream || !camStream.active || !camStream.publishing) {
-        warnings.push('CAMERA NOT CONNECTED');
-      }
-      
-      return warnings;
-    },
-    statusSuccess() {
-      const successes = [];
-      
-      if (this.streamStatus?.kickStreamingEnabled) {
-        successes.push("WE'RE LIVE ON KICK!");
-      }
-      
-      return successes;
     }
   },
   methods: {
@@ -273,52 +205,5 @@ h2 {
 .metric-detail {
   font-size: 0.75rem;
   color: #64748b;
-}
-
-.stream-info {
-  margin-top: 20px;
-}
-
-.status-success {
-  background: rgba(16, 185, 129, 0.1);
-  border: 2px solid #10b981;
-  border-radius: 8px;
-  padding: 15px;
-  margin-bottom: 15px;
-}
-
-.success-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #10b981;
-  padding: 5px 0;
-}
-
-.success-icon {
-  font-size: 1.5rem;
-}
-
-.status-warnings {
-  background: rgba(239, 68, 68, 0.1);
-  border: 2px solid #ef4444;
-  border-radius: 8px;
-  padding: 15px;
-}
-
-.warning-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #ef4444;
-  padding: 5px 0;
-}
-
-.warning-icon {
-  font-size: 1.5rem;
 }
 </style>

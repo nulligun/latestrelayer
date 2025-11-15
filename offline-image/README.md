@@ -106,6 +106,7 @@ The container uses the following ffmpeg command:
 
 ```bash
 ffmpeg \
+  -re \
   -loop 1 -framerate 30 -i /image/offline.png \
   -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
   -r 30 \
@@ -113,6 +114,12 @@ ffmpeg \
   -c:a aac -b:a 128k -ar 48000 -ac 2 \
   -f mpegts tcp://compositor:1940
 ```
+
+**Real-Time Streaming:**
+- `-re`: Read input at native frame rate (critical for preventing TCP buffer overflow)
+  - Without this flag, ffmpeg processes and sends frames as fast as possible
+  - Causes "Broken pipe" errors when TCP connection buffer overflows
+  - Ensures smooth 30fps streaming instead of burst transmission
 
 **Image Input Parameters:**
 - `-loop 1`: Loop the image infinitely
@@ -134,15 +141,23 @@ ffmpeg \
 - `-ar 48000 -ac 2`: 48kHz stereo audio
 - `-f mpegts`: MPEG-TS container format
 
-**Why Fixed Frame Rate Matters:**
+**Why Real-Time Streaming and Fixed Frame Rate Matter:**
 
-The `-r 30` and `-framerate 30` flags are **critical** for preventing compositor watchdog disconnections. Unlike video files that have inherent frame rates, static images need explicit frame rate control:
+The `-re`, `-r 30`, and `-framerate 30` flags work together to ensure reliable streaming:
 
-1. **`-framerate 30`**: Tells ffmpeg to read the looped image at 30fps
-2. **`-r 30`**: Forces constant 30fps output by duplicating frames
-3. Without these flags, the stream would be irregular and trigger the compositor's video watchdog timeout
+1. **`-re`**: Controls transmission rate to prevent overwhelming the TCP connection
+   - Static images can be encoded infinitely fast, causing buffer overflow
+   - Matches the real-time streaming behavior of the offline-video container
+   - Prevents "Broken pipe" errors from rapid data transmission
 
-This matches the approach used in the offline-browser container for static web pages.
+2. **`-framerate 30`**: Tells ffmpeg to read the looped image at 30fps
+   - Sets the input frame rate for the static image
+
+3. **`-r 30`**: Forces constant 30fps output by duplicating frames
+   - Prevents irregular streams that trigger compositor watchdog timeout
+   - Essential for static content that doesn't naturally have a frame rate
+
+Without the `-re` flag, ffmpeg will generate frames as fast as possible, overwhelming the TCP buffer and causing connection failures. This matches the approach used in the offline-video and offline-browser containers.
 
 ## Troubleshooting
 

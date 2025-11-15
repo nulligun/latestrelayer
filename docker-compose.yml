@@ -11,6 +11,8 @@ services:
       - "${VIDEO_TCP_PORT:-1940}:1940"  # Video fallback TCP server port
       - "5000:5000"  # TCP server port for VLC testing
       - "8088:8088"  # HTTP API port for scene/privacy control
+    volumes:
+      - ${SHARED_FOLDER}:/app/shared:ro 
     environment:
       - FALLBACK_SOURCE=${FALLBACK_SOURCE:-}
       - VIDEO_TCP_PORT=${VIDEO_TCP_PORT:-1940}
@@ -29,9 +31,9 @@ services:
       dockerfile: Dockerfile
     container_name: ${COMPOSE_PROJECT_NAME:-relayer}-offline-video
     volumes:
-      - ${BRB_VIDEO_PATH}:/video/offline.mp4:ro
+      - ${SHARED_FOLDER}:/app/shared:ro 
     environment:
-      - VIDEO_PATH=/video/offline.mp4
+      - VIDEO_PATH=/app/shared/offline.mp4
       - COMPOSITOR_HOST=compositor
       - COMPOSITOR_PORT=1940
       - RETRY_DELAY=1
@@ -58,6 +60,8 @@ services:
       context: ./offline-browser
       dockerfile: Dockerfile
     container_name: ${COMPOSE_PROJECT_NAME:-relayer}-offline-browser
+    volumes:
+      - ${SHARED_FOLDER}:/app/shared:ro 
     environment:
       - OFFLINE_SOURCE_URL=${OFFLINE_SOURCE_URL:-https://example.com}
       - COMPOSITOR_HOST=compositor
@@ -89,9 +93,9 @@ services:
       dockerfile: Dockerfile
     container_name: ${COMPOSE_PROJECT_NAME:-relayer}-offline-image
     volumes:
-      - ${BRB_IMAGE_PATH}:/image/offline.png:ro
+      - ${SHARED_FOLDER}:/app/shared:ro 
     environment:
-      - IMAGE_PATH=/image/offline.png
+      - IMAGE_PATH=/app/shared/offline.png
       - COMPOSITOR_HOST=compositor
       - COMPOSITOR_PORT=1940
       - RETRY_DELAY=1
@@ -120,8 +124,7 @@ services:
       - "${CONTROLLER_API_PORT:-8089}:8089"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./docker-compose.yml:/app/docker-compose.yml:ro
-      - ./.env:/app/.env:ro
+      - ${APP_FOLDER}:/app:ro 
     environment:
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-relayer}
     networks:
@@ -145,6 +148,7 @@ services:
       - "${DASHBOARD_PORT:-3000}:3000"
     volumes:
       - /proc/net/dev:/host_proc/net/dev:ro
+      - ${SHARED_FOLDER}:/app/shared:rw
     environment:
       - PORT=3000
       - CONTROLLER_API=http://stream-controller:8089
@@ -163,6 +167,38 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  # FFmpeg Kick - Streams to Kick.com
+  ffmpeg-kick:
+    profiles:
+      - manual
+    stop_grace_period: 5s
+    build:
+      context: ./ffmpeg-kick
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-ffmpeg-kick
+    volumes:
+      - ${SHARED_FOLDER}:/app/shared:ro
+    environment:
+      - COMPOSITOR_HOST=compositor
+      - COMPOSITOR_PORT=5000
+      - CONFIG_PATH=/app/shared/kick_config.json
+      - RETRY_DELAY=1
+      - MAX_RETRY_DELAY=10
+      - KICK_KEY=${KICK_KEY:-your_kick_stream_key}
+      - KICK_URL=${KICK_URL:-rtmp://live.kick.com/app/}
+    networks:
+      - rtmp-network
+    depends_on:
+      compositor:
+        condition: service_started
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 networks:
   rtmp-network:

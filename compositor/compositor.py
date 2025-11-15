@@ -91,6 +91,10 @@ class CompositorManager:
         self.privacy_enabled = False
         self._load_privacy_state()
         
+        # SRT connection tracking
+        self.srt_connected = False
+        self.srt_bitrate_kbps = 0
+        
     def _load_privacy_state(self):
         """Load privacy state from JSON file."""
         try:
@@ -136,6 +140,26 @@ class CompositorManager:
             return "VIDEO"
         else:
             return "BLACK"
+    
+    def get_srt_stats(self):
+        """Get SRT connection statistics including bitrate."""
+        if not self.srt_elements or not self.srt_connected:
+            return {'connected': False, 'bitrate_kbps': 0}
+        
+        try:
+            srt_src = self.srt_elements.get('srt_src')
+            if srt_src:
+                stats = srt_src.get_property("stats")
+                if stats:
+                    # Extract bitrate from stats structure
+                    # SRT stats typically contain mbps-send-rate or similar
+                    bitrate_bps = stats.get('bitrate', 0)
+                    bitrate_kbps = int(bitrate_bps / 1024) if bitrate_bps else 0
+                    return {'connected': True, 'bitrate_kbps': bitrate_kbps}
+        except Exception as e:
+            print(f"[srt-stats] Error getting SRT stats: {e}", flush=True)
+        
+        return {'connected': self.srt_connected, 'bitrate_kbps': 0}
     
     def _build_fallback_sources(self):
         """Create always-running fallback sources (black + silence)."""
@@ -539,9 +563,12 @@ class CompositorManager:
         # Add signal handlers for SRT connection events
         def on_caller_connected(element, socket_fd, addr):
             print(f"[srt-connection] ✓ CLIENT CONNECTED at socket level! fd={socket_fd}, addr={addr}", flush=True)
+            self.srt_connected = True
         
         def on_caller_disconnected(element, socket_fd, addr):
             print(f"[srt-connection] ✗ CLIENT DISCONNECTED at socket level! fd={socket_fd}, addr={addr}", flush=True)
+            self.srt_connected = False
+            self.srt_bitrate_kbps = 0
         
         # Connect signals if they exist (srtserversrc supports these)
         try:
@@ -717,6 +744,7 @@ class CompositorManager:
         
         if not self.srt_ever_connected:
             self.srt_ever_connected = True
+            self.srt_connected = True
             print("[srt] ✓ First SRT connection successful", flush=True)
         
         if name.startswith("video/"):
@@ -748,6 +776,22 @@ class CompositorManager:
     def _on_srt_video_probe(self, pad, info):
         """Track SRT buffer flow and trigger buffering/fade-in."""
         self.last_srt_buf_time = time.time()
+        
+        # Update bitrate from buffer metadata if available
+        if self.srt_elements:
+            try:
+                srt_src = self.srt_elements.get('srt_src')
+                if srt_src:
+                    stats = srt_src.get_property("stats")
+                    if stats and isinstance(stats, str):
+                        # Parse stats string for bitrate information
+                        import re
+                        match = re.search(r'bitrate[=:]\s*(\d+)', stats)
+                        if match:
+                            bitrate_bps = int(match.group(1))
+                            self.srt_bitrate_kbps = int(bitrate_bps / 1024)
+            except:
+                pass
         
         if self.state == STATE_SRT_TRANSITIONING:
             buffer = info.get_buffer()
@@ -783,6 +827,8 @@ class CompositorManager:
         self.srt_compositor_pad = None
         self.srt_mixer_pad = None
         self.cam_vol = None
+        self.srt_connected = False
+        self.srt_bitrate_kbps = 0
         
         print("[srt] ✓ SRT elements removed", flush=True)
     
@@ -1168,7 +1214,15 @@ class CompositorHTTPHandler(BaseHTTPRequestHandler):
         path = parsed.path
         
         if path == '/health':
-            self.send_json_response({'status': 'ok'})
+            # Get SRT connection status and bitrate
+            srt_stats = self.compositor_manager.get_srt_stats()
+            response = {
+                'status': 'ok',
+                'srt_connected': srt_stats['connected'],
+                'srt_bitrate_kbps': srt_stats['bitrate_kbps'],
+                'privacy_enabled': self.compositor_manager.privacy_enabled
+            }
+            self.send_json_response(response)
         
         elif path == '/scene':
             scene = self.compositor_manager.get_current_scene()

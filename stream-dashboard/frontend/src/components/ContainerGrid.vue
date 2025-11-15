@@ -29,6 +29,15 @@
               {{ actionPending[container.name] === 'create-and-start' ? 'Creating...' : 'Create & Start' }}
             </button>
           </template>
+          <template v-else-if="container.name === 'controller' || container.name === 'dashboard'">
+            <button
+              @click="restartContainer(container.name)"
+              :disabled="actionPending[container.name] || isTransitional(container)"
+              class="btn btn-restart"
+            >
+              {{ actionPending[container.name] === 'restart' ? 'Restarting...' : 'Restart' }}
+            </button>
+          </template>
           <template v-else>
             <button
               @click="startContainer(container.name)"
@@ -165,6 +174,10 @@ export default {
     
     stopContainer(name) {
       this.performAction(name, 'stop');
+    },
+    
+    restartContainer(name) {
+      this.performAction(name, 'restart');
     },
     
     createAndStartContainer(name) {
@@ -346,6 +359,16 @@ h2 {
 
 .btn-create:hover:not(:disabled) {
   background: #d97706;
+}
+
+.btn-restart {
+  background: #06b6d4;
+  color: white;
+  flex: 1;
+}
+
+.btn-restart:hover:not(:disabled) {
+  background: #0891b2;
 }
 
 .error-message {

@@ -30,8 +30,11 @@ except Exception as e:
 PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME", "relayer")
 print(f"[startup] Project name: {PROJECT_NAME}", flush=True)
 
-# Compose file path
-COMPOSE_FILE = "/app/docker-compose.yml"
+# Get project path from environment
+PROJECT_PATH = os.getenv("PROJECT_PATH", "/app")
+COMPOSE_FILE = os.path.join(PROJECT_PATH, "docker-compose.yml")
+print(f"[startup] Project path: {PROJECT_PATH}", flush=True)
+print(f"[startup] Compose file: {COMPOSE_FILE}", flush=True)
 
 
 class ComposeParser:
@@ -284,6 +287,13 @@ class ContainerController:
             container.stop(timeout=30)
             print(f"[controller] ✓ Container {container_name} stopped successfully")
             
+            # Remove the container after stopping (auto-cleanup)
+            try:
+                container.remove()
+                print(f"[controller] ✓ Container {container_name} removed successfully")
+            except docker.errors.APIError as e:
+                print(f"[controller] WARNING: Failed to remove container {container_name}: {e}", file=sys.stderr)
+            
         except docker.errors.NotFound:
             error_msg = f"Container not found: {short_name}"
             print(f"[controller] ERROR: {error_msg}", file=sys.stderr)
@@ -459,10 +469,19 @@ class ContainerController:
                 # Container doesn't exist, need to create it
                 pass
             
-            # Use docker compose to create and start the container
-            cmd = ["docker", "compose", "-f", COMPOSE_FILE, "--env-file", "/app/.env", "up", "-d", service_name]
+            # Use project path from environment - same path as on host
+            env_file = os.path.join(PROJECT_PATH, ".env")
+            cmd = ["docker", "compose", "--project-directory", PROJECT_PATH, "-f", COMPOSE_FILE, "--env-file", env_file, "up", "-d", "--remove-orphans", service_name]
             
+            # Diagnostic logging
             print(f"[controller] Executing: {' '.join(cmd)}")
+            print(f"[controller] DEBUG: Project directory: {PROJECT_PATH}")
+            shared_path = os.path.join(PROJECT_PATH, "shared")
+            offline_image_path = os.path.join(PROJECT_PATH, "offline-image")
+            print(f"[controller] DEBUG: {shared_path} exists: {os.path.exists(shared_path)}")
+            print(f"[controller] DEBUG: {offline_image_path} exists: {os.path.exists(offline_image_path)}")
+            if os.path.exists(shared_path):
+                print(f"[controller] DEBUG: Contents of shared: {os.listdir(shared_path)}")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -477,6 +496,19 @@ class ContainerController:
             
             print(f"[controller] ✓ Container {short_name} created and started successfully")
             print(f"[controller] Output: {result.stdout}")
+            
+            # DEBUG: Inspect the created container's mounts
+            try:
+                container = self.client.containers.get(self.get_container_name(short_name))
+                mounts = container.attrs.get('Mounts', [])
+                print(f"[controller] DEBUG: Container {short_name} has {len(mounts)} mounts:")
+                for mount in mounts:
+                    mount_type = mount.get('Type', 'unknown')
+                    source = mount.get('Source', 'unknown')
+                    dest = mount.get('Destination', 'unknown')
+                    print(f"[controller] DEBUG:   {mount_type}: {source} -> {dest}")
+            except Exception as e:
+                print(f"[controller] DEBUG: Failed to inspect mounts: {e}")
             
         except subprocess.TimeoutExpired:
             error_msg = f"Timeout creating container: {short_name}"

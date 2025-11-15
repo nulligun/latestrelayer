@@ -44,6 +44,7 @@ RUN apk add --no-cache \
     python3 make g++ pkgconfig \
     git openssh \
     curl \
+    ffmpeg \
     libc6-compat ca-certificates
 RUN npm i -g npm@10
 

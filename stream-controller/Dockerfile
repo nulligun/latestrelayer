@@ -31,12 +31,13 @@ RUN pip install --no-cache-dir docker PyYAML
 # Create app directory
 WORKDIR /app
 
-# Copy the Python script
-COPY container_controller.py /app/container_controller.py
-RUN chmod +x /app/container_controller.py
+# Copy the Python script (will be overridden by mount if present)
+COPY container_controller.py /opt/controller.py
+RUN chmod +x /opt/controller.py
 
 # Expose API port
 EXPOSE 8089
 
 # Run the controller with unbuffered output (-u flag)
-CMD ["python3", "-u", "/app/container_controller.py"]
+# The PROJECT_PATH env var will tell it where the mounted project is
+CMD ["python3", "-u", "/opt/controller.py"]

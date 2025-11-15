@@ -4,12 +4,39 @@ set -e
 echo "==================================="
 echo "Offline Browser Streamer Container"
 echo "==================================="
+
+# Read URL from shared config file if it exists, otherwise use environment variable
+CONFIG_FILE="/app/shared/fallback_config.json"
+if [ -f "${CONFIG_FILE}" ]; then
+    echo "Reading URL from shared config file: ${CONFIG_FILE}"
+    # Extract browserUrl from JSON config using jq if available, otherwise use grep
+    if command -v jq &> /dev/null; then
+        BROWSER_URL=$(jq -r '.browserUrl // empty' "${CONFIG_FILE}")
+    else
+        # Fallback to grep/sed if jq is not available
+        BROWSER_URL=$(grep -o '"browserUrl"[[:space:]]*:[[:space:]]*"[^"]*"' "${CONFIG_FILE}" | sed 's/.*"browserUrl"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    fi
+    
+    if [ -n "${BROWSER_URL}" ]; then
+        echo "✓ Using URL from config: ${BROWSER_URL}"
+        OFFLINE_SOURCE_URL="${BROWSER_URL}"
+    else
+        echo "⚠ Config file exists but browserUrl not found, using environment variable"
+    fi
+else
+    echo "Config file not found, using environment variable"
+fi
+
 echo "URL: ${OFFLINE_SOURCE_URL}"
 echo "Display: ${DISPLAY} (${DISPLAY_RESOLUTION})"
 echo "Frame rate: ${FRAME_RATE}"
 echo "Target: tcp://${COMPOSITOR_HOST}:${COMPOSITOR_PORT}"
 echo "Retry delay: ${RETRY_DELAY}s (max: ${MAX_RETRY_DELAY}s)"
 echo ""
+
+# Shutdown flag for graceful termination
+shutdown_requested=false
+ffmpeg_pid=""
 
 # Parse resolution
 IFS='x' read -r WIDTH HEIGHT <<< "$DISPLAY_RESOLUTION"
@@ -134,11 +161,12 @@ sleep 5
 # Initialize retry delay
 current_delay=${RETRY_DELAY}
 
-# Function to stream display with ffmpeg
+# Function to stream display with ffmpeg (runs in background)
 stream_display() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting ffmpeg stream..."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting ffmpeg stream in background..."
     
-    ffmpeg \
+    # Run ffmpeg in background
+    ffmpeg -nostdin \
         -thread_queue_size 512 \
         -f x11grab -video_size ${DISPLAY_RESOLUTION} -framerate ${FRAME_RATE} \
         -use_wallclock_as_timestamps 1 -i ${DISPLAY}.0 \
@@ -150,29 +178,61 @@ stream_display() {
         -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p \
         -c:a aac -b:a 128k -ar 48000 -ac 2 \
         -vsync cfr \
-        -f mpegts "tcp://${COMPOSITOR_HOST}:${COMPOSITOR_PORT}"
+        -f mpegts "tcp://${COMPOSITOR_HOST}:${COMPOSITOR_PORT}" &
     
-    # Capture exit code
-    return $?
+    # Store PID for cleanup
+    ffmpeg_pid=$!
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ffmpeg started with PID: $ffmpeg_pid"
+    
+    # Wait for ffmpeg to complete (interruptible by signals)
+    wait $ffmpeg_pid
+    local exit_code=$?
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ffmpeg exited with code: $exit_code"
+    ffmpeg_pid=""
+    
+    return $exit_code
 }
 
-# Cleanup function
+# Cleanup function for graceful shutdown
 cleanup() {
     echo ""
-    echo "Shutting down..."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] *** SIGTERM/SIGINT RECEIVED *** Starting cleanup..."
+    shutdown_requested=true
+    
+    # Kill the specific ffmpeg process if it's running
+    if [ -n "$ffmpeg_pid" ] && kill -0 "$ffmpeg_pid" 2>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Terminating ffmpeg process (PID: $ffmpeg_pid)..."
+        kill -TERM "$ffmpeg_pid" 2>/dev/null || true
+        # Wait briefly for graceful shutdown
+        sleep 0.5
+        # Force kill if still running
+        if kill -0 "$ffmpeg_pid" 2>/dev/null; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Force killing ffmpeg..."
+            kill -KILL "$ffmpeg_pid" 2>/dev/null || true
+        fi
+    fi
+    
+    # Kill other processes
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Terminating other processes..."
     kill -TERM ${CHROMIUM_PID} 2>/dev/null || true
     kill -TERM ${XVFB_PID} 2>/dev/null || true
     pulseaudio --kill 2>/dev/null || true
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Shutdown complete"
     exit 0
 }
 
+# Set up signal handlers
 trap cleanup SIGTERM SIGINT
 
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Signal handlers installed (trap cleanup SIGTERM SIGINT)"
+
 # Main loop
-echo "Starting infinite reconnection loop..."
+echo "Starting reconnection loop (press Ctrl+C or send SIGTERM to stop)..."
 echo ""
 
-while true; do
+while [ "$shutdown_requested" = false ]; do
     # Attempt to stream
     if stream_display; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ffmpeg exited normally (exit code 0)"
