@@ -49,7 +49,7 @@ stream_image() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting ffmpeg stream in background..."
     
     # Run ffmpeg in background with TCP tuning for production reliability
-    ffmpeg -nostdin \
+    ffmpeg -v verbose -stats -nostdin \
         -re \
         -loop 1 -framerate 30 -i "${IMAGE_PATH}" \
         -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \

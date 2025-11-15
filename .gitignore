@@ -35,3 +35,4 @@ Thumbs.db
 *.bak
 
 node_modules
+shared/fallback_config.json

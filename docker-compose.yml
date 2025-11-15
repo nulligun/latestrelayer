@@ -14,6 +14,7 @@ services:
     volumes:
       - ${SHARED_FOLDER}:/app/shared:ro 
     environment:
+      - GST_DEBUG=tcpserversrc:5,decodebin:4
       - FALLBACK_SOURCE=${FALLBACK_SOURCE:-}
       - VIDEO_TCP_PORT=${VIDEO_TCP_PORT:-1940}
       - VIDEO_WATCHDOG_TIMEOUT=${VIDEO_WATCHDOG_TIMEOUT:-2.0}
