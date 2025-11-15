@@ -427,6 +427,7 @@ class CompositorManager:
         video_comp_queue = Gst.ElementFactory.make("queue", "video_comp_q")
         video_comp_queue.set_property("max-size-time", 500000000)  # 500ms
         video_comp_queue.set_property("max-size-buffers", 0)
+        video_comp_queue.set_property("leaky", 2)  # Drop old buffers to prevent pipeline blocking
         
         # Audio chain
         audio_queue = Gst.ElementFactory.make("queue", "video_audio_q")
