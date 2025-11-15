@@ -11,10 +11,10 @@ class SceneService {
   async getCurrentScene() {
     try {
       const response = await axios.get(
-        `${this.compositorUrl}/scene`,
+        `${this.compositorUrl}/health`,
         { timeout: 5000 }
       );
-      return response.data;
+      return { scene: response.data.scene };
     } catch (error) {
       console.error('[scene] Error getting current scene:', error.message);
       throw new Error(`Failed to get current scene: ${error.message}`);

@@ -32,39 +32,14 @@ class AggregatorService {
   }
 
   /**
-   * Get current scene from compositor
-   */
-  async getCompositorScene() {
-    try {
-      const response = await axios.get(`${this.compositorUrl}/scene`, { timeout: 3000 });
-      return response.data.scene;
-    } catch (error) {
-      console.error('[aggregator] Error fetching compositor scene:', error.message);
-      return null;
-    }
-  }
-
-  /**
-   * Get privacy mode status from compositor
-   */
-  async getCompositorPrivacy() {
-    try {
-      const response = await axios.get(`${this.compositorUrl}/privacy`, { timeout: 3000 });
-      return response.data.enabled;
-    } catch (error) {
-      console.error('[aggregator] Error fetching compositor privacy:', error.message);
-      return false;
-    }
-  }
-
-  /**
-   * Get compositor health including SRT connection status and bitrate
+   * Get compositor health including SRT connection status, bitrate, and current scene
    */
   async getCompositorHealth() {
     try {
       const response = await axios.get(`${this.compositorUrl}/health`, { timeout: 3000 });
       return {
         status: response.data.status || 'ok',
+        scene: response.data.scene || null,
         srt_connected: response.data.srt_connected || false,
         srt_bitrate_kbps: response.data.srt_bitrate_kbps || 0,
         privacy_enabled: response.data.privacy_enabled || false
@@ -73,6 +48,7 @@ class AggregatorService {
       console.error('[aggregator] Error fetching compositor health:', error.message);
       return {
         status: 'error',
+        scene: null,
         srt_connected: false,
         srt_bitrate_kbps: 0,
         privacy_enabled: false
@@ -174,16 +150,18 @@ class AggregatorService {
     const timestamp = new Date().toISOString();
 
     try {
-      const [containers, systemMetrics, currentScene, compositorHealth, fallbackConfig] = await Promise.all([
+      const [containers, systemMetrics, compositorHealth, fallbackConfig] = await Promise.all([
         this.controllerService.listContainers().catch(err => {
           console.error('[aggregator] Error listing containers:', err.message);
           return [];
         }),
         metricsService.getSystemMetrics(),
-        this.getCompositorScene(),
         this.getCompositorHealth(),
         this.getFallbackConfig()
       ]);
+      
+      // Extract scene from compositor health response
+      const currentScene = compositorHealth.scene;
 
       // Reconcile fallback config with actual running containers
       const reconciledFallbackConfig = await this.reconcileFallbackConfig(containers, fallbackConfig);

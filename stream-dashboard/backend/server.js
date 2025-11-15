@@ -733,7 +733,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('[http]   POST /api/container/:name/stop');
   console.log('[http]   POST /api/container/:name/restart');
   console.log('[http]   POST /api/scene/switch');
-  console.log('[http]   GET  /api/scene/current');
+  console.log('[http]   GET  /api/scene/current (uses compositor /health endpoint)');
   console.log('[http]   GET  /api/scene/mode');
   console.log('[http]   POST /api/scene/camera');
   console.log('[http]   POST /api/scene/privacy');

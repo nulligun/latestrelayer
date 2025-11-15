@@ -42,6 +42,7 @@ BUFFER_DELAY_MS = int(os.getenv("BUFFER_DELAY_MS", "500"))
 VIDEO_WATCHDOG_TIMEOUT = float(os.getenv("VIDEO_WATCHDOG_TIMEOUT", "2.0"))
 HTTP_API_PORT = int(os.getenv("HTTP_API_PORT", "8088"))
 PRIVACY_STATE_FILE = "/app/privacy_state.json"
+ELEMENT_REMOVAL_TIMEOUT_SEC = 2  # Timeout for state transitions during element removal
 
 # State constants
 STATE_FALLBACK_ONLY = "FALLBACK_ONLY"
@@ -73,6 +74,10 @@ class CompositorManager:
         self.srt_ever_connected = False
         self.video_restart_scheduled = False
         self.restart_scheduled = False
+        
+        # TCP connection tracking
+        self.tcp_connected = False
+        self.tcp_bytes_received = 0
         
         # Buffer tracking for smooth fade-in
         self.video_first_buffer_time = None
@@ -164,6 +169,26 @@ class CompositorManager:
             print(f"[srt-stats] Error getting SRT stats: {e}", flush=True)
         
         return {'connected': self.srt_connected, 'bitrate_kbps': 0}
+    
+    def get_tcp_stats(self):
+        """Get TCP connection statistics including bytes received."""
+        if not self.video_elements:
+            return {'connected': False, 'bytes_received': 0, 'current_port': 0}
+        
+        try:
+            tcp_src = self.video_elements.get('tcp_src')
+            if tcp_src:
+                stats = tcp_src.get_property("stats")
+                current_port = tcp_src.get_property("current-port")
+                if stats:
+                    print(f"[tcp-stats] TCP connection stats: {stats}", flush=True)
+                    return {'connected': True, 'stats': str(stats), 'current_port': current_port}
+                else:
+                    return {'connected': False, 'bytes_received': 0, 'current_port': current_port}
+        except Exception as e:
+            print(f"[tcp-stats] Error getting TCP stats: {e}", flush=True)
+        
+        return {'connected': False, 'bytes_received': 0, 'current_port': 0}
     
     def _build_fallback_sources(self):
         """Create always-running fallback sources (black + silence)."""
@@ -340,7 +365,48 @@ class CompositorManager:
         tcp_src.set_property("port", VIDEO_TCP_PORT)
         tcp_src.set_property("do-timestamp", True)
         
+        print(f"[tcp-debug] tcpserversrc created, host=0.0.0.0, port={VIDEO_TCP_PORT}, do-timestamp=True", flush=True)
+        
+        # Add debug signal handlers for TCP connection events
+        def on_client_added(element, socket_fd):
+            print(f"[tcp-connection] ✓ CLIENT CONNECTED at socket level! fd={socket_fd}", flush=True)
+            self.tcp_connected = True
+        
+        def on_client_removed(element, socket_fd, status):
+            print(f"[tcp-connection] ✗ CLIENT DISCONNECTED at socket level! fd={socket_fd}, status={status}", flush=True)
+            self.tcp_connected = False
+            self.tcp_bytes_received = 0
+        
+        # Connect TCP server signals if available
+        try:
+            tcp_src.connect("client-added", on_client_added)
+            print("[tcp-debug] ✓ Connected to 'client-added' signal", flush=True)
+        except Exception as e:
+            print(f"[tcp-debug] Could not connect 'client-added' signal: {e}", flush=True)
+        
+        try:
+            tcp_src.connect("client-removed", on_client_removed)
+            print("[tcp-debug] ✓ Connected to 'client-removed' signal", flush=True)
+        except Exception as e:
+            print(f"[tcp-debug] Could not connect 'client-removed' signal: {e}", flush=True)
+        
         decode = Gst.ElementFactory.make("decodebin", "video_decode")
+        
+        # Add debug signal handlers for decodebin
+        def on_decode_unknown_type(element, pad, caps):
+            print(f"[tcp-debug] decodebin unknown-type: {caps.to_string()}", flush=True)
+        
+        def on_decode_autoplug_continue(element, pad, caps):
+            print(f"[tcp-debug] decodebin autoplug-continue: {caps.to_string()}", flush=True)
+            return True
+        
+        def on_decode_autoplug_select(element, pad, caps, factory):
+            print(f"[tcp-debug] decodebin autoplug-select: caps={caps.to_string()}, factory={factory.get_name()}", flush=True)
+            return 0  # GST_AUTOPLUG_SELECT_TRY
+        
+        decode.connect("unknown-type", on_decode_unknown_type)
+        decode.connect("autoplug-continue", on_decode_autoplug_continue)
+        decode.connect("autoplug-select", on_decode_autoplug_select)
         
         # Video chain with improved buffering
         video_queue = Gst.ElementFactory.make("queue", "video_video_q")
@@ -391,8 +457,51 @@ class CompositorManager:
         for elem in self.video_elements.values():
             self.pipeline.add(elem)
         
-        # Link video chain
-        tcp_src.link(decode)
+        # Link video chain with detailed logging
+        link_result = tcp_src.link(decode)
+        print(f"[tcp-debug] tcp_src → decode link result: {link_result}", flush=True)
+        
+        # Add source pad probe to detect TCP data flow
+        tcp_src_pad = tcp_src.get_static_pad("src")
+        print(f"[tcp-debug] tcpserversrc 'src' pad lookup result: {tcp_src_pad}", flush=True)
+        
+        if tcp_src_pad:
+            # Check pad direction and availability
+            pad_direction = tcp_src_pad.get_direction()
+            pad_caps = tcp_src_pad.get_current_caps()
+            print(f"[tcp-debug] Pad direction: {pad_direction}, caps: {pad_caps}", flush=True)
+            
+            def on_tcp_src_probe(pad, info):
+                buffer = info.get_buffer()
+                self.tcp_bytes_received += buffer.get_size()
+                print(f"[tcp-probe] ✓ DATA FLOWING from tcpserversrc! First bytes received from client, buffer_size={buffer.get_size()}, total_bytes={self.tcp_bytes_received}", flush=True)
+                # Only log once
+                return Gst.PadProbeReturn.REMOVE
+            
+            probe_id = tcp_src_pad.add_probe(Gst.PadProbeType.BUFFER, on_tcp_src_probe)
+            print(f"[tcp-debug] ✓ Added probe (id={probe_id}) to tcpserversrc pad to detect data flow", flush=True)
+        else:
+            print(f"[tcp-debug] ⚠ WARNING: Could not get 'src' pad from tcpserversrc!", flush=True)
+        
+        # Add decode sink pad probe to confirm decodebin is receiving data
+        def on_decode_sink_probe(pad, info):
+            buffer = info.get_buffer()
+            print(f"[tcp-probe] ✓ DATA RECEIVED by decodebin! Decoding in progress, buffer_size={buffer.get_size()}", flush=True)
+            return Gst.PadProbeReturn.REMOVE
+        
+        decode_sink = decode.get_static_pad("sink")
+        print(f"[tcp-debug] decodebin 'sink' pad lookup result: {decode_sink}", flush=True)
+        
+        if decode_sink:
+            probe_id = decode_sink.add_probe(Gst.PadProbeType.BUFFER, on_decode_sink_probe)
+            print(f"[tcp-debug] ✓ Added probe (id={probe_id}) to decodebin sink pad", flush=True)
+            
+            # Check decode sink pad state
+            peer = decode_sink.get_peer()
+            print(f"[tcp-debug] decodebin sink pad peer: {peer.get_parent().get_name() if peer else 'None'}", flush=True)
+        else:
+            print(f"[tcp-debug] ⚠ WARNING: Could not get 'sink' pad from decodebin!", flush=True)
+        
         video_queue.link(videoconvert)
         videoconvert.link(videoscale)
         videoscale.link(videorate)
@@ -474,23 +583,57 @@ class CompositorManager:
         return Gst.PadProbeReturn.OK
     
     def remove_video_elements(self):
-        """Remove video TCP elements from the pipeline."""
+        """Remove video TCP elements from the pipeline with robust error handling."""
         if not self.video_elements:
             print("[video] No video elements to remove", flush=True)
             return
         
         print("[video] Removing video TCP elements from pipeline...", flush=True)
         
-        for elem in self.video_elements.values():
-            elem.set_state(Gst.State.NULL)
-            self.pipeline.remove(elem)
+        # Track removal progress
+        failed_elements = []
         
+        for elem_name, elem in self.video_elements.items():
+            try:
+                print(f"[video] Attempting to remove element: {elem_name}", flush=True)
+                
+                # Set element to NULL state with timeout to prevent hanging
+                elem.set_state(Gst.State.NULL)
+                
+                # Wait for state change with timeout (prevents infinite blocking)
+                ret, state, pending = elem.get_state(ELEMENT_REMOVAL_TIMEOUT_SEC * Gst.SECOND)
+                
+                if ret == Gst.StateChangeReturn.FAILURE:
+                    print(f"[video] ⚠ State transition to NULL failed for {elem_name}, attempting removal anyway", flush=True)
+                elif ret == Gst.StateChangeReturn.ASYNC:
+                    print(f"[video] ⚠ State transition timeout for {elem_name} (timeout={ELEMENT_REMOVAL_TIMEOUT_SEC}s), forcing removal", flush=True)
+                else:
+                    print(f"[video] ✓ State transition successful for {elem_name}", flush=True)
+                
+                # Attempt to remove from pipeline
+                try:
+                    self.pipeline.remove(elem)
+                    print(f"[video] ✓ Element {elem_name} removed from pipeline", flush=True)
+                except Exception as remove_err:
+                    print(f"[video] ⚠ Failed to remove {elem_name} from pipeline: {remove_err}", flush=True)
+                    failed_elements.append(elem_name)
+                    
+            except Exception as e:
+                print(f"[video] ⚠ Exception while removing {elem_name}: {e}", flush=True)
+                failed_elements.append(elem_name)
+                # Continue with next element instead of failing completely
+                continue
+        
+        # Clear references regardless of individual failures
         self.video_elements = None
         self.video_compositor_pad = None
         self.video_mixer_pad = None
         self.video_vol = None
         
-        print("[video] ✓ Video elements removed", flush=True)
+        if failed_elements:
+            print(f"[video] ⚠ Video element removal completed with errors for: {', '.join(failed_elements)}", flush=True)
+        else:
+            print("[video] ✓ Video elements removed successfully", flush=True)
     
     def restart_video_elements(self):
         """Restart video TCP elements after a timeout."""
@@ -805,17 +948,48 @@ class CompositorManager:
         return Gst.PadProbeReturn.OK
     
     def remove_srt_elements(self):
-        """Remove SRT elements from the pipeline."""
+        """Remove SRT elements from the pipeline with robust error handling."""
         if not self.srt_elements:
             print("[srt] No SRT elements to remove", flush=True)
             return
         
         print("[srt] Removing SRT elements from pipeline...", flush=True)
         
-        for elem in self.srt_elements.values():
-            elem.set_state(Gst.State.NULL)
-            self.pipeline.remove(elem)
+        # Track removal progress
+        failed_elements = []
         
+        for elem_name, elem in self.srt_elements.items():
+            try:
+                print(f"[srt] Attempting to remove element: {elem_name}", flush=True)
+                
+                # Set element to NULL state with timeout to prevent hanging
+                elem.set_state(Gst.State.NULL)
+                
+                # Wait for state change with timeout (prevents infinite blocking)
+                ret, state, pending = elem.get_state(ELEMENT_REMOVAL_TIMEOUT_SEC * Gst.SECOND)
+                
+                if ret == Gst.StateChangeReturn.FAILURE:
+                    print(f"[srt] ⚠ State transition to NULL failed for {elem_name}, attempting removal anyway", flush=True)
+                elif ret == Gst.StateChangeReturn.ASYNC:
+                    print(f"[srt] ⚠ State transition timeout for {elem_name} (timeout={ELEMENT_REMOVAL_TIMEOUT_SEC}s), forcing removal", flush=True)
+                else:
+                    print(f"[srt] ✓ State transition successful for {elem_name}", flush=True)
+                
+                # Attempt to remove from pipeline
+                try:
+                    self.pipeline.remove(elem)
+                    print(f"[srt] ✓ Element {elem_name} removed from pipeline", flush=True)
+                except Exception as remove_err:
+                    print(f"[srt] ⚠ Failed to remove {elem_name} from pipeline: {remove_err}", flush=True)
+                    failed_elements.append(elem_name)
+                    
+            except Exception as e:
+                print(f"[srt] ⚠ Exception while removing {elem_name}: {e}", flush=True)
+                failed_elements.append(elem_name)
+                # Continue with next element instead of failing completely
+                continue
+        
+        # Clear references regardless of individual failures
         self.srt_elements = None
         self.srt_compositor_pad = None
         self.srt_mixer_pad = None
@@ -823,7 +997,10 @@ class CompositorManager:
         self.srt_connected = False
         self.srt_bitrate_kbps = 0
         
-        print("[srt] ✓ SRT elements removed", flush=True)
+        if failed_elements:
+            print(f"[srt] ⚠ SRT element removal completed with errors for: {', '.join(failed_elements)}", flush=True)
+        else:
+            print("[srt] ✓ SRT elements removed successfully", flush=True)
     
     def restart_srt_elements(self):
         """Restart SRT elements after a timeout."""
@@ -1197,8 +1374,8 @@ class CompositorHTTPHandler(BaseHTTPRequestHandler):
     compositor_manager = None
     
     def log_message(self, format, *args):
-        """Override to use custom logging."""
-        print(f"[http] {self.address_string()} - {format % args}", flush=True)
+        """Override to silence HTTP request logging."""
+        pass
     
     def send_json_response(self, data, status=200):
         """Send JSON response."""
@@ -1222,19 +1399,17 @@ class CompositorHTTPHandler(BaseHTTPRequestHandler):
         path = parsed.path
         
         if path == '/health':
-            # Get SRT connection status and bitrate
+            # Get SRT connection status, bitrate, and current scene
             srt_stats = self.compositor_manager.get_srt_stats()
+            scene = self.compositor_manager.get_current_scene()
             response = {
                 'status': 'ok',
+                'scene': scene,
                 'srt_connected': srt_stats['connected'],
                 'srt_bitrate_kbps': srt_stats['bitrate_kbps'],
                 'privacy_enabled': self.compositor_manager.privacy_enabled
             }
             self.send_json_response(response)
-        
-        elif path == '/scene':
-            scene = self.compositor_manager.get_current_scene()
-            self.send_json_response({'scene': scene})
         
         elif path == '/privacy':
             enabled = self.compositor_manager.privacy_enabled
@@ -1276,8 +1451,7 @@ def run_http_server(compositor_manager):
     server = HTTPServer(('0.0.0.0', HTTP_API_PORT), CompositorHTTPHandler)
     print(f"[http] HTTP API server listening on port {HTTP_API_PORT}", flush=True)
     print("[http] Endpoints:", flush=True)
-    print("[http]   GET  /health  - Health check", flush=True)
-    print("[http]   GET  /scene   - Get current scene (BLACK/VIDEO/SRT)", flush=True)
+    print("[http]   GET  /health  - Health check with scene info", flush=True)
     print("[http]   GET  /privacy - Get privacy mode status", flush=True)
     print("[http]   POST /privacy - Set privacy mode (JSON: {\"enabled\": true/false})", flush=True)
     server.serve_forever()
