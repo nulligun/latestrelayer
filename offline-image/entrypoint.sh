@@ -48,7 +48,7 @@ current_delay=${RETRY_DELAY}
 stream_image() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting ffmpeg stream in background..."
     
-    # Run ffmpeg in background
+    # Run ffmpeg in background with TCP tuning for production reliability
     ffmpeg -nostdin \
         -re \
         -loop 1 -framerate 30 -i "${IMAGE_PATH}" \
@@ -56,7 +56,9 @@ stream_image() {
         -r 30 \
         -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p \
         -c:a aac -b:a 128k -ar 48000 -ac 2 \
-        -f mpegts "tcp://${COMPOSITOR_HOST}:${COMPOSITOR_PORT}" &
+        -tcp_nodelay 1 \
+        -send_buffer_size 2097152 \
+        -f mpegts "tcp://${COMPOSITOR_HOST}:${COMPOSITOR_PORT}?timeout=5000000&buffer_size=2097152" &
     
     # Store PID for cleanup
     ffmpeg_pid=$!

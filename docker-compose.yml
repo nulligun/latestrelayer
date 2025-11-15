@@ -206,3 +206,4 @@ networks:
     enable_ipv6: false
     driver_opts:
       com.docker.network.enable_ipv6: "false"
+      com.docker.network.driver.mtu: "1500"

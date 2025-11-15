@@ -26,6 +26,7 @@ from gi.repository import Gst, GLib
 import time
 import os
 import json
+import signal
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -94,6 +95,9 @@ class CompositorManager:
         # SRT connection tracking
         self.srt_connected = False
         self.srt_bitrate_kbps = 0
+        
+        # MainLoop reference for signal handling
+        self.loop = None
         
     def _load_privacy_state(self):
         """Load privacy state from JSON file."""
@@ -1174,13 +1178,28 @@ class CompositorManager:
     
     def run(self):
         """Run the main loop."""
-        loop = GLib.MainLoop()
+        self.loop = GLib.MainLoop()
+        
+        # Signal handler for graceful shutdown
+        def signal_handler(signum, frame):
+            sig_name = signal.Signals(signum).name
+            print(f"\n[compositor] Received {sig_name}, shutting down gracefully...", flush=True)
+            if self.loop:
+                self.loop.quit()
+        
+        # Register signal handlers for SIGTERM (Docker stop) and SIGINT (Ctrl+C)
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+        print("[compositor] Signal handlers registered (SIGTERM, SIGINT)", flush=True)
+        
         try:
-            loop.run()
+            self.loop.run()
         except KeyboardInterrupt:
             print("\n[compositor] Shutting down...", flush=True)
         finally:
+            print("[compositor] Cleaning up pipeline...", flush=True)
             self.pipeline.set_state(Gst.State.NULL)
+            print("[compositor] ✓ Shutdown complete", flush=True)
 
 
 class CompositorHTTPHandler(BaseHTTPRequestHandler):
