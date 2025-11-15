@@ -481,19 +481,8 @@ class CompositorManager:
         
         print("[video] Removing video TCP elements from pipeline...", flush=True)
         
-        # Set all elements to NULL and wait for state change to complete
         for elem in self.video_elements.values():
-            elem_name = elem.get_name()
             elem.set_state(Gst.State.NULL)
-            # Wait up to 2 seconds for state change to complete
-            ret, state, pending = elem.get_state(2 * Gst.SECOND)
-            if ret == Gst.StateChangeReturn.FAILURE:
-                print(f"[video] Warning: {elem_name} state change to NULL failed", flush=True)
-            elif ret == Gst.StateChangeReturn.SUCCESS:
-                print(f"[video] {elem_name} → NULL (success)", flush=True)
-        
-        # Now remove from pipeline
-        for elem in self.video_elements.values():
             self.pipeline.remove(elem)
         
         self.video_elements = None
