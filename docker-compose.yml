@@ -128,6 +128,9 @@ services:
       - ${APP_FOLDER}:/app:ro 
     environment:
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-relayer}
+      - SRT_DOMAIN=${SRT_DOMAIN:-}
+      - SRT_PORT=${SRT_PORT:-1937}
+
     networks:
       - rtmp-network
     restart: unless-stopped
@@ -156,6 +159,7 @@ services:
       - COMPOSITOR_API=http://compositor:8088
       - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
       - SRT_PORT=${SRT_PORT:-1937}
+      - SRT_DOMAIN=${SRT_DOMAIN:-}
     networks:
       - rtmp-network
     depends_on:
