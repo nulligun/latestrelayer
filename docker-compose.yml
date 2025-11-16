@@ -1,11 +1,11 @@
 services:
-  # Compositor - GStreamer video mixer with SRT fade functionality
-  compositor:
+  # Relayer - GStreamer video mixer with SRT input-selector architecture
+  relayer:
     stop_grace_period: 5s
     build:
-      context: ./compositor
+      context: ./relayer
       dockerfile: Dockerfile
-    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-compositor
+    container_name: ${COMPOSE_PROJECT_NAME:-relayer}-relayer
     ports:
       - "${SRT_PORT:-1937}:1937/udp"  # SRT listener port
       - "${VIDEO_TCP_PORT:-1940}:1940"  # Video fallback TCP server port
@@ -21,6 +21,12 @@ services:
     networks:
       - rtmp-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # Offline Video - Streams fallback video to compositor
   offline-video:
@@ -35,14 +41,14 @@ services:
       - ${SHARED_FOLDER}:/app/shared:ro 
     environment:
       - VIDEO_PATH=/app/shared/offline.mp4
-      - COMPOSITOR_HOST=compositor
+      - COMPOSITOR_HOST=relayer
       - COMPOSITOR_PORT=1940
       - RETRY_DELAY=1
       - MAX_RETRY_DELAY=10
     networks:
       - rtmp-network
     depends_on:
-      compositor:
+      relayer:
         condition: service_started
     restart: "no"
     healthcheck:
@@ -65,7 +71,7 @@ services:
       - ${SHARED_FOLDER}:/app/shared:ro 
     environment:
       - OFFLINE_SOURCE_URL=${OFFLINE_SOURCE_URL:-https://example.com}
-      - COMPOSITOR_HOST=compositor
+      - COMPOSITOR_HOST=relayer
       - COMPOSITOR_PORT=1940
       - DISPLAY_RESOLUTION=1920x1080
       - FRAME_RATE=30
@@ -74,7 +80,7 @@ services:
     networks:
       - rtmp-network
     depends_on:
-      compositor:
+      relayer:
         condition: service_started
     restart: "no"
     healthcheck:
@@ -97,14 +103,14 @@ services:
       - ${SHARED_FOLDER}:/app/shared:ro 
     environment:
       - IMAGE_PATH=/app/shared/offline.png
-      - COMPOSITOR_HOST=compositor
+      - COMPOSITOR_HOST=relayer
       - COMPOSITOR_PORT=1940
       - RETRY_DELAY=1
       - MAX_RETRY_DELAY=10
     networks:
       - rtmp-network
     depends_on:
-      compositor:
+      relayer:
         condition: service_started
     restart: "no"
     healthcheck:
@@ -154,7 +160,7 @@ services:
     environment:
       - PORT=3000
       - CONTROLLER_API=http://stream-controller:8089
-      - COMPOSITOR_API=http://compositor:8088
+      - COMPOSITOR_API=http://relayer:8088
       - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
       - SRT_PORT=${SRT_PORT:-1937}
       - SRT_DOMAIN=${SRT_DOMAIN:-}
@@ -208,7 +214,7 @@ services:
     volumes:
       - ${SHARED_FOLDER}:/app/shared:ro
     environment:
-      - COMPOSITOR_HOST=compositor
+      - COMPOSITOR_HOST=relayer
       - COMPOSITOR_PORT=5000
       - CONFIG_PATH=/app/shared/kick_config.json
       - RETRY_DELAY=1
@@ -218,7 +224,7 @@ services:
     networks:
       - rtmp-network
     depends_on:
-      compositor:
+      relayer:
         condition: service_started
     restart: "no"
     healthcheck:

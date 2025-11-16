@@ -53,6 +53,7 @@ stream_image() {
         -re \
         -loop 1 -framerate 30 -i "${IMAGE_PATH}" \
         -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
+        -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2" \
         -r 30 \
         -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p \
         -c:a aac -b:a 128k -ar 48000 -ac 2 \

@@ -109,6 +109,7 @@ ffmpeg \
   -re \
   -loop 1 -framerate 30 -i /image/offline.png \
   -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
+  -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2" \
   -r 30 \
   -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p \
   -c:a aac -b:a 128k -ar 48000 -ac 2 \
@@ -129,6 +130,11 @@ ffmpeg \
 **Audio Generation Parameters:**
 - `-f lavfi`: Use libavfilter virtual device
 - `-i anullsrc=channel_layout=stereo:sample_rate=48000`: Generate silent stereo audio at 48kHz
+
+**Video Filter Parameters:**
+- `-vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"`: Video filter chain
+  - `scale=1920:1080:force_original_aspect_ratio=decrease`: Scale image to fit within 1920x1080 while maintaining aspect ratio
+  - `pad=1920:1080:(ow-iw)/2:(oh-ih)/2`: Pad scaled image to exactly 1920x1080 with black bars, centered
 
 **Output Parameters:**
 - `-r 30`: Force output frame rate to exactly 30fps (critical for watchdog)
@@ -218,10 +224,15 @@ See [`compositor/README.md`](../compositor/README.md) for more details on the co
 ## Best Practices
 
 1. **Image Format**: Use PNG or JPG for best compatibility
-2. **Resolution**: Match compositor resolution (1920x1080 recommended)
+2. **Resolution**: Any resolution supported - automatically scaled to 1920x1080
 3. **File Size**: Keep images reasonably sized (< 5MB)
-4. **Aspect Ratio**: Use 16:9 aspect ratio to avoid letterboxing
+4. **Aspect Ratio**: Any aspect ratio supported - automatically fitted with black bars to 16:9 (1920x1080)
 5. **Testing**: Test image display before deploying
+
+The video filter chain automatically handles resolution and aspect ratio conversion:
+- Images are scaled to fit within 1920x1080 while maintaining their original aspect ratio
+- Black bars (letterbox/pillarbox) are added to center the image in the exact 1920x1080 frame
+- Output is always exactly 1920x1080 @ 30fps regardless of input image dimensions
 
 ## Use Cases
 

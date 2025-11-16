@@ -7,4 +7,4 @@ echo "TCP output on port 5000"
 echo ""
 
 # Run the compositor
-exec python3 /app/compositor.py
+exec python3 /app/main.py

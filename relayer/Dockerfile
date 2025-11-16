@@ -18,14 +18,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy application files
-COPY compositor.py /app/
+COPY main.py /app/
+COPY config.py /app/
+COPY state_manager.py /app/
+COPY privacy_manager.py /app/
+COPY pipeline_builder.py /app/
+COPY video_source_manager.py /app/
+COPY srt_source_manager.py /app/
+COPY http_api.py /app/
+COPY relayer_manager.py /app/
 COPY profiler.py /app/
 COPY monitor_cpu.py /app/
 COPY entrypoint.sh /app/
+COPY healthcheck.sh /app/
 COPY PROFILING_GUIDE.md /app/
 
 # Make scripts executable
-RUN chmod +x /app/compositor.py /app/monitor_cpu.py /app/entrypoint.sh
+RUN chmod +x /app/main.py /app/monitor_cpu.py /app/entrypoint.sh /app/healthcheck.sh
 
 # Set Python to run unbuffered
 ENV PYTHONUNBUFFERED=1
