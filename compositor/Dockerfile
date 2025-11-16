@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-gi \
     python3-gst-1.0 \
-    python3-pip \
+    python3-psutil \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad \
@@ -13,9 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-libav \
     gstreamer1.0-tools \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Python packages for profiling
-RUN pip3 install --no-cache-dir psutil
 
 # Set working directory
 WORKDIR /app
