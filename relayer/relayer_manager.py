@@ -188,7 +188,19 @@ class RelayerManager:
         
         elif t == Gst.MessageType.EOS:
             print(f"[bus] EOS received from {src}", flush=True)
-            if self.state_manager.state == "SRT_CONNECTED":
+            
+            # Handle black video file looping
+            if src == "black_filesrc":
+                print("[bus] Black video file ended, looping...", flush=True)
+                black_filesrc = self.builder.get_fallback_elements().get('black_filesrc')
+                if black_filesrc:
+                    # Seek back to beginning for infinite loop
+                    black_filesrc.seek_simple(
+                        Gst.Format.TIME,
+                        Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+                        0
+                    )
+            elif self.state_manager.state == "SRT_CONNECTED":
                 self.srt_manager._schedule_srt_disconnect_grace()
             elif self.state_manager.state == "VIDEO_CONNECTED":
                 self._switch_to_fallback()

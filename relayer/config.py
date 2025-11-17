@@ -32,6 +32,7 @@ ENABLE_CPU_PROFILING = os.getenv("ENABLE_CPU_PROFILING", "false").lower() == "tr
 
 # File Paths
 PRIVACY_STATE_FILE = "/app/privacy_state.json"
+BLACK_VIDEO_PATH = os.getenv("BLACK_VIDEO_PATH", "/app/shared/black.mp4")  # Pre-encoded black screen for fallback
 
 # State Constants
 STATE_FALLBACK_ONLY = "FALLBACK_ONLY"

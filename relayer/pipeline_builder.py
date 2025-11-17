@@ -18,6 +18,7 @@ from config import (
     FALLBACK_X264_BITRATE,
     AAC_BITRATE,
     OUTPUT_TCP_PORT,
+    BLACK_VIDEO_PATH,
 )
 
 
@@ -40,30 +41,17 @@ class PipelineBuilder:
         self.audio_selector_silence_pad = None
     
     def build_fallback_sources(self):
-        """Create always-running fallback sources (black + silence) - pre-encoded once at startup for remuxing."""
-        print("[build] Creating pre-encoded fallback sources (black H.264 + silence AAC)...", flush=True)
+        """Create always-running fallback sources (black video file + silence) - NO continuous encoding."""
+        print(f"[build] Creating file-based fallback sources (black video from {BLACK_VIDEO_PATH})...", flush=True)
         
-        # Black video source - pre-encode to H.264 at startup
-        black_src = Gst.ElementFactory.make("videotestsrc", "black_src")
-        black_src.set_property("pattern", 2)  # black
-        black_src.set_property("is-live", True)
-        black_src.set_property("do-timestamp", True)
+        # Black video source - load pre-encoded file (NO live encoding!)
+        black_filesrc = Gst.ElementFactory.make("filesrc", "black_filesrc")
+        black_filesrc.set_property("location", BLACK_VIDEO_PATH)
         
-        black_capsfilter = Gst.ElementFactory.make("capsfilter", "black_caps")
-        black_caps = Gst.Caps.from_string(
-            f"video/x-raw,width={VIDEO_WIDTH},height={VIDEO_HEIGHT},framerate={VIDEO_FRAMERATE}/1"
-        )
-        black_capsfilter.set_property("caps", black_caps)
+        # Demux the MPEG-TS file
+        black_tsdemux = Gst.ElementFactory.make("tsdemux", "black_tsdemux")
         
-        black_vconv = Gst.ElementFactory.make("videoconvert", "black_vconv")
-        
-        # Encode to H.264 once at startup (low bitrate since it's just black)
-        black_x264 = Gst.ElementFactory.make("x264enc", "black_x264")
-        black_x264.set_property("tune", "zerolatency")
-        black_x264.set_property("speed-preset", "ultrafast")
-        black_x264.set_property("bitrate", FALLBACK_X264_BITRATE)  # 500kbps
-        black_x264.set_property("key-int-max", 30)
-        
+        # Parse H.264 stream
         black_h264parse = Gst.ElementFactory.make("h264parse", "black_h264parse")
         black_queue = Gst.ElementFactory.make("queue", "black_queue")
         
@@ -91,10 +79,8 @@ class PipelineBuilder:
         silence_queue = Gst.ElementFactory.make("queue", "silence_queue")
         
         self.fallback_elements = {
-            'black_src': black_src,
-            'black_capsfilter': black_capsfilter,
-            'black_vconv': black_vconv,
-            'black_x264': black_x264,
+            'black_filesrc': black_filesrc,
+            'black_tsdemux': black_tsdemux,
             'black_h264parse': black_h264parse,
             'black_queue': black_queue,
             'silence_src': silence_src,
@@ -110,12 +96,12 @@ class PipelineBuilder:
         for elem in self.fallback_elements.values():
             self.pipeline.add(elem)
         
-        # Link fallback video chain: src → caps → convert → encode → parse → queue
-        black_src.link(black_capsfilter)
-        black_capsfilter.link(black_vconv)
-        black_vconv.link(black_x264)
-        black_x264.link(black_h264parse)
+        # Link fallback video chain: filesrc → tsdemux → (pad-added) → h264parse → queue
+        black_filesrc.link(black_tsdemux)
         black_h264parse.link(black_queue)
+        
+        # Connect pad-added signal for tsdemux (it creates pads dynamically)
+        black_tsdemux.connect("pad-added", self._on_black_pad_added)
         
         # Link fallback audio chain: src → caps → convert → resample → encode → parse → queue
         silence_src.link(silence_capsfilter)
@@ -125,8 +111,19 @@ class PipelineBuilder:
         silence_aacenc.link(silence_aacparse)
         silence_aacparse.link(silence_queue)
         
-        print(f"[build] ✓ Fallback sources created (H.264 @ {FALLBACK_X264_BITRATE}kbps, AAC @ {AAC_BITRATE}bps)", flush=True)
+        print(f"[build] ✓ Fallback sources created (file-based, NO encoding)", flush=True)
         return self.fallback_elements
+    
+    def _on_black_pad_added(self, tsdemux, pad):
+        """Handle tsdemux pad creation for black video file."""
+        caps = pad.get_current_caps()
+        name = caps.to_string() if caps else ""
+        
+        if name.startswith("video/"):
+            sinkpad = self.fallback_elements['black_h264parse'].get_static_pad("sink")
+            if not sinkpad.is_linked():
+                ret = pad.link(sinkpad)
+                print(f"[build] Black video pad linked: {ret}", flush=True)
     
     def build_output_stage(self):
         """Create always-running output stage (input-selectors + mux + TCP) - NO ENCODING (remux only)."""
