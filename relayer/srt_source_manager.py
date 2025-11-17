@@ -69,12 +69,12 @@ class SRTSourceManager:
         self.fallback_callback = callback
     
     def add_srt_elements(self):
-        """Add SRT source elements to the running pipeline."""
+        """Add SRT source elements to the running pipeline (remux-only, no decoding/encoding)."""
         if self.srt_elements:
             print("[srt] SRT elements already added", flush=True)
             return
         
-        print("[srt] Adding SRT elements to pipeline...", flush=True)
+        print("[srt] Adding SRT elements to pipeline (remux mode)...", flush=True)
         
         srt_src = Gst.ElementFactory.make("srtserversrc", "srt_src")
         srt_src.set_property("uri", f"srt://:{SRT_PORT}?mode=listener")
@@ -96,57 +96,59 @@ class SRTSourceManager:
         except Exception as e:
             print(f"[srt-debug] Could not connect signals: {e}", flush=True)
         
-        decode = Gst.ElementFactory.make("decodebin", "decode")
+        # Use tsdemux instead of decodebin (no decoding, just demux MPEG-TS container)
+        tsdemux = Gst.ElementFactory.make("tsdemux", "srt_tsdemux")
+        
+        # Video chain - parse H.264 (no decode/convert/scale/rate needed)
+        h264parse = Gst.ElementFactory.make("h264parse", "srt_h264parse")
         
         video_queue = Gst.ElementFactory.make("queue", "video_q")
         video_queue.set_property("max-size-time", SRT_VIDEO_QUEUE_MAX_TIME)
         video_queue.set_property("max-size-buffers", 0)
         video_queue.set_property("leaky", 2)
-        videoconvert = Gst.ElementFactory.make("videoconvert", "vconv")
-        videoscale = Gst.ElementFactory.make("videoscale", "vscale")
-        videorate = Gst.ElementFactory.make("videorate", "vrate")
-        videorate.set_property("drop-only", True)
         
         srt_comp_queue = Gst.ElementFactory.make("queue", "srt_comp_q")
         srt_comp_queue.set_property("max-size-time", COMP_QUEUE_MAX_TIME)
         srt_comp_queue.set_property("max-size-buffers", 0)
         srt_comp_queue.set_property("leaky", 2)
         
+        # Audio chain - parse AAC (no convert/resample needed)
+        aacparse = Gst.ElementFactory.make("aacparse", "srt_aacparse")
+        
         audio_queue = Gst.ElementFactory.make("queue", "audio_q")
         audio_queue.set_property("max-size-time", SRT_AUDIO_QUEUE_MAX_TIME)
         audio_queue.set_property("max-size-buffers", 0)
         audio_queue.set_property("leaky", 2)
-        audioconvert = Gst.ElementFactory.make("audioconvert", "aconv")
-        audioresample = Gst.ElementFactory.make("audioresample", "ares")
+        
         audio_out_queue = Gst.ElementFactory.make("queue", "srt_audio_out_q")
         
         self.srt_elements = {
             'srt_src': srt_src,
-            'decode': decode,
+            'tsdemux': tsdemux,
+            'h264parse': h264parse,
             'video_queue': video_queue,
-            'videoconvert': videoconvert,
-            'videoscale': videoscale,
-            'videorate': videorate,
             'srt_comp_queue': srt_comp_queue,
+            'aacparse': aacparse,
             'audio_queue': audio_queue,
-            'audioconvert': audioconvert,
-            'audioresample': audioresample,
             'audio_out_queue': audio_out_queue,
         }
         
         for elem in self.srt_elements.values():
             self.pipeline.add(elem)
         
-        srt_src.link(decode)
-        video_queue.link(videoconvert)
-        videoconvert.link(videoscale)
-        videoscale.link(videorate)
-        videorate.link(srt_comp_queue)
-        audio_queue.link(audioconvert)
-        audioconvert.link(audioresample)
-        audioresample.link(audio_out_queue)
+        # Link SRT → tsdemux (tsdemux will create pads dynamically)
+        srt_src.link(tsdemux)
         
-        decode.connect("pad-added", self._on_srt_pad_added)
+        # Link video chain: h264parse → queue → comp_queue
+        h264parse.link(video_queue)
+        video_queue.link(srt_comp_queue)
+        
+        # Link audio chain: aacparse → queue → out_queue
+        aacparse.link(audio_queue)
+        audio_queue.link(audio_out_queue)
+        
+        # Connect signals (tsdemux creates pads dynamically)
+        tsdemux.connect("pad-added", self._on_srt_pad_added)
         video_queue_src = video_queue.get_static_pad("src")
         video_queue_src.add_probe(Gst.PadProbeType.BUFFER, self._on_srt_video_probe)
         
@@ -154,17 +156,17 @@ class SRTSourceManager:
         for elem in self.srt_elements.values():
             elem.sync_state_with_parent()
         
-        # Ensure decodebin and srt src are playing
-        decode.set_state(Gst.State.PLAYING)
+        # Ensure tsdemux and srt src are playing
+        tsdemux.set_state(Gst.State.PLAYING)
         srt_src.set_state(Gst.State.PLAYING)
         
-        print(f"[srt] ✓ SRT elements added, listening on port {SRT_PORT}", flush=True)
+        print(f"[srt] ✓ SRT elements added (remux mode), listening on port {SRT_PORT}", flush=True)
     
-    def _on_srt_pad_added(self, decodebin, pad):
-        """Handle dynamic pad creation from decodebin when SRT connects."""
+    def _on_srt_pad_added(self, tsdemux, pad):
+        """Handle dynamic pad creation from tsdemux when SRT connects."""
         caps = pad.get_current_caps()
         name = caps.to_string() if caps else ""
-        print(f"[srt] Decodebin pad added: {name}", flush=True)
+        print(f"[srt] tsdemux pad added: {name}", flush=True)
         
         if not self.state_manager.srt_ever_connected:
             self.state_manager.srt_ever_connected = True
@@ -175,10 +177,11 @@ class SRTSourceManager:
         audio_selector = self.output_elements['audio_selector']
         
         if name.startswith("video/"):
-            sinkpad = self.srt_elements['video_queue'].get_static_pad("sink")
+            # Link tsdemux video pad to h264parse
+            sinkpad = self.srt_elements['h264parse'].get_static_pad("sink")
             if not sinkpad.is_linked():
                 ret = pad.link(sinkpad)
-                print(f"[srt] Video pad link result: {ret}", flush=True)
+                print(f"[srt] Video pad → h264parse link: {ret}", flush=True)
                 
                 # Request pad on video selector for SRT source
                 self.video_selector_srt_pad = video_selector.request_pad_simple("sink_%u")
@@ -188,10 +191,11 @@ class SRTSourceManager:
                 print(f"[srt] ✓ Video linked to selector pad", flush=True)
                 
         elif name.startswith("audio/"):
-            sinkpad = self.srt_elements['audio_queue'].get_static_pad("sink")
+            # Link tsdemux audio pad to aacparse
+            sinkpad = self.srt_elements['aacparse'].get_static_pad("sink")
             if not sinkpad.is_linked():
                 ret = pad.link(sinkpad)
-                print(f"[srt] Audio pad link result: {ret}", flush=True)
+                print(f"[srt] Audio pad → aacparse link: {ret}", flush=True)
                 
                 # Request pad on audio selector for SRT audio
                 self.audio_selector_srt_pad = audio_selector.request_pad_simple("sink_%u")

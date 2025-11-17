@@ -57,12 +57,12 @@ class VideoSourceManager:
         self.audio_selector_video_pad = None
     
     def add_video_elements(self):
-        """Add TCP video server elements to the running pipeline."""
+        """Add TCP video server elements to the running pipeline (remux-only, no decoding/encoding)."""
         if self.video_elements:
             print("[video] Video elements already added", flush=True)
             return
         
-        print("[video] Adding video TCP server elements to pipeline...", flush=True)
+        print("[video] Adding video TCP server elements to pipeline (remux mode)...", flush=True)
         
         # Create TCP video server chain
         tcp_src = Gst.ElementFactory.make("tcpserversrc", "tcp_src")
@@ -73,34 +73,30 @@ class VideoSourceManager:
         # Note: TCP connection/disconnection is handled by the watchdog mechanism
         # The watchdog monitors data flow and triggers restarts when needed
         
-        decode = Gst.ElementFactory.make("decodebin", "video_decode")
+        # Use tsdemux instead of decodebin (no decoding, just demux MPEG-TS container)
+        tsdemux = Gst.ElementFactory.make("tsdemux", "video_tsdemux")
         
-        # Video chain
+        # Video chain - parse H.264 (no decode/convert/scale/rate needed)
+        h264parse = Gst.ElementFactory.make("h264parse", "video_h264parse")
+        
         video_queue = Gst.ElementFactory.make("queue", "video_video_q")
         video_queue.set_property("max-size-time", VIDEO_QUEUE_MAX_TIME)
         video_queue.set_property("max-size-buffers", 0)
         video_queue.set_property("leaky", 2)
-        videoconvert = Gst.ElementFactory.make("videoconvert", "video_vconv")
-        videoscale = Gst.ElementFactory.make("videoscale", "video_vscale")
-        videorate = Gst.ElementFactory.make("videorate", "video_vrate")
-        videorate.set_property("drop-only", True)
-        
-        video_capsfilter = Gst.ElementFactory.make("capsfilter", "video_caps")
-        video_caps = Gst.Caps.from_string(f"video/x-raw,width={VIDEO_WIDTH},height={VIDEO_HEIGHT}")
-        video_capsfilter.set_property("caps", video_caps)
         
         video_comp_queue = Gst.ElementFactory.make("queue", "video_comp_q")
         video_comp_queue.set_property("max-size-time", COMP_QUEUE_MAX_TIME)
         video_comp_queue.set_property("max-size-buffers", 0)
         video_comp_queue.set_property("leaky", 2)
         
-        # Audio chain
+        # Audio chain - parse AAC (no convert/resample needed)
+        aacparse = Gst.ElementFactory.make("aacparse", "video_aacparse")
+        
         audio_queue = Gst.ElementFactory.make("queue", "video_audio_q")
         audio_queue.set_property("max-size-time", VIDEO_QUEUE_MAX_TIME)
         audio_queue.set_property("max-size-buffers", 0)
         audio_queue.set_property("leaky", 2)
-        audioconvert = Gst.ElementFactory.make("audioconvert", "video_aconv")
-        audioresample = Gst.ElementFactory.make("audioresample", "video_ares")
+        
         audio_out_queue = Gst.ElementFactory.make("queue", "video_audio_out_q")
         audio_out_queue.set_property("max-size-time", VIDEO_QUEUE_MAX_TIME)
         audio_out_queue.set_property("max-size-buffers", 0)
@@ -108,16 +104,12 @@ class VideoSourceManager:
         
         self.video_elements = {
             'tcp_src': tcp_src,
-            'decode': decode,
+            'tsdemux': tsdemux,
+            'h264parse': h264parse,
             'video_queue': video_queue,
-            'videoconvert': videoconvert,
-            'videoscale': videoscale,
-            'videorate': videorate,
-            'video_capsfilter': video_capsfilter,
             'video_comp_queue': video_comp_queue,
+            'aacparse': aacparse,
             'audio_queue': audio_queue,
-            'audioconvert': audioconvert,
-            'audioresample': audioresample,
             'audio_out_queue': audio_out_queue,
         }
         
@@ -125,21 +117,19 @@ class VideoSourceManager:
         for elem in self.video_elements.values():
             self.pipeline.add(elem)
         
-        # Link video chain
-        tcp_src.link(decode)
-        video_queue.link(videoconvert)
-        videoconvert.link(videoscale)
-        videoscale.link(videorate)
-        videorate.link(video_capsfilter)
-        video_capsfilter.link(video_comp_queue)
+        # Link TCP → tsdemux (tsdemux will create pads dynamically)
+        tcp_src.link(tsdemux)
         
-        # Link audio chain
-        audio_queue.link(audioconvert)
-        audioconvert.link(audioresample)
-        audioresample.link(audio_out_queue)
+        # Link video chain: h264parse → queue → comp_queue
+        h264parse.link(video_queue)
+        video_queue.link(video_comp_queue)
         
-        # Connect signals
-        decode.connect("pad-added", self._on_video_pad_added)
+        # Link audio chain: aacparse → queue → out_queue
+        aacparse.link(audio_queue)
+        audio_queue.link(audio_out_queue)
+        
+        # Connect signals (tsdemux creates pads dynamically)
+        tsdemux.connect("pad-added", self._on_video_pad_added)
         video_queue_src = video_queue.get_static_pad("src")
         video_queue_src.add_probe(Gst.PadProbeType.BUFFER, self._on_video_probe)
         
@@ -151,13 +141,13 @@ class VideoSourceManager:
         for elem in self.video_elements.values():
             elem.sync_state_with_parent()
         
-        print(f"[video] ✓ Video elements added, TCP server listening on port {VIDEO_TCP_PORT}", flush=True)
+        print(f"[video] ✓ Video elements added (remux mode), TCP server listening on port {VIDEO_TCP_PORT}", flush=True)
     
-    def _on_video_pad_added(self, decodebin, pad):
-        """Handle dynamic pad creation from decodebin when TCP video connects."""
+    def _on_video_pad_added(self, tsdemux, pad):
+        """Handle dynamic pad creation from tsdemux when TCP video connects."""
         caps = pad.get_current_caps()
         name = caps.to_string() if caps else ""
-        print(f"[video] Decodebin pad added: {name}", flush=True)
+        print(f"[video] tsdemux pad added: {name}", flush=True)
         
         if not self.state_manager.video_ever_connected:
             self.state_manager.video_ever_connected = True
@@ -167,10 +157,11 @@ class VideoSourceManager:
         audio_selector = self.output_elements['audio_selector']
         
         if name.startswith("video/"):
-            sinkpad = self.video_elements['video_queue'].get_static_pad("sink")
+            # Link tsdemux video pad to h264parse
+            sinkpad = self.video_elements['h264parse'].get_static_pad("sink")
             if not sinkpad.is_linked():
                 ret = pad.link(sinkpad)
-                print(f"[video] Video pad link result: {ret}", flush=True)
+                print(f"[video] Video pad → h264parse link: {ret}", flush=True)
                 
                 # Request pad on video selector for video source
                 self.video_selector_video_pad = video_selector.request_pad_simple("sink_%u")
@@ -180,10 +171,11 @@ class VideoSourceManager:
                 print(f"[video] ✓ Video linked to selector pad", flush=True)
                 
         elif name.startswith("audio/"):
-            sinkpad = self.video_elements['audio_queue'].get_static_pad("sink")
+            # Link tsdemux audio pad to aacparse
+            sinkpad = self.video_elements['aacparse'].get_static_pad("sink")
             if not sinkpad.is_linked():
                 ret = pad.link(sinkpad)
-                print(f"[video] Audio pad link result: {ret}", flush=True)
+                print(f"[video] Audio pad → aacparse link: {ret}", flush=True)
                 
                 # Request pad on audio selector for video audio
                 self.audio_selector_video_pad = audio_selector.request_pad_simple("sink_%u")
@@ -255,15 +247,15 @@ class VideoSourceManager:
         
         print("[video] Removing video TCP elements from pipeline...", flush=True)
         
-        # First, send EOS to decoder to flush state
-        decode = self.video_elements.get('decode')
-        if decode:
+        # First, send EOS to demuxer to flush state
+        tsdemux = self.video_elements.get('tsdemux')
+        if tsdemux:
             try:
-                print("[video] Flushing decodebin state...", flush=True)
-                decode.send_event(Gst.Event.new_flush_start())
-                decode.send_event(Gst.Event.new_flush_stop(True))
+                print("[video] Flushing tsdemux state...", flush=True)
+                tsdemux.send_event(Gst.Event.new_flush_start())
+                tsdemux.send_event(Gst.Event.new_flush_stop(True))
             except Exception as e:
-                print(f"[video] ⚠ Failed to flush decodebin: {e}", flush=True)
+                print(f"[video] ⚠ Failed to flush tsdemux: {e}", flush=True)
         
         for elem_name, elem in self.video_elements.items():
             try:

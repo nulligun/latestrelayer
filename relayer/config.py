@@ -24,6 +24,7 @@ ELEMENT_REMOVAL_TIMEOUT_SEC = 2
 # Environment Variables - Video Encoding
 X264_PRESET = os.getenv("X264_PRESET", "ultrafast")
 X264_BITRATE = int(os.getenv("X264_BITRATE", "1500"))
+FALLBACK_X264_BITRATE = 500  # Low bitrate for black screen fallback (pre-encoded once at startup)
 
 # Environment Variables - Features
 FALLBACK_SOURCE = os.getenv("FALLBACK_SOURCE", "").lower()
