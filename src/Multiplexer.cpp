@@ -1,0 +1,373 @@
+#include "Multiplexer.h"
+#include <iostream>
+#include <thread>
+#include <csignal>
+
+Multiplexer::Multiplexer(const Config& config)
+    : config_(config),
+      running_(false),
+      initialized_(false),
+      live_stream_ready_(false),
+      packets_processed_(0) {
+}
+
+Multiplexer::~Multiplexer() {
+    stop();
+}
+
+bool Multiplexer::initialize() {
+    if (initialized_.load()) {
+        std::cout << "[Multiplexer] Already initialized" << std::endl;
+        return true;
+    }
+    
+    std::cout << "[Multiplexer] Initializing..." << std::endl;
+    
+    // Create packet queues
+    live_queue_ = std::make_unique<TSPacketQueue>(10000);
+    fallback_queue_ = std::make_unique<TSPacketQueue>(10000);
+    
+    // Create UDP receivers
+    live_receiver_ = std::make_unique<UDPReceiver>(
+        "Live", config_.getLiveUdpPort(), *live_queue_);
+    fallback_receiver_ = std::make_unique<UDPReceiver>(
+        "Fallback", config_.getFallbackUdpPort(), *fallback_queue_);
+    
+    // Create analyzers
+    live_analyzer_ = std::make_unique<TSAnalyzer>();
+    fallback_analyzer_ = std::make_unique<TSAnalyzer>();
+    
+    // Create processing components
+    timestamp_mgr_ = std::make_unique<TimestampManager>();
+    pid_mapper_ = std::make_unique<PIDMapper>();
+    switcher_ = std::make_unique<StreamSwitcher>(config_.getMaxLiveGapMs());
+    
+    // Create RTMP output
+    rtmp_output_ = std::make_unique<RTMPOutput>(config_.getRtmpUrl());
+    
+    // Start UDP receivers
+    if (!live_receiver_->start()) {
+        std::cerr << "[Multiplexer] Failed to start live receiver" << std::endl;
+        return false;
+    }
+    
+    if (!fallback_receiver_->start()) {
+        std::cerr << "[Multiplexer] Failed to start fallback receiver" << std::endl;
+        return false;
+    }
+    
+    // Analyze streams to get PID information
+    // This will wait indefinitely for fallback stream
+    if (!analyzeStreams()) {
+        std::cerr << "[Multiplexer] Failed to analyze streams" << std::endl;
+        return false;
+    }
+    
+    // Set initial mode based on live stream availability
+    if (!live_stream_ready_.load()) {
+        std::cout << "[Multiplexer] Starting in FALLBACK mode (no live stream detected)" << std::endl;
+        switcher_->setMode(Mode::FALLBACK);
+    } else {
+        std::cout << "[Multiplexer] Starting in LIVE mode" << std::endl;
+        switcher_->setMode(Mode::LIVE);
+    }
+    
+    // Start RTMP output
+    if (!rtmp_output_->start()) {
+        std::cerr << "[Multiplexer] Failed to start RTMP output" << std::endl;
+        return false;
+    }
+    
+    initialized_ = true;
+    start_time_ = std::chrono::steady_clock::now();
+    
+    std::cout << "[Multiplexer] Initialization complete" << std::endl;
+    return true;
+}
+
+void Multiplexer::run() {
+    if (!initialized_.load()) {
+        std::cerr << "[Multiplexer] Not initialized" << std::endl;
+        return;
+    }
+    
+    running_ = true;
+    std::cout << "[Multiplexer] Starting main loop" << std::endl;
+    
+    processLoop();
+}
+
+void Multiplexer::stop() {
+    if (!running_.load()) {
+        return;
+    }
+    
+    std::cout << "[Multiplexer] Stopping..." << std::endl;
+    running_ = false;
+    
+    // Stop receivers
+    if (live_receiver_) live_receiver_->stop();
+    if (fallback_receiver_) fallback_receiver_->stop();
+    
+    // Stop RTMP output
+    if (rtmp_output_) rtmp_output_->stop();
+    
+    // Print statistics
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - start_time_
+    );
+    
+    std::cout << "[Multiplexer] Statistics:" << std::endl;
+    std::cout << "  Runtime: " << elapsed.count() << "s" << std::endl;
+    std::cout << "  Packets processed: " << packets_processed_.load() << std::endl;
+    std::cout << "  Live packets received: " << live_receiver_->getPacketsReceived() << std::endl;
+    std::cout << "  Fallback packets received: " << fallback_receiver_->getPacketsReceived() << std::endl;
+    std::cout << "  RTMP packets written: " << rtmp_output_->getPacketsWritten() << std::endl;
+    
+    std::cout << "[Multiplexer] Stopped" << std::endl;
+}
+
+bool Multiplexer::analyzeStreams() {
+    std::cout << "[Multiplexer] Analyzing streams..." << std::endl;
+    
+    ts::TSPacket packet;
+    auto last_status_log = std::chrono::steady_clock::now();
+    
+    // Try to analyze live stream packets (optional)
+    std::cout << "[Multiplexer] Checking for live stream..." << std::endl;
+    int live_packets_analyzed = 0;
+    while (live_packets_analyzed < 100 && live_queue_->pop(packet, std::chrono::milliseconds(100))) {
+        live_analyzer_->analyzePacket(packet);
+        live_packets_analyzed++;
+        
+        if (live_analyzer_->isInitialized()) {
+            break;
+        }
+    }
+    
+    const auto& live_info = live_analyzer_->getStreamInfo();
+    if (live_info.initialized) {
+        std::cout << "[Multiplexer] Live stream detected during initialization" << std::endl;
+    } else {
+        std::cout << "[Multiplexer] Live stream not available - will be detected dynamically later" << std::endl;
+    }
+    
+    // Wait indefinitely for fallback stream packets (required)
+    std::cout << "[Multiplexer] Waiting for fallback stream..." << std::endl;
+    bool fallback_initialized = false;
+    int total_wait_seconds = 0;
+    
+    while (!fallback_initialized) {
+        int fallback_packets_analyzed = 0;
+        
+        // Try to analyze up to 100 packets
+        while (fallback_packets_analyzed < 100 && fallback_queue_->pop(packet, std::chrono::milliseconds(100))) {
+            fallback_packets_analyzed++;
+            fallback_analyzer_->analyzePacket(packet);
+            
+            if (fallback_analyzer_->isInitialized()) {
+                fallback_initialized = true;
+                break;
+            }
+        }
+        
+        // Check if we should log status
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_status_log);
+        
+        if (!fallback_initialized && elapsed.count() >= 5) {
+            total_wait_seconds += elapsed.count();
+            std::cout << "[Multiplexer] Still waiting for fallback stream... ("
+                      << total_wait_seconds << "s elapsed)" << std::endl;
+            last_status_log = now;
+        }
+        
+        // If we got some packets but not initialized yet, wait a bit before retry
+        if (!fallback_initialized && fallback_packets_analyzed > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        } else if (!fallback_initialized) {
+            // No packets received, wait 1 second before checking again
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+    
+    const auto& fallback_info = fallback_analyzer_->getStreamInfo();
+    
+    std::cout << "[Multiplexer] Fallback stream ready!" << std::endl;
+    std::cout << "  Video PID: " << fallback_info.video_pid << std::endl;
+    std::cout << "  Audio PID: " << fallback_info.audio_pid << std::endl;
+    std::cout << "  PMT PID: " << fallback_info.pmt_pid << std::endl;
+    
+    // Check live stream status and initialize PID mapper if available
+    if (live_info.initialized) {
+        std::cout << "[Multiplexer] Live stream:" << std::endl;
+        std::cout << "  Video PID: " << live_info.video_pid << std::endl;
+        std::cout << "  Audio PID: " << live_info.audio_pid << std::endl;
+        std::cout << "  PMT PID: " << live_info.pmt_pid << std::endl;
+        
+        // Initialize PID mapper with both streams
+        pid_mapper_->initialize(live_info, fallback_info);
+        live_stream_ready_ = true;
+        std::cout << "[Multiplexer] Both streams ready" << std::endl;
+    } else {
+        std::cout << "[Multiplexer] Starting in fallback-only mode" << std::endl;
+        std::cout << "[Multiplexer] Live stream will be detected dynamically when SRT connects" << std::endl;
+        live_stream_ready_ = false;
+    }
+    
+    return true;
+}
+
+bool Multiplexer::analyzeLiveStreamDynamically() {
+    std::cout << "[Multiplexer] Attempting to detect live stream..." << std::endl;
+    
+    // Try to analyze live stream packets
+    int live_packets_analyzed = 0;
+    ts::TSPacket packet;
+    while (live_packets_analyzed < 200 && live_queue_->pop(packet, std::chrono::milliseconds(10))) {
+        live_analyzer_->analyzePacket(packet);
+        live_packets_analyzed++;
+        
+        // Check if we have valid media data (not just PSI tables)
+        if (live_analyzer_->hasValidMediaData()) {
+            break;
+        }
+    }
+    
+    const auto& live_info = live_analyzer_->getStreamInfo();
+    
+    // Check for valid media data instead of just initialization
+    if (!live_analyzer_->hasValidMediaData()) {
+        // Log current validation status
+        if (live_info.initialized) {
+            std::cout << "[Multiplexer] Live stream PSI detected but waiting for valid media packets..." << std::endl;
+            std::cout << "  Video packets: " << live_info.valid_video_packets
+                      << "/" << StreamInfo::MIN_VALID_VIDEO_PACKETS << std::endl;
+            std::cout << "  Audio packets: " << live_info.valid_audio_packets
+                      << "/" << StreamInfo::MIN_VALID_AUDIO_PACKETS << std::endl;
+        }
+        return false;
+    }
+    
+    std::cout << "[Multiplexer] Live stream detected!" << std::endl;
+    std::cout << "  Video PID: " << live_info.video_pid << std::endl;
+    std::cout << "  Audio PID: " << live_info.audio_pid << std::endl;
+    std::cout << "  PMT PID: " << live_info.pmt_pid << std::endl;
+    std::cout << "  Valid video packets: " << live_info.valid_video_packets << std::endl;
+    std::cout << "  Valid audio packets: " << live_info.valid_audio_packets << std::endl;
+    
+    // Reinitialize PID mapper with live stream info
+    const auto& fallback_info = fallback_analyzer_->getStreamInfo();
+    pid_mapper_->initialize(live_info, fallback_info);
+    
+    live_stream_ready_ = true;
+    
+    return true;
+}
+
+void Multiplexer::processLoop() {
+    ts::TSPacket packet;
+    Mode last_mode = switcher_->getMode();
+    uint64_t log_interval = 1000; // Log every 1000 packets
+    uint64_t live_check_interval = 100; // Check for live stream every 100 packets
+    
+    while (running_.load()) {
+        Mode current_mode = switcher_->getMode();
+        
+        // Periodically check for live stream if not yet detected
+        if (!live_stream_ready_.load() && packets_processed_ % live_check_interval == 0) {
+            if (!live_queue_->empty()) {
+                std::cout << "[Multiplexer] Live packets detected, attempting analysis..." << std::endl;
+                if (analyzeLiveStreamDynamically()) {
+                    std::cout << "[Multiplexer] Live stream successfully initialized!" << std::endl;
+                    std::cout << "[Multiplexer] Switching to LIVE mode" << std::endl;
+                    
+                    // Switch to live mode
+                    switcher_->setMode(Mode::LIVE);
+                    switcher_->updateLiveTimestamp();
+                    
+                    // Calculate timestamp offset for live stream
+                    ts::TSPacket first_live_packet;
+                    if (live_queue_->pop(first_live_packet, std::chrono::milliseconds(10))) {
+                        TimestampInfo ts_info = live_analyzer_->extractTimestamps(first_live_packet);
+                        timestamp_mgr_->onSourceSwitch(Source::LIVE, ts_info);
+                        processPacket(first_live_packet, Source::LIVE);
+                        packets_processed_++;
+                    }
+                    continue;
+                }
+            }
+        }
+        
+        // Select queue based on current mode
+        TSPacketQueue* queue = (current_mode == Mode::LIVE) ? live_queue_.get() : fallback_queue_.get();
+        Source source = (current_mode == Mode::LIVE) ? Source::LIVE : Source::FALLBACK;
+        
+        // Try to get a packet (with timeout)
+        if (queue->pop(packet, std::chrono::milliseconds(10))) {
+            // Update live timestamp if from live source
+            if (current_mode == Mode::LIVE) {
+                switcher_->updateLiveTimestamp();
+            }
+            
+            // Process the packet
+            processPacket(packet, source);
+            
+            packets_processed_++;
+            
+            // Periodic logging
+            if (packets_processed_ % log_interval == 0) {
+                std::cout << "[Multiplexer] Processed " << packets_processed_.load()
+                          << " packets. Mode: " << (current_mode == Mode::LIVE ? "LIVE" : "FALLBACK")
+                          << ", Queue size: " << queue->size()
+                          << ", Live ready: " << (live_stream_ready_.load() ? "Yes" : "No") << std::endl;
+            }
+            
+            // Check for mode switch after processing
+            if (current_mode == Mode::LIVE) {
+                // Check if we need to switch to fallback
+                if (switcher_->checkLiveTimeout()) {
+                    std::cout << "[Multiplexer] Switched to FALLBACK mode (live timeout)" << std::endl;
+                }
+            } else {
+                // Try to return to live if packets are available and live is ready
+                if (live_stream_ready_.load() && !live_queue_->empty() && switcher_->tryReturnToLive()) {
+                    std::cout << "[Multiplexer] Switched to LIVE mode (live stream restored)" << std::endl;
+                    
+                    // Calculate new timestamp offset for live stream
+                    ts::TSPacket first_live_packet;
+                    if (live_queue_->pop(first_live_packet, std::chrono::milliseconds(10))) {
+                        TimestampInfo ts_info = live_analyzer_->extractTimestamps(first_live_packet);
+                        timestamp_mgr_->onSourceSwitch(Source::LIVE, ts_info);
+                        processPacket(first_live_packet, Source::LIVE);
+                        packets_processed_++;
+                    }
+                }
+            }
+        } else {
+            // No packet available, check for timeout
+            switcher_->checkLiveTimeout();
+        }
+    }
+}
+
+void Multiplexer::processPacket(ts::TSPacket& packet, Source source) {
+    // Extract timestamps
+    TimestampInfo ts_info = (source == Source::LIVE) 
+        ? live_analyzer_->extractTimestamps(packet)
+        : fallback_analyzer_->extractTimestamps(packet);
+    
+    // Adjust timestamps
+    timestamp_mgr_->adjustPacket(packet, source, ts_info);
+    
+    // Remap PIDs if from fallback
+    if (source == Source::FALLBACK) {
+        pid_mapper_->remapPacket(packet);
+    }
+    
+    // Fix continuity counters
+    pid_mapper_->fixContinuityCounter(packet);
+    
+    // Write to RTMP output
+    rtmp_output_->writePacket(packet);
+}

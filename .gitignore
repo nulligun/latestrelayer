@@ -1,0 +1,29 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+ts-multiplexer
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker
+.dockerignore
+
+# Logs
+*.log
+
+# User-specific files
+fallback.mp4
+fallback.ts
+config.local.yaml
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,10 @@
+# FFmpeg Mock Camera - Generates H.264 test pattern with audio
+FROM jrottenberg/ffmpeg:4.4-ubuntu
+
+# Install network debugging tools (optional, for troubleshooting)
+RUN apt-get update && apt-get install -y \
+    iputils-ping \
+    iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Use default ffmpeg entrypoint and command from base image

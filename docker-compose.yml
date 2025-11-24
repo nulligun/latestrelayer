@@ -1,0 +1,143 @@
+version: '3.9'
+
+services:
+  multiplexer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.multiplexer
+    container_name: ts-multiplexer
+    depends_on:
+      - nginx-rtmp
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./src:/app/src:ro
+      - ./CMakeLists.txt:/app/CMakeLists.txt:ro
+      - multiplexer-build:/app/build
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ffmpeg-srt-live:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ffmpeg-srt-live
+    container_name: ffmpeg-srt-live
+    depends_on:
+      multiplexer:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "sleep 3 &&
+      ffmpeg -re
+      -i 'srt://0.0.0.0:1937?mode=listener'
+      -c copy
+      -f mpegts 'udp://multiplexer:10000?pkt_size=1316'"
+    ports:
+      - "1937:1937/udp"
+    networks:
+      - tsnet
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ffmpeg-fallback:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ffmpeg-fallback
+    container_name: ffmpeg-fallback
+    depends_on:
+      multiplexer:
+        condition: service_healthy
+    volumes:
+      - ./fallback.ts:/media/fallback.ts:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "sleep 5 &&
+      ffmpeg -nostdin
+      -loglevel info
+      -stats
+      -re
+      -stream_loop -1
+      -fflags +genpts
+      -i /media/fallback.ts
+      -c copy
+      -f mpegts 'udp://multiplexer:10001?pkt_size=1316'"
+    networks:
+      - tsnet
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mock-camera:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mock-camera
+    container_name: mock-camera
+    profiles:
+      - manual
+    depends_on:
+      - ffmpeg-srt-live
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "sleep 5 &&
+      ffmpeg -nostdin
+      -loglevel info
+      -re
+      -f lavfi -i testsrc=size=1280x720:rate=30
+      -f lavfi -i sine=frequency=440:sample_rate=48000
+      -c:v libx264 -preset veryfast -tune zerolatency -b:v 2M -g 60 -keyint_min 60
+      -c:a aac -b:a 128k
+      -f mpegts 'srt://ffmpeg-srt-live:1937?mode=caller'"
+    networks:
+      - tsnet
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx-rtmp:
+    image: tiangolo/nginx-rtmp:latest
+    container_name: nginx-rtmp-server
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx-start.sh:/usr/local/bin/nginx-start.sh:ro
+    ports:
+      - "1935:1935"    # RTMP
+      - "8080:8080"    # HTTP/HLS
+    networks:
+      - tsnet
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/usr/local/bin/nginx-start.sh"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  tsnet:
+    driver: bridge
+    name: tsduck-multiplexer-network
+
+volumes:
+  multiplexer-build:
+    name: multiplexer-build-cache

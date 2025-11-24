@@ -1,0 +1,115 @@
+# TSDuck Multiplexer Dockerfile - Optimized for Fast Development
+# Multi-stage build: TSDuck compiled once and cached, multiplexer code mounted for fast iteration
+
+# ============================================================================
+# Stage 1: Build TSDuck from source (this stage is cached)
+# ============================================================================
+FROM ubuntu:22.04 AS tsduck-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies for TSDuck
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    pkg-config \
+    python3 \
+    python3-dev \
+    libssl-dev \
+    libcurl4-openssl-dev \
+    libedit-dev \
+    libpcap-dev \
+    libdvbcsa-dev \
+    wget \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build TSDuck from source (only happens once, then cached)
+WORKDIR /tmp
+RUN git clone https://github.com/tsduck/tsduck.git && \
+    cd tsduck && \
+    make NOTELETEXT=1 NOSRT=1 NORIST=1 NODTAPI=1 NOVATEK=1 NOWARNING=1 CXXFLAGS_EXTRA="-Wno-error=attributes" && \
+    make install NOTELETEXT=1 NOSRT=1 NORIST=1 NODTAPI=1 NOVATEK=1 NOWARNING=1 NODOC=1 && \
+    ldconfig
+
+# ============================================================================
+# Stage 2: Runtime image with pre-built TSDuck
+# ============================================================================
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Set locale
+RUN apt-get update && apt-get install -y locales && \
+    locale-gen en_US.UTF-8 && \
+    rm -rf /var/lib/apt/lists/*
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+ENV LC_ALL=en_US.UTF-8
+
+# Install TSDuck runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libssl-dev \
+    libcurl4-openssl-dev \
+    libedit-dev \
+    libpcap-dev \
+    libdvbcsa-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy pre-built TSDuck from builder stage
+COPY --from=tsduck-builder /usr/bin/ts* /usr/bin/
+COPY --from=tsduck-builder /usr/lib/libtsduck.so /usr/lib/
+COPY --from=tsduck-builder /usr/lib/libtscore.so /usr/lib/
+COPY --from=tsduck-builder /usr/lib/tsduck /usr/lib/tsduck
+COPY --from=tsduck-builder /usr/include/tsduck /usr/include/tsduck
+COPY --from=tsduck-builder /usr/include/tscore /usr/include/tscore
+COPY --from=tsduck-builder /usr/share/tsduck /usr/share/tsduck
+COPY --from=tsduck-builder /usr/share/pkgconfig/tsduck.pc /usr/share/pkgconfig/
+COPY --from=tsduck-builder /usr/share/pkgconfig/tscore.pc /usr/share/pkgconfig/
+RUN ldconfig
+
+# Install build dependencies (kept in runtime for auto-compilation)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    pkg-config \
+    libyaml-cpp-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install FFmpeg runtime (for RTMP output) and diagnostic tools
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    iproute2 \
+    iputils-ping \
+    tcpdump \
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app directory
+WORKDIR /app
+
+# Copy entrypoint script
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Copy health check script
+COPY docker/health-check.sh /usr/local/bin/health-check.sh
+RUN chmod +x /usr/local/bin/health-check.sh
+
+# Copy configuration file (will be overridden by volume mount)
+COPY config.yaml /app/config.yaml
+
+# Create build directory (will be populated by named volume)
+RUN mkdir -p /app/build
+
+# Expose UDP ports for TS inputs (not strictly necessary in bridge network)
+EXPOSE 10000/udp 10001/udp
+
+# Set working directory
+WORKDIR /app
+
+# Use entrypoint script for auto-compilation
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["ts-multiplexer", "/app/config.yaml"]
