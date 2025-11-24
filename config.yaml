@@ -1,0 +1,18 @@
+# TSDuck MPEG-TS Multiplexer Configuration
+
+# UDP port for live TS input from FFmpeg SRT container
+live_udp_port: 10000
+
+# UDP port for fallback TS input from FFmpeg fallback container
+fallback_udp_port: 10001
+
+# RTMP output URL (internal Docker network address)
+# External playback: rtmp://localhost:1935/live/test (RTMP) or http://localhost:8080/hls/test.m3u8 (HLS)
+rtmp_url: "rtmp://nginx-rtmp/live/test"
+
+# Maximum gap allowed before switching to fallback (milliseconds)
+# If live TS stalls for more than this duration, switch to fallback
+max_live_gap_ms: 2000
+
+# Logging level: DEBUG, INFO, WARN, ERROR
+log_level: "INFO"

@@ -1,0 +1,12 @@
+# FFmpeg Fallback with Network Debugging Tools
+FROM jrottenberg/ffmpeg:latest
+
+# Install network debugging tools
+RUN apt-get update && apt-get install -y \
+    iputils-ping \
+    tcpdump \
+    iproute2 \
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Use default ffmpeg entrypoint and command from base image
