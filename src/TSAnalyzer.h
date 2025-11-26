@@ -13,12 +13,14 @@ struct StreamInfo {
     bool initialized = false;
     
     // Media packet validation counters
-    uint32_t valid_video_packets = 0;
-    uint32_t valid_audio_packets = 0;
+    uint32_t valid_video_packets = 0;      // Video packets with timestamps (PTS/DTS)
+    uint32_t valid_audio_packets = 0;      // Audio packets with PUSI flag (start of PES)
     
     // Minimum required packets for stream validation
+    // Video: requires 5 packets with timestamps to ensure valid PES stream
+    // Audio: requires only 2 PUSI packets due to ~15x lower packet rate (128kbps vs 2Mbps)
     static constexpr uint32_t MIN_VALID_VIDEO_PACKETS = 5;
-    static constexpr uint32_t MIN_VALID_AUDIO_PACKETS = 5;
+    static constexpr uint32_t MIN_VALID_AUDIO_PACKETS = 2;
 };
 
 struct TimestampInfo {

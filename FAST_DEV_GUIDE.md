@@ -4,10 +4,11 @@
 
 This project now uses an optimized build system that eliminates the 30-minute rebuild problem. The key improvements are:
 
-1. **TSDuck Pre-compiled**: Built once and cached in Docker layers (never rebuilds unless you force it)
+1. **TSDuck Pre-compiled & Host-Cached**: Built once and persisted to host filesystem (survives even `docker system prune`)
 2. **Source Code Mounted**: Your code changes are instantly visible in the container
 3. **Auto-compilation**: Container automatically recompiles only when source changes
-4. **Persistent Build Cache**: CMake cache and object files persist across container restarts
+4. **Persistent Build Cache**: CMake cache and object files persist on host filesystem
+5. **SSL Certificate Persistence**: Self-signed certs persist across container rebuilds
 
 ## Build Time Comparison
 
@@ -16,8 +17,10 @@ This project now uses an optimized build system that eliminates the 30-minute re
 | Initial build | 30 min | ~35 min* | First time only |
 | Rebuild container | 30 min | ~2 min | 93% faster |
 | Code change iteration | 30 min | 5-10 sec | 99% faster |
+| After `docker system prune` | 30 min | ~2 min** | 93% faster |
 
-*First build compiles TSDuck once, then it's cached forever
+*First build compiles TSDuck once, then it's cached to host filesystem
+**TSDuck binaries are restored from host cache, only multiplexer recompiles
 
 ## Quick Start
 
@@ -61,20 +64,31 @@ The container's entrypoint script ([`docker/entrypoint.sh`](docker/entrypoint.sh
 3. Only recompiles if source is newer than binary
 4. Uses cached build artifacts for incremental compilation
 
-#### Persistent Build Volume
+#### Host-Mounted Shared Directory
 
-```yaml
-volumes:
-  multiplexer-build:
-    name: multiplexer-build-cache
+All persistent data is stored in `./shared/` on your host machine:
+
+```
+./shared/
+├── ssl/                    # nginx-proxy SSL certificates
+│   ├── cert.pem
+│   └── key.pem
+├── tsduck/                 # Pre-built TSDuck binaries
+│   ├── bin/                # ts* executables
+│   ├── lib/                # libtsduck.so, libtscore.so
+│   ├── include/            # TSDuck headers
+│   └── share/              # pkgconfig files
+└── multiplexer-build/      # CMake cache and build artifacts
+    ├── CMakeCache.txt
+    ├── *.o                 # Object files
+    └── ts-multiplexer      # Compiled binary
 ```
 
-This volume stores:
-- CMake cache
-- Compiled object files (`.o`)
-- Dependency information
-
-Result: Incremental builds instead of full recompilation.
+**Benefits:**
+- Survives `docker system prune`, image rebuilds, and container destruction
+- SSL certificates persist (no more clicking "Accept" in browser)
+- TSDuck binaries cached on host (skips 35-min rebuild)
+- Incremental multiplexer compilation via cached object files
 
 ## Common Tasks
 
@@ -89,21 +103,34 @@ docker compose logs -f multiplexer
 If you need to recompile TSDuck (rare):
 
 ```bash
-# Delete the builder cache
+# Clear the host TSDuck cache
+rm -rf ./shared/tsduck/*
+
+# Delete Docker builder cache
 docker builder prune -a
 
-# Rebuild from scratch
+# Rebuild from scratch - TSDuck will be cached to host after build
 docker compose build multiplexer --no-cache
 ```
 
 ### Clean Build Artifacts
 
 ```bash
-# Remove the build cache volume
-docker volume rm multiplexer-build-cache
+# Remove the multiplexer build cache (on host)
+rm -rf ./shared/multiplexer-build/*
 
 # Next restart will do a full compile of multiplexer (not TSDuck)
 docker compose restart multiplexer
+```
+
+### Regenerate SSL Certificate
+
+```bash
+# Remove existing certificates
+rm -rf ./shared/ssl/*
+
+# Restart nginx-proxy to generate new certificate
+docker compose restart nginx-proxy
 ```
 
 ### Manual Compilation
@@ -159,22 +186,37 @@ docker compose restart multiplexer
 
 ### File Structure
 
+**Host (./shared/):**
+```
+./shared/
+├── ssl/                    # Mounted to nginx-proxy:/etc/nginx/ssl
+├── tsduck/                 # Mounted to multiplexer:/opt/tsduck-cache
+└── multiplexer-build/      # Mounted to multiplexer:/app/build
+```
+
+**Inside multiplexer container:**
 ```
 /app/
 ├── src/               # Mounted from host (read-only)
 ├── CMakeLists.txt    # Mounted from host (read-only)
-├── build/            # Persistent volume (build artifacts)
+├── build/            # Host-mounted: ./shared/multiplexer-build
 │   ├── CMakeCache.txt
 │   ├── *.o           # Object files for incremental builds
 │   └── ts-multiplexer
 └── config.yaml       # Mounted from host (read-only)
 
+/opt/tsduck-cache/     # Host-mounted: ./shared/tsduck
+├── bin/               # TSDuck binaries (copied to /usr/bin on startup)
+├── lib/               # TSDuck libraries (copied to /usr/lib on startup)
+├── include/           # TSDuck headers
+└── share/             # pkgconfig files
+
 /usr/bin/
-└── ts*               # TSDuck binaries (from cached layer)
+└── ts*               # TSDuck binaries (installed from cache or Docker layer)
 
 /usr/lib/
-├── libtsduck.so      # TSDuck library (from cached layer)
-└── tsduck/           # TSDuck plugins (from cached layer)
+├── libtsduck.so      # TSDuck library
+└── tsduck/           # TSDuck plugins
 ```
 
 ## Troubleshooting
@@ -218,11 +260,12 @@ docker system prune  # Clean up if needed
 - No incremental compilation
 
 ### New Workflow
-- TSDuck compiled once, cached forever
+- TSDuck compiled once, cached to host filesystem
 - Source code mounted from host
 - Changes visible immediately
 - Auto-recompile only if needed (~5-10 sec)
-- Incremental builds via persistent cache
+- Incremental builds via host-mounted cache
+- Survives `docker system prune` and image rebuilds
 
 ## Advanced Tips
 
@@ -261,7 +304,10 @@ Since source is mounted, you can use your local IDE:
 **Never wait 30 minutes again!**
 
 - Initial setup: ~35 minutes (one time)
-- Container recreate: ~2 minutes  
+- Container recreate: ~2 minutes
 - Code changes: 5-10 seconds
+- After `docker system prune`: ~2 minutes (TSDuck restored from host cache)
 
-Your source code lives on your host, the container auto-compiles when needed, and TSDuck is cached forever.
+Your source code lives on your host, the container auto-compiles when needed, and TSDuck binaries are cached on your host filesystem in `./shared/tsduck/`. This cache survives Docker image rebuilds, container destruction, and even `docker system prune`.
+
+SSL certificates are also cached in `./shared/ssl/`, so you won't need to click "Accept" in your browser after container restarts.

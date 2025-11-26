@@ -50,14 +50,15 @@ void TSAnalyzer::analyzePacket(const ts::TSPacket& packet) {
             }
         }
         // Check if this is an audio packet
+        // For audio, we count PUSI packets (start of PES) rather than requiring timestamps
+        // This is because audio has ~15x fewer packets than video due to lower bitrate
         else if (pid == stream_info_.audio_pid) {
-            TimestampInfo ts_info = extractTimestamps(packet);
-            if (ts_info.pts.has_value() || ts_info.dts.has_value()) {
+            if (packet.getPUSI()) {
                 stream_info_.valid_audio_packets++;
                 
                 // Log progress for first few valid packets
                 if (stream_info_.valid_audio_packets <= StreamInfo::MIN_VALID_AUDIO_PACKETS) {
-                    std::cout << "[TSAnalyzer] Valid audio packet with timestamps: "
+                    std::cout << "[TSAnalyzer] Valid audio packet with PUSI: "
                               << stream_info_.valid_audio_packets << "/"
                               << StreamInfo::MIN_VALID_AUDIO_PACKETS << std::endl;
                 }
@@ -228,4 +229,9 @@ void TSAnalyzer::reset() {
     stream_info_ = StreamInfo();
     pid_packet_count_.clear();
     demux_.reset();
+    
+    // Re-register PID 0 (PAT) after reset to continue parsing PSI tables
+    demux_.addPID(ts::PID_PAT);
+    
+    std::cout << "[TSAnalyzer] Reset complete - re-monitoring PAT on PID 0" << std::endl;
 }

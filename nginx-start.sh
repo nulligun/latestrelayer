@@ -12,12 +12,12 @@ echo "[nginx-rtmp] Statistics: http://localhost:8080/stat"
 echo "[nginx-rtmp] HLS streams: http://localhost:8080/hls/"
 echo "========================================="
 
-# Function for graceful shutdown
+# Function for fast shutdown
 shutdown() {
     echo ""
     echo "[nginx-rtmp] Received shutdown signal"
-    echo "[nginx-rtmp] Stopping nginx gracefully..."
-    nginx -s quit
+    echo "[nginx-rtmp] Stopping nginx immediately..."
+    nginx -s stop
     
     # Wait for nginx to finish
     wait $NGINX_PID

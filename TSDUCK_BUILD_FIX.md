@@ -125,9 +125,10 @@ Currently using: **TSDuck 3.43** (latest from GitHub)
 Compiled with flags:
 - `NOTELETEXT=1` - Disable teletext support
 - `NOSRT=1` - Disable SRT protocol
-- `NORIST=1` - Disable RIST protocol  
+- `NORIST=1` - Disable RIST protocol
 - `NODTAPI=1` - Disable DTAPI support
 - `NOVATEK=1` - Disable Vatek hardware support
+- `NODVBNIP=1` - Disable DVB-NIP (DVB Network IP) support
 - `NOWARNING=1` - Treat warnings as warnings not errors
 - `NODOC=1` - Skip documentation build
 - `CXXFLAGS_EXTRA="-Wno-error=attributes"` - Suppress attribute warnings
@@ -174,6 +175,21 @@ If TSDuck fails to compile during the initial build:
 1. Check Docker has enough resources (8GB+ RAM recommended)
 2. Review build logs for specific errors
 3. Consider using a pre-built TSDuck if compilation continues to fail
+
+#### DVB-NIP Module Compilation Error (Fixed)
+
+**Issue**: As of late 2024, the DVB-NIP (DVB Network IP) module in TSDuck fails to compile with this error:
+
+```
+dtv/dvbnip/tsMulticastGatewayConfigurationTransportSession.cpp: error:
+no match for 'operator<<' (operand types are 'std::ostream' and 'const milliseconds')
+```
+
+**Root Cause**: The DVB-NIP module attempts to stream `std::chrono::milliseconds` objects, but TSDuck's custom stream operators don't provide an overload for chrono duration types.
+
+**Solution**: Disable the DVB-NIP module by adding `NODVBNIP=1` to the build flags. This module provides professional DVB-over-IP broadcasting features (multicast gateway, FLUTE protocol) which are not needed for basic MPEG-TS multiplexing.
+
+**Impact**: None. The multiplexer only uses TSDuck's core transport stream processing capabilities (packet parsing, PMT/PAT tables, PID extraction, timestamp management). DVB-NIP is only needed for carrier-grade DVB broadcasting infrastructure.
 
 ### Multiplexer Compilation Errors  
 

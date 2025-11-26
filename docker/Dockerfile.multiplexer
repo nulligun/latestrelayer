@@ -29,6 +29,9 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /tmp
 RUN git clone https://github.com/tsduck/tsduck.git && \
     cd tsduck && \
+    rm -rf src/libtsduck/dtv/dvbnip && \
+    find src/tsplugins -name "*nip*" -delete && \
+    find src/tstools -name "*nip*" -delete && \
     make NOTELETEXT=1 NOSRT=1 NORIST=1 NODTAPI=1 NOVATEK=1 NOWARNING=1 CXXFLAGS_EXTRA="-Wno-error=attributes" && \
     make install NOTELETEXT=1 NOSRT=1 NORIST=1 NODTAPI=1 NOVATEK=1 NOWARNING=1 NODOC=1 && \
     ldconfig

@@ -7,4 +7,9 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Use default ffmpeg entrypoint and command from base image
+# Copy wrapper script
+COPY docker/mock-camera-wrapper.sh /usr/local/bin/mock-camera-wrapper.sh
+RUN chmod +x /usr/local/bin/mock-camera-wrapper.sh
+
+# Use wrapper script as entrypoint
+ENTRYPOINT ["/usr/local/bin/mock-camera-wrapper.sh"]
