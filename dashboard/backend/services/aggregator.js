@@ -1,0 +1,385 @@
+const fs = require('fs').promises;
+const path = require('path');
+const http = require('http');
+const https = require('https');
+const metricsService = require('./metrics');
+const ControllerService = require('./controller');
+
+/**
+ * Critical containers that must always be visible in the dashboard
+ * These are restart-only containers that are essential for the system to function
+ */
+const CRITICAL_CONTAINERS = [
+  {
+    name: 'nginx-proxy',
+    fullName: 'latestrelayer-nginx-proxy',
+    description: 'Nginx reverse proxy - provides HTTPS access to dashboard'
+  },
+  {
+    name: 'dashboard',
+    fullName: 'latestrelayer-dashboard',
+    description: 'This control panel'
+  },
+  {
+    name: 'controller',
+    fullName: 'latestrelayer-controller',
+    description: 'API for container management'
+  }
+];
+
+/**
+ * Aggregates data from all sources (containers, metrics, compositor)
+ */
+class AggregatorService {
+  constructor(config) {
+    this.controllerService = new ControllerService(config.controllerUrl);
+    this.compositorUrl = config.compositorUrl;
+    this.pollingInterval = config.pollingInterval || 2000;
+    this.clients = new Set();
+    
+    // SRT configuration from environment
+    this.srtPort = config.srtPort;
+    this.srtDomain = config.srtDomain;
+    
+    // Fallback config path
+    this.fallbackConfigPath = '/app/shared/fallback_config.json';
+    
+    // Stream status tracking
+    this.streamStatus = {
+      currentScene: null,
+      stateChangeTimestamp: Date.now()
+    };
+    
+    // Track kick streaming status for logging changes
+    this.lastKickStatus = false;
+    
+    // Create HTTP agents that disable connection pooling
+    // This prevents stale connection issues in Docker bridge networks
+    this.httpAgent = new http.Agent({
+      keepAlive: false,
+      maxSockets: Infinity,
+      maxFreeSockets: 0,
+      timeout: 3000,
+      keepAliveMsecs: 0
+    });
+    
+    this.httpsAgent = new https.Agent({
+      keepAlive: false,
+      maxSockets: Infinity,
+      maxFreeSockets: 0,
+      timeout: 3000,
+      keepAliveMsecs: 0
+    });
+  }
+
+  /**
+   * Get compositor health including SRT connection status, bitrate, and current scene
+   */
+  async getCompositorHealth() {
+    const url = `${this.compositorUrl}/health`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: {
+          'Accept': 'application/json',
+          'Connection': 'close'  // Force new connection for each request
+        },
+        agent: (parsedUrl) => {
+          return parsedUrl.protocol === 'http:' ? this.httpAgent : this.httpsAgent;
+        }
+      });
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      return {
+        status: data.status || 'ok',
+        scene: data.scene || null,
+        srt_connected: data.srt_connected || false,
+        srt_bitrate_kbps: data.srt_bitrate_kbps || 0,
+        privacy_enabled: data.privacy_enabled || false
+      };
+    } catch (error) {
+      clearTimeout(timeoutId);
+      console.error('[aggregator] Error fetching compositor health:', error.message);
+      return {
+        status: 'error',
+        scene: null,
+        srt_connected: false,
+        srt_bitrate_kbps: 0,
+        privacy_enabled: false
+      };
+    }
+  }
+
+  /**
+   * Get fallback configuration
+   */
+  async getFallbackConfig() {
+    try {
+      const data = await fs.readFile(this.fallbackConfigPath, 'utf8');
+      return JSON.parse(data);
+    } catch (error) {
+      // Return default config if file doesn't exist
+      return {
+        source: 'BLACK',
+        imagePath: '/app/shared/offline.png',
+        videoPath: '/app/shared/offline.mp4',
+        browserUrl: 'https://example.com',
+        activeContainer: null
+      };
+    }
+  }
+
+  /**
+   * Reconcile fallback config with actual running containers
+   * Automatically adjusts the fallback source based on which offline containers are running
+   */
+  async reconcileFallbackConfig(containers, currentConfig) {
+    try {
+      // Find running offline containers
+      const offlineContainers = {
+        'offline-browser': containers.find(c => c.name === 'offline-browser' && c.running),
+        'offline-video': containers.find(c => c.name === 'offline-video' && c.running),
+        'offline-image': containers.find(c => c.name === 'offline-image' && c.running)
+      };
+
+      // Determine which containers are actually running
+      const browserRunning = !!offlineContainers['offline-browser'];
+      const videoRunning = !!offlineContainers['offline-video'];
+      const imageRunning = !!offlineContainers['offline-image'];
+
+      // Determine the correct source based on priority: BROWSER > VIDEO > IMAGE
+      let correctSource = 'BLACK';
+      let correctActiveContainer = null;
+
+      if (browserRunning) {
+        correctSource = 'BROWSER';
+        correctActiveContainer = 'offline-browser';
+      } else if (videoRunning) {
+        correctSource = 'VIDEO';
+        correctActiveContainer = 'offline-video';
+      } else if (imageRunning) {
+        correctSource = 'IMAGE';
+        correctActiveContainer = 'offline-image';
+      }
+
+      // Check if reconciliation is needed
+      const needsUpdate =
+        currentConfig.source !== correctSource ||
+        currentConfig.activeContainer !== correctActiveContainer;
+
+      if (needsUpdate) {
+        // Update config
+        const updatedConfig = {
+          ...currentConfig,
+          source: correctSource,
+          activeContainer: correctActiveContainer,
+          lastUpdated: new Date().toISOString()
+        };
+
+        // Save updated config
+        await fs.writeFile(
+          this.fallbackConfigPath,
+          JSON.stringify(updatedConfig, null, 2)
+        );
+
+        console.log(
+          `[aggregator] Fallback auto-adjusted: source changed from ${currentConfig.source} to ${correctSource} ` +
+          `(activeContainer: ${correctActiveContainer || 'none'})`
+        );
+
+        return updatedConfig;
+      }
+
+      return currentConfig;
+    } catch (error) {
+      console.error('[aggregator] Error reconciling fallback config:', error.message);
+      return currentConfig; // Return unchanged config on error
+    }
+  }
+
+  /**
+   * Aggregate all data from various sources
+   */
+  async aggregateData() {
+    const timestamp = new Date().toISOString();
+
+    try {
+      const [containersResult, systemMetrics, compositorHealth, fallbackConfig] = await Promise.all([
+        this.controllerService.listContainers(),
+        metricsService.getSystemMetrics(),
+        this.getCompositorHealth(),
+        this.getFallbackConfig()
+      ]);
+      
+      // Extract containers and error state
+      let containers = containersResult.containers || [];
+      const containersFetchError = containersResult.success === false ? containersResult.error : null;
+      
+      // Log errors with more context
+      if (containersFetchError) {
+        console.error('[aggregator] Failed to fetch containers:', containersFetchError);
+        console.error('[aggregator] Error code:', containersResult.errorCode);
+        console.error('[aggregator] Status code:', containersResult.statusCode);
+        console.error('[aggregator] This may indicate that the controller service is unavailable');
+        
+        // Inject critical containers with 'unknown' status when API fails
+        console.log('[aggregator] Injecting critical containers with unknown status');
+        containers = CRITICAL_CONTAINERS.map(critical => ({
+          name: critical.name,
+          full_name: critical.fullName,
+          status: 'unknown',
+          status_detail: 'Unable to fetch status - controller API unavailable',
+          running: false,
+          health: 'unknown',
+          id: null,
+          isCritical: true
+        }));
+      }
+      
+      // Extract scene from compositor health response
+      const currentScene = compositorHealth.scene;
+
+      // Reconcile fallback config with actual running containers
+      const reconciledFallbackConfig = await this.reconcileFallbackConfig(containers, fallbackConfig);
+
+      // Check if ffmpeg-kick container is running
+      const kickContainer = containers.find(c => c.name === 'ffmpeg-kick');
+      const kickStreamingEnabled = kickContainer?.running || false;
+      
+      // Log if kick streaming status changed
+      if (kickStreamingEnabled && !this.lastKickStatus) {
+        console.log('[aggregator] Kick streaming detected as STARTED');
+      } else if (!kickStreamingEnabled && this.lastKickStatus) {
+        console.log('[aggregator] Kick streaming detected as STOPPED');
+      }
+      this.lastKickStatus = kickStreamingEnabled;
+
+      // Track scene changes and update timestamp
+      if (currentScene !== this.streamStatus.currentScene) {
+        this.streamStatus.currentScene = currentScene;
+        this.streamStatus.stateChangeTimestamp = Date.now();
+        console.log(`[aggregator] Scene changed: ${currentScene}`);
+      }
+      
+      // Calculate duration in current scene (seconds)
+      const sceneDurationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
+
+      // Determine if compositor is online
+      const compositorContainer = containers.find(c => c.name === 'compositor');
+      const isOnline = compositorContainer?.running && compositorContainer?.health === 'healthy';
+
+      return {
+        timestamp,
+        containers: containers.map(c => ({
+          name: c.name,
+          fullName: c.full_name,
+          status: c.status,
+          statusDetail: c.status_detail,
+          running: c.running,
+          health: c.health,
+          id: c.id
+        })),
+        containersFetchError,
+        systemMetrics,
+        compositorHealth: {
+          status: isOnline ? 'healthy' : 'unavailable',
+          current_scene: currentScene,
+          srt_connected: compositorHealth.srt_connected,
+          srt_bitrate_kbps: compositorHealth.srt_bitrate_kbps,
+          privacy_enabled: compositorHealth.privacy_enabled,
+          kick_streaming_enabled: kickStreamingEnabled
+        },
+        currentScene: currentScene,
+        streamStatus: {
+          isOnline,
+          durationSeconds: sceneDurationSeconds,
+          srtConnected: compositorHealth.srt_connected,
+          srtBitrateKbps: compositorHealth.srt_bitrate_kbps,
+          privacyEnabled: compositorHealth.privacy_enabled
+        },
+        sceneDurationSeconds,
+        cameraConfig: {
+          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
+        },
+        fallbackConfig: reconciledFallbackConfig
+      };
+    } catch (error) {
+      console.error('[aggregator] Error aggregating data:', error.message);
+      
+      // Calculate duration even on error
+      const durationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
+      
+      return {
+        timestamp,
+        containers: [],
+        systemMetrics: { cpu: 0, memory: 0, load: [0] },
+        compositorHealth: {
+          status: 'error',
+          current_scene: 'unknown',
+          srt_connected: false,
+          srt_bitrate_kbps: 0,
+          privacy_enabled: false,
+          kick_streaming_enabled: false
+        },
+        currentScene: null,
+        streamStatus: {
+          isOnline: false,
+          durationSeconds,
+          srtConnected: false,
+          srtBitrateKbps: 0,
+          privacyEnabled: false
+        },
+        sceneDurationSeconds: durationSeconds,
+        cameraConfig: {
+          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
+        },
+        fallbackConfig: {
+          source: 'BLACK',
+          imagePath: '/app/shared/offline.png',
+          videoPath: '/app/shared/offline.mp4',
+          browserUrl: 'https://example.com'
+        },
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Start polling and broadcasting to WebSocket clients
+   */
+  startPolling(broadcast) {
+    console.log(`[aggregator] Starting polling every ${this.pollingInterval}ms`);
+    
+    const poll = async () => {
+      const data = await this.aggregateData();
+      broadcast(data);
+    };
+
+    // Initial poll
+    poll();
+
+    // Set up interval
+    this.intervalId = setInterval(poll, this.pollingInterval);
+  }
+
+  /**
+   * Stop polling
+   */
+  stopPolling() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      console.log('[aggregator] Polling stopped');
+    }
+  }
+}
+
+module.exports = AggregatorService;

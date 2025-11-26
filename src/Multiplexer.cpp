@@ -21,6 +21,9 @@ bool Multiplexer::initialize() {
         return true;
     }
     
+    // Set running flag early so shutdown can be detected during initialization
+    running_ = true;
+    
     std::cout << "[Multiplexer] Initializing..." << std::endl;
     
     // Create packet queues
@@ -91,7 +94,7 @@ void Multiplexer::run() {
         return;
     }
     
-    running_ = true;
+    // running_ is already set to true in initialize()
     std::cout << "[Multiplexer] Starting main loop" << std::endl;
     
     processLoop();
@@ -102,14 +105,20 @@ void Multiplexer::stop() {
         return;
     }
     
-    std::cout << "[Multiplexer] Stopping..." << std::endl;
+    auto shutdown_start = std::chrono::steady_clock::now();
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    std::cout << "[Multiplexer] Beginning graceful shutdown..." << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    
     running_ = false;
     
     // Stop receivers
+    std::cout << "[Multiplexer] Stopping UDP receivers..." << std::endl;
     if (live_receiver_) live_receiver_->stop();
     if (fallback_receiver_) fallback_receiver_->stop();
     
     // Stop RTMP output
+    std::cout << "[Multiplexer] Stopping RTMP output..." << std::endl;
     if (rtmp_output_) rtmp_output_->stop();
     
     // Print statistics
@@ -117,6 +126,7 @@ void Multiplexer::stop() {
         std::chrono::steady_clock::now() - start_time_
     );
     
+    std::cout << "[Multiplexer] ========================================" << std::endl;
     std::cout << "[Multiplexer] Statistics:" << std::endl;
     std::cout << "  Runtime: " << elapsed.count() << "s" << std::endl;
     std::cout << "  Packets processed: " << packets_processed_.load() << std::endl;
@@ -124,7 +134,12 @@ void Multiplexer::stop() {
     std::cout << "  Fallback packets received: " << fallback_receiver_->getPacketsReceived() << std::endl;
     std::cout << "  RTMP packets written: " << rtmp_output_->getPacketsWritten() << std::endl;
     
-    std::cout << "[Multiplexer] Stopped" << std::endl;
+    auto shutdown_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - shutdown_start
+    );
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    std::cout << "[Multiplexer] Shutdown complete (" << shutdown_duration.count() << "ms)" << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
 }
 
 bool Multiplexer::analyzeStreams() {
@@ -152,16 +167,17 @@ bool Multiplexer::analyzeStreams() {
         std::cout << "[Multiplexer] Live stream not available - will be detected dynamically later" << std::endl;
     }
     
-    // Wait indefinitely for fallback stream packets (required)
+    // Wait for fallback stream packets (required) - but allow graceful shutdown
     std::cout << "[Multiplexer] Waiting for fallback stream..." << std::endl;
     bool fallback_initialized = false;
     int total_wait_seconds = 0;
     
-    while (!fallback_initialized) {
+    while (!fallback_initialized && running_.load()) {
         int fallback_packets_analyzed = 0;
         
         // Try to analyze up to 100 packets
-        while (fallback_packets_analyzed < 100 && fallback_queue_->pop(packet, std::chrono::milliseconds(100))) {
+        while (fallback_packets_analyzed < 100 && running_.load() &&
+               fallback_queue_->pop(packet, std::chrono::milliseconds(100))) {
             fallback_packets_analyzed++;
             fallback_analyzer_->analyzePacket(packet);
             
@@ -169,6 +185,12 @@ bool Multiplexer::analyzeStreams() {
                 fallback_initialized = true;
                 break;
             }
+        }
+        
+        // Check for shutdown signal
+        if (!running_.load()) {
+            std::cout << "[Multiplexer] Shutdown requested during initialization" << std::endl;
+            return false;
         }
         
         // Check if we should log status
@@ -183,12 +205,24 @@ bool Multiplexer::analyzeStreams() {
         }
         
         // If we got some packets but not initialized yet, wait a bit before retry
+        // Use shorter sleeps with periodic shutdown checks
         if (!fallback_initialized && fallback_packets_analyzed > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            // Sleep in 100ms increments to allow faster shutdown response
+            for (int i = 0; i < 5 && running_.load(); i++) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
         } else if (!fallback_initialized) {
-            // No packets received, wait 1 second before checking again
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            // No packets received, wait but check shutdown every 100ms
+            for (int i = 0; i < 10 && running_.load(); i++) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
         }
+    }
+    
+    // Check if we exited due to shutdown
+    if (!running_.load()) {
+        std::cout << "[Multiplexer] Initialization aborted due to shutdown signal" << std::endl;
+        return false;
     }
     
     const auto& fallback_info = fallback_analyzer_->getStreamInfo();
@@ -221,17 +255,53 @@ bool Multiplexer::analyzeStreams() {
 bool Multiplexer::analyzeLiveStreamDynamically() {
     std::cout << "[Multiplexer] Attempting to detect live stream..." << std::endl;
     
-    // Try to analyze live stream packets
-    int live_packets_analyzed = 0;
+    // Get the current queue size - we'll analyze accumulated packets instead of clearing them
+    // This is more efficient as accumulated packets contain PAT, PMT, and media data we need
+    size_t queue_size = live_queue_->size();
+    
+    // Use adaptive packet budget: analyze at least 500 packets, or queue size if larger
+    // This ensures we have enough packets to find PAT/PMT and validate media
+    size_t max_packets_to_analyze = std::max(queue_size, static_cast<size_t>(500));
+    
+    std::cout << "[Multiplexer] Analyzing up to " << max_packets_to_analyze
+              << " packets (queue size: " << queue_size << ")" << std::endl;
+    
+    // Reset the analyzer to start fresh (clears old PID state from previous connection)
+    // Note: reset() now re-registers PID_PAT for continued PAT parsing
+    live_analyzer_->reset();
+    
+    // Analyze accumulated packets from the queue
+    size_t live_packets_analyzed = 0;
     ts::TSPacket packet;
-    while (live_packets_analyzed < 200 && live_queue_->pop(packet, std::chrono::milliseconds(10))) {
+    
+    // Use a longer timeout (50ms) to allow real-time packets to arrive
+    while (live_packets_analyzed < max_packets_to_analyze && running_.load() &&
+           live_queue_->pop(packet, std::chrono::milliseconds(50))) {
         live_analyzer_->analyzePacket(packet);
         live_packets_analyzed++;
         
+        // Log progress periodically
+        if (live_packets_analyzed % 100 == 0) {
+            const auto& info = live_analyzer_->getStreamInfo();
+            std::cout << "[Multiplexer] Analysis progress: " << live_packets_analyzed << " packets"
+                      << ", initialized=" << (info.initialized ? "yes" : "no")
+                      << ", video=" << info.valid_video_packets
+                      << "/" << StreamInfo::MIN_VALID_VIDEO_PACKETS
+                      << ", audio=" << info.valid_audio_packets
+                      << "/" << StreamInfo::MIN_VALID_AUDIO_PACKETS << std::endl;
+        }
+        
         // Check if we have valid media data (not just PSI tables)
         if (live_analyzer_->hasValidMediaData()) {
+            std::cout << "[Multiplexer] Valid media data found after "
+                      << live_packets_analyzed << " packets" << std::endl;
             break;
         }
+    }
+    
+    // Check for shutdown signal
+    if (!running_.load()) {
+        return false;
     }
     
     const auto& live_info = live_analyzer_->getStreamInfo();
@@ -241,10 +311,14 @@ bool Multiplexer::analyzeLiveStreamDynamically() {
         // Log current validation status
         if (live_info.initialized) {
             std::cout << "[Multiplexer] Live stream PSI detected but waiting for valid media packets..." << std::endl;
+            std::cout << "  Analyzed: " << live_packets_analyzed << " packets" << std::endl;
             std::cout << "  Video packets: " << live_info.valid_video_packets
                       << "/" << StreamInfo::MIN_VALID_VIDEO_PACKETS << std::endl;
             std::cout << "  Audio packets: " << live_info.valid_audio_packets
                       << "/" << StreamInfo::MIN_VALID_AUDIO_PACKETS << std::endl;
+        } else {
+            std::cout << "[Multiplexer] No PSI tables found after "
+                      << live_packets_analyzed << " packets" << std::endl;
         }
         return false;
     }
@@ -267,7 +341,6 @@ bool Multiplexer::analyzeLiveStreamDynamically() {
 
 void Multiplexer::processLoop() {
     ts::TSPacket packet;
-    Mode last_mode = switcher_->getMode();
     uint64_t log_interval = 1000; // Log every 1000 packets
     uint64_t live_check_interval = 100; // Check for live stream every 100 packets
     
@@ -303,8 +376,8 @@ void Multiplexer::processLoop() {
         TSPacketQueue* queue = (current_mode == Mode::LIVE) ? live_queue_.get() : fallback_queue_.get();
         Source source = (current_mode == Mode::LIVE) ? Source::LIVE : Source::FALLBACK;
         
-        // Try to get a packet (with timeout)
-        if (queue->pop(packet, std::chrono::milliseconds(10))) {
+        // Try to get a packet (with short timeout for responsive shutdown)
+        if (queue->pop(packet, std::chrono::milliseconds(1))) {
             // Update live timestamp if from live source
             if (current_mode == Mode::LIVE) {
                 switcher_->updateLiveTimestamp();
@@ -328,8 +401,19 @@ void Multiplexer::processLoop() {
                 // Check if we need to switch to fallback
                 if (switcher_->checkLiveTimeout()) {
                     std::cout << "[Multiplexer] Switched to FALLBACK mode (live timeout)" << std::endl;
+                    
+                    // Reset live_stream_ready_ so we can re-detect the live stream
+                    // This allows proper re-analysis when SRT reconnects
+                    live_stream_ready_ = false;
+                    std::cout << "[Multiplexer] Live stream marked as not ready - will re-analyze when packets arrive" << std::endl;
                 }
             } else {
+                // In FALLBACK mode, check if live packets are arriving
+                // If so, increment the counter to track consecutive live packets
+                if (!live_queue_->empty()) {
+                    switcher_->updateLiveTimestamp();
+                }
+                
                 // Try to return to live if packets are available and live is ready
                 if (live_stream_ready_.load() && !live_queue_->empty() && switcher_->tryReturnToLive()) {
                     std::cout << "[Multiplexer] Switched to LIVE mode (live stream restored)" << std::endl;

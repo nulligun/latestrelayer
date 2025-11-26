@@ -9,4 +9,13 @@ RUN apt-get update && apt-get install -y \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
-# Use default ffmpeg entrypoint and command from base image
+# Copy wrapper script for signal handling
+COPY docker/ffmpeg-fallback-wrapper.sh /usr/local/bin/ffmpeg-fallback-wrapper.sh
+RUN chmod +x /usr/local/bin/ffmpeg-fallback-wrapper.sh
+
+# Copy health check script
+COPY docker/ffmpeg-fallback-health-check.sh /usr/local/bin/health-check.sh
+RUN chmod +x /usr/local/bin/health-check.sh
+
+# Use wrapper script as entrypoint
+ENTRYPOINT ["/usr/local/bin/ffmpeg-fallback-wrapper.sh"]

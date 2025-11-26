@@ -35,4 +35,5 @@ private:
     std::condition_variable cv_;
     size_t max_size_;
     std::atomic<size_t> current_size_;
+    uint64_t dropped_count_;  // Counter for rate-limited logging of dropped packets
 };

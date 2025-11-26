@@ -1,7 +1,6 @@
-version: '3.9'
-
 services:
   multiplexer:
+    stop_grace_period: 2s
     build:
       context: .
       dockerfile: docker/Dockerfile.multiplexer
@@ -12,7 +11,8 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./src:/app/src:ro
       - ./CMakeLists.txt:/app/CMakeLists.txt:ro
-      - multiplexer-build:/app/build
+      - ${SHARED_FOLDER}/multiplexer-build:/app/build
+      - ${SHARED_FOLDER}/tsduck:/opt/tsduck-cache
     networks:
       - tsnet
     restart: unless-stopped
@@ -29,6 +29,7 @@ services:
         max-file: "3"
 
   ffmpeg-srt-live:
+    stop_grace_period: 2s
     build:
       context: .
       dockerfile: docker/Dockerfile.ffmpeg-srt-live
@@ -36,18 +37,17 @@ services:
     depends_on:
       multiplexer:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "sleep 3 &&
-      ffmpeg -re
-      -i 'srt://0.0.0.0:1937?mode=listener'
-      -c copy
-      -f mpegts 'udp://multiplexer:10000?pkt_size=1316'"
     ports:
       - "1937:1937/udp"
     networks:
       - tsnet
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     logging:
       driver: "json-file"
       options:
@@ -55,6 +55,7 @@ services:
         max-file: "3"
 
   ffmpeg-fallback:
+    stop_grace_period: 2s
     build:
       context: .
       dockerfile: docker/Dockerfile.ffmpeg-fallback
@@ -64,21 +65,15 @@ services:
         condition: service_healthy
     volumes:
       - ./fallback.ts:/media/fallback.ts:ro
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "sleep 5 &&
-      ffmpeg -nostdin
-      -loglevel info
-      -stats
-      -re
-      -stream_loop -1
-      -fflags +genpts
-      -i /media/fallback.ts
-      -c copy
-      -f mpegts 'udp://multiplexer:10001?pkt_size=1316'"
     networks:
       - tsnet
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     logging:
       driver: "json-file"
       options:
@@ -86,6 +81,7 @@ services:
         max-file: "3"
 
   mock-camera:
+    stop_grace_period: 2s
     build:
       context: .
       dockerfile: docker/Dockerfile.mock-camera
@@ -94,17 +90,6 @@ services:
       - manual
     depends_on:
       - ffmpeg-srt-live
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "sleep 5 &&
-      ffmpeg -nostdin
-      -loglevel info
-      -re
-      -f lavfi -i testsrc=size=1280x720:rate=30
-      -f lavfi -i sine=frequency=440:sample_rate=48000
-      -c:v libx264 -preset veryfast -tune zerolatency -b:v 2M -g 60 -keyint_min 60
-      -c:a aac -b:a 128k
-      -f mpegts 'srt://ffmpeg-srt-live:1937?mode=caller'"
     networks:
       - tsnet
     restart: unless-stopped
@@ -115,7 +100,10 @@ services:
         max-file: "3"
 
   nginx-rtmp:
-    image: tiangolo/nginx-rtmp:latest
+    stop_grace_period: 2s
+    build:
+      context: .
+      dockerfile: nginx-rtmp/Dockerfile
     container_name: nginx-rtmp-server
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
@@ -127,6 +115,103 @@ services:
       - tsnet
     restart: unless-stopped
     entrypoint: ["/bin/bash", "/usr/local/bin/nginx-start.sh"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  controller:
+    stop_grace_period: 2s
+    build:
+      context: ./controller
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-controller
+    ports:
+      - "${CONTROLLER_API_PORT:-8089}:8089"
+      - "${CONTROLLER_WS_PORT:-8090}:8090"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${APP_FOLDER}:/app:ro
+    environment:
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-latestrelayer}
+      - PROJECT_PATH=/app
+      - SRT_DOMAIN=${SRT_DOMAIN:-localhost}
+      - SRT_PORT=${SRT_PORT:-1937}
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8089/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  dashboard:
+    stop_grace_period: 2s
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-dashboard
+    volumes:
+      - /proc/net/dev:/host_proc/net/dev:ro
+      - ${SHARED_FOLDER}:/app/shared:rw
+    environment:
+      - PORT=3000
+      - CONTROLLER_API=http://controller:8089
+      - NGINX_STATS=http://nginx-rtmp:8080/stat
+      - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
+      - SRT_PORT=${SRT_PORT:-1937}
+      - SRT_DOMAIN=${SRT_DOMAIN:-localhost}
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx-proxy:
+    stop_grace_period: 2s
+    build:
+      context: ./nginx-proxy
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-nginx-proxy
+    ports:
+      - "443:443"
+    volumes:
+      - ${SHARED_FOLDER}/ssl:/etc/nginx/ssl
+    environment:
+      - NGINX_USER=${NGINX_USER:-admin}
+      - NGINX_PASSWORD=${NGINX_PASSWORD:-changeme}
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     logging:
       driver: "json-file"
       options:
@@ -137,7 +222,11 @@ networks:
   tsnet:
     driver: bridge
     name: tsduck-multiplexer-network
-
-volumes:
-  multiplexer-build:
-    name: multiplexer-build-cache
+    driver_opts:
+      com.docker.network.bridge.name: br-tsnet
+    enable_ipv6: false
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1

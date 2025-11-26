@@ -24,6 +24,12 @@ fallback.mp4
 fallback.ts
 config.local.yaml
 
+# Shared cache directory (persistent data)
+shared/ssl/
+shared/tsduck/
+shared/multiplexer-build/
+
 # OS
 .DS_Store
 Thumbs.db
+.env

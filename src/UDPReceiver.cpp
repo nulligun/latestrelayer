@@ -46,15 +46,23 @@ void UDPReceiver::stop() {
         return;
     }
     
+    auto shutdown_start = std::chrono::steady_clock::now();
     std::cout << "[" << name_ << "] Stopping..." << std::endl;
+    
+    // Set stop flag first
     should_stop_ = true;
     
-    // Close socket to unblock recvfrom()
+    // Close socket immediately to unblock recvfrom()
     closeSocket();
+    std::cout << "[" << name_ << "] Socket closed, unblocking receive loop" << std::endl;
     
     // Wait for thread to finish
     if (receiver_thread_.joinable()) {
         receiver_thread_.join();
+        auto shutdown_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - shutdown_start
+        );
+        std::cout << "[" << name_ << "] Thread joined (" << shutdown_duration.count() << "ms)" << std::endl;
     }
     
     std::cout << "[" << name_ << "] Stopped. Datagrams: "
@@ -106,6 +114,9 @@ bool UDPReceiver::createSocket() {
 
 void UDPReceiver::closeSocket() {
     if (socket_fd_ >= 0) {
+        // Shutdown the socket first to interrupt any blocking recvfrom() calls
+        // This is critical - close() alone does NOT reliably unblock recvfrom()
+        shutdown(socket_fd_, SHUT_RDWR);
         close(socket_fd_);
         socket_fd_ = -1;
     }
@@ -146,6 +157,16 @@ void UDPReceiver::receiveLoop() {
         if (bytes_received < 0) {
             if (errno == EINTR || errno == EAGAIN) {
                 continue;
+            }
+            // EBADF or ECONNRESET means socket was shutdown - this is expected during stop
+            if (errno == EBADF || errno == ECONNRESET || errno == ENOTCONN) {
+                if (should_stop_.load()) {
+                    std::cout << "[" << name_ << "] Socket shutdown detected, exiting cleanly" << std::endl;
+                } else {
+                    std::cerr << "[" << name_ << "] Unexpected socket error: "
+                              << strerror(errno) << std::endl;
+                }
+                break;
             }
             std::cerr << "[" << name_ << "] recvfrom error: "
                       << strerror(errno) << std::endl;

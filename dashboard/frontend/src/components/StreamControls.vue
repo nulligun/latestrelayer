@@ -1,0 +1,1221 @@
+<template>
+  <div class="stream-controls-card">
+    <h2>Stream Controls</h2>
+    
+    <!-- Controls Grid -->
+    <div class="controls-grid">
+      <div class="control-section">
+        <h3 class="section-title">Kick Stream Control</h3>
+        <div class="toggle-container">
+          <label class="toggle-label">
+            Stream to
+            <a v-if="kickChannelUrl" :href="kickChannelUrl" target="_blank" rel="noopener noreferrer" class="kick-link">
+              Kick
+            </a>
+            <span v-else>Kick</span>
+          </label>
+          <div class="toggle-control-wrapper">
+            <div class="toggle-slider-wrapper">
+              <input
+                type="checkbox"
+                id="kick-toggle"
+                class="toggle-checkbox"
+                :checked="isKickLive"
+                @click="handleKickToggle"
+                :disabled="kickActionPending"
+              />
+              <label for="kick-toggle" class="toggle-switch">
+                <span class="toggle-text-off">OFF</span>
+                <span class="toggle-text-on">ON</span>
+              </label>
+            </div>
+            <div class="toggle-status-text" :class="{ active: isKickLive }">
+              {{ isKickLive ? 'Live on Kick' : 'Not Streaming' }}
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="scene-selection-section">
+        <h3 class="section-title">Scene Selection</h3>
+        <div class="toggle-container">
+          <label class="toggle-label">Enable Privacy Mode</label>
+          <div class="toggle-control-wrapper">
+            <div class="toggle-slider-wrapper">
+              <input
+                type="checkbox"
+                id="privacy-toggle"
+                class="toggle-checkbox"
+                :checked="privacyEnabled"
+                @change="handlePrivacyToggle"
+                :disabled="settingPrivacy"
+              />
+              <label for="privacy-toggle" class="toggle-switch">
+                <span class="toggle-text-off">Camera</span>
+                <span class="toggle-text-on">Privacy</span>
+              </label>
+            </div>
+            <div class="toggle-status-text" :class="{ active: privacyEnabled }">
+              {{ privacyEnabled ? 'Privacy' : 'Camera' }}
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="fallback-section">
+        <h3 class="section-title">Fallback Source</h3>
+        <div class="fallback-content">
+          <div class="fallback-left">
+          <div class="fallback-select-group">
+            <v-select
+              v-model="fallbackSource"
+              :options="fallbackOptions"
+              :reduce="option => option.value"
+              :disabled="updatingFallback"
+              :clearable="false"
+              :searchable="false"
+              @option:selected="handleFallbackSourceChange"
+              class="fallback-select-vue"
+              placeholder="Select fallback source"
+            />
+          </div>
+          
+          <div v-if="fallbackSource === 'IMAGE'" class="file-upload-group image-layout">
+            <div class="upload-controls-column">
+              <label class="fallback-label">Upload Image (PNG, JPG, GIF - Max 100MB)</label>
+              <input
+                type="file"
+                id="image-upload-input"
+                @change="handleImageUpload"
+                accept=".png,.jpg,.jpeg,.gif"
+                :disabled="uploadingFile"
+                class="file-input-hidden"
+              />
+              <label
+                for="image-upload-input"
+                class="custom-file-button"
+                :class="{ disabled: uploadingFile }"
+              >
+                📁 Choose Image File
+              </label>
+              <div v-if="selectedImageFile && !uploadSuccess" class="selected-file">
+                Selected: {{ selectedImageFile }}
+              </div>
+              <div v-if="uploadingFile" class="upload-status">Uploading...</div>
+              <div v-if="uploadSuccess" class="upload-status success">✓ Upload successful</div>
+              <div v-if="uploadError" class="upload-status error">{{ uploadError }}</div>
+            </div>
+          </div>
+          
+          <div v-if="fallbackSource === 'VIDEO'" class="file-upload-group">
+            <label class="fallback-label">Upload Video (MP4, MOV, MPEG - Max 500MB)</label>
+            <input
+              type="file"
+              id="video-upload-input"
+              @change="handleVideoUpload"
+              accept=".mp4,.mov,.mpeg"
+              :disabled="uploadingFile"
+              class="file-input-hidden"
+            />
+            <label
+              for="video-upload-input"
+              class="custom-file-button"
+              :class="{ disabled: uploadingFile }"
+            >
+              📁 Choose Video File
+            </label>
+            <div v-if="selectedVideoFile && !uploadSuccess" class="selected-file">
+              Selected: {{ selectedVideoFile }}
+            </div>
+            <div v-if="uploadingFile" class="upload-status">Uploading...</div>
+            <div v-if="uploadSuccess" class="upload-status success">✓ Upload successful</div>
+            <div v-if="uploadError" class="upload-status error">{{ uploadError }}</div>
+          </div>
+          
+          <div v-if="fallbackSource === 'BROWSER'" class="url-input-group">
+            <label class="fallback-label">Browser URL</label>
+            <div class="url-input-container">
+              <input
+                v-model="browserUrl"
+                type="url"
+                placeholder="https://example.com"
+                :disabled="updatingFallback"
+                class="url-input"
+                @keyup.enter="handleBrowserUrlUpdate"
+              />
+              <button
+                @click="handleBrowserUrlUpdate"
+                :disabled="updatingFallback || !browserUrl"
+                class="url-update-btn"
+              >
+                Update
+              </button>
+            </div>
+          </div>
+          </div>
+          <div v-if="fallbackSource !== 'BLACK'" class="fallback-right">
+            <!-- Image Preview -->
+            <div v-if="fallbackSource === 'IMAGE'" class="image-preview-container">
+              <img v-if="imagePreviewUrl" :src="imagePreviewUrl" alt="Image preview" class="image-preview" />
+              <div v-else class="image-placeholder">
+                <span class="placeholder-icon">🖼️</span>
+                <span class="placeholder-text">No image uploaded</span>
+              </div>
+            </div>
+            
+            <!-- Video Thumbnail Preview -->
+            <div v-if="fallbackSource === 'VIDEO'" class="image-preview-container">
+              <img v-if="videoThumbnailUrl" :src="videoThumbnailUrl" alt="Video thumbnail" class="image-preview" />
+              <div v-else class="image-placeholder">
+                <span class="placeholder-icon">🎬</span>
+                <span class="placeholder-text">No video uploaded</span>
+              </div>
+            </div>
+            
+            <!-- Browser Preview -->
+            <div v-if="fallbackSource === 'BROWSER'" class="browser-preview-container">
+              <iframe
+                v-if="browserUrl"
+                :src="browserUrl"
+                class="browser-preview-iframe"
+                sandbox="allow-same-origin allow-scripts"
+                @error="handleIframeError"
+              ></iframe>
+              <div v-else class="image-placeholder">
+                <span class="placeholder-icon">🌐</span>
+                <span class="placeholder-text">Enter URL above</span>
+              </div>
+              <div v-if="iframeError" class="iframe-error-overlay">
+                <span class="placeholder-icon">⚠️</span>
+                <span class="placeholder-text">Cannot preview: {{ browserUrl }}</span>
+                <span class="placeholder-subtext">Cross-origin restrictions may apply</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <ConfirmationModal
+      :isVisible="showKickConfirmModal"
+      :title="kickConfirmTitle"
+      :message="kickConfirmMessage"
+      :isProcessing="kickActionPending"
+      @confirm="confirmKickToggle"
+      @cancel="cancelKickToggle"
+    />
+  </div>
+</template>
+
+<script>
+import ConfirmationModal from './ConfirmationModal.vue';
+import vSelect from 'vue-select';
+import 'vue-select/dist/vue-select.css';
+
+export default {
+  name: 'StreamControls',
+  components: {
+    ConfirmationModal,
+    vSelect
+  },
+  props: {
+    switcherHealth: {
+      type: Object,
+      default: () => ({})
+    },
+    fallbackConfig: {
+      type: Object,
+      default: () => ({
+        source: 'BLACK',
+        browserUrl: '',
+        activeContainer: null
+      })
+    }
+  },
+  data() {
+    return {
+      privacyEnabled: false,
+      settingPrivacy: false,
+      kickActionPending: false,
+      showKickConfirmModal: false,
+      pendingKickAction: null,
+      kickChannelUrl: null,
+      fallbackSource: 'BLACK',
+      browserUrl: '',
+      updatingFallback: false,
+      uploadingFile: false,
+      uploadSuccess: false,
+      uploadError: null,
+      selectedImageFile: null,
+      selectedVideoFile: null,
+      imagePreviewUrl: null,
+      videoThumbnailUrl: null,
+      iframeError: false,
+      fallbackOptions: [
+        { label: 'Black Screen', value: 'BLACK' },
+        { label: 'Static Image', value: 'IMAGE' },
+        { label: 'Video Loop', value: 'VIDEO' },
+      ]
+    };
+  },
+  computed: {
+    isKickLive() {
+      return this.switcherHealth?.kick_streaming_enabled || false;
+    },
+    kickConfirmTitle() {
+      return this.pendingKickAction === 'start' ? 'GO LIVE ON KICK?' : 'END KICK STREAM?';
+    },
+    kickConfirmMessage() {
+      return this.pendingKickAction === 'start'
+        ? 'Are you SURE you want to GO LIVE on KICK?'
+        : 'Are you SURE you want to END KICK STREAM?';
+    }
+  },
+  mounted() {
+    this.fetchPrivacyMode();
+    this.fetchKickChannel();
+    this.fetchFallbackConfig();
+  },
+  watch: {
+    // Watch for privacy mode changes from WebSocket updates
+    'switcherHealth.privacy_enabled': {
+      handler(newPrivacyEnabled) {
+        if (newPrivacyEnabled !== undefined && newPrivacyEnabled !== this.privacyEnabled) {
+          console.log(`[StreamControls] Privacy mode auto-updated from ${this.privacyEnabled} to ${newPrivacyEnabled}`);
+          this.privacyEnabled = newPrivacyEnabled;
+        }
+      },
+      immediate: false
+    },
+    // Watch for fallbackConfig prop changes from WebSocket updates
+    'fallbackConfig.source': {
+      handler(newSource) {
+        if (newSource && newSource !== this.fallbackSource) {
+          console.log(`[StreamControls] Fallback source auto-updated from ${this.fallbackSource} to ${newSource}`);
+          this.fallbackSource = newSource;
+          
+          // Update preview URLs when source changes
+          if (newSource === 'IMAGE') {
+            this.imagePreviewUrl = `/api/fallback/image?t=${Date.now()}`;
+            this.videoThumbnailUrl = null;
+          } else if (newSource === 'VIDEO') {
+            this.videoThumbnailUrl = `/api/fallback/video-thumbnail?t=${Date.now()}`;
+            this.imagePreviewUrl = null;
+          } else {
+            this.imagePreviewUrl = null;
+            this.videoThumbnailUrl = null;
+          }
+        }
+      },
+      immediate: false
+    },
+    'fallbackConfig.browserUrl': {
+      handler(newUrl) {
+        if (newUrl && newUrl !== this.browserUrl) {
+          this.browserUrl = newUrl;
+        }
+      },
+      immediate: false
+    }
+  },
+  methods: {
+    async fetchPrivacyMode() {
+      try {
+        const response = await fetch('/api/privacy');
+        const data = await response.json();
+        this.privacyEnabled = data.enabled || false;
+      } catch (error) {
+        console.error('[StreamControls] Error fetching privacy mode:', error);
+      }
+    },
+    async fetchKickChannel() {
+      try {
+        const response = await fetch('/api/config');
+        const data = await response.json();
+        if (data.kickChannel) {
+          this.kickChannelUrl = `https://kick.com/${data.kickChannel}`;
+        }
+      } catch (error) {
+        console.error('[StreamControls] Error fetching Kick channel:', error);
+      }
+    },
+    async fetchFallbackConfig() {
+      try {
+        const response = await fetch('/api/fallback/config');
+        const config = await response.json();
+        this.fallbackSource = config.source || 'BLACK';
+        this.browserUrl = config.browserUrl || '';
+        
+        // Load previews based on source type
+        if (config.source === 'IMAGE') {
+          // Add cache buster to ensure fresh image is loaded
+          this.imagePreviewUrl = `/api/fallback/image?t=${Date.now()}`;
+          this.videoThumbnailUrl = null;
+        } else if (config.source === 'VIDEO') {
+          // Load video thumbnail
+          this.videoThumbnailUrl = `/api/fallback/video-thumbnail?t=${Date.now()}`;
+          this.imagePreviewUrl = null;
+        } else {
+          this.imagePreviewUrl = null;
+          this.videoThumbnailUrl = null;
+        }
+        
+        // Reset iframe error when config loads
+        this.iframeError = false;
+        
+        console.log('[StreamControls] Fallback config loaded:', config);
+      } catch (error) {
+        console.error('[StreamControls] Error fetching fallback config:', error);
+      }
+    },
+    async handleFallbackSourceChange(value) {
+      const newSource = value?.value || value;
+      this.fallbackSource = newSource;
+      if (this.updatingFallback) return;
+      
+      this.updatingFallback = true;
+      this.uploadSuccess = false;
+      this.uploadError = null;
+      this.iframeError = false;
+      
+      // Load appropriate preview based on source type
+      if (newSource === 'IMAGE') {
+        this.imagePreviewUrl = `/api/fallback/image?t=${Date.now()}`;
+        this.videoThumbnailUrl = null;
+      } else if (newSource === 'VIDEO') {
+        this.videoThumbnailUrl = `/api/fallback/video-thumbnail?t=${Date.now()}`;
+        this.imagePreviewUrl = null;
+      } else {
+        this.imagePreviewUrl = null;
+        this.videoThumbnailUrl = null;
+      }
+      
+      try {
+        const response = await fetch('/api/fallback/config', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            source: this.fallbackSource,
+            browserUrl: this.browserUrl
+          })
+        });
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Failed to update fallback source');
+        }
+        
+        const result = await response.json();
+        console.log('[StreamControls] Fallback source updated:', result);
+      } catch (error) {
+        console.error('[StreamControls] Error updating fallback source:', error);
+        alert(`Failed to update fallback source: ${error.message}`);
+      } finally {
+        this.updatingFallback = false;
+      }
+    },
+    async handleImageUpload(event) {
+      const file = event.target.files[0];
+      if (!file) {
+        this.selectedImageFile = null;
+        this.imagePreviewUrl = null;
+        return;
+      }
+      
+      this.selectedImageFile = file.name;
+      this.uploadingFile = true;
+      this.uploadSuccess = false;
+      this.uploadError = null;
+      
+      // Create preview immediately using FileReader
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        this.imagePreviewUrl = e.target.result;
+      };
+      reader.readAsDataURL(file);
+      
+      try {
+        const formData = new FormData();
+        formData.append('image', file);
+        
+        const response = await fetch('/api/fallback/upload-image', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Upload failed');
+        }
+        
+        const result = await response.json();
+        console.log('[StreamControls] Image uploaded:', result);
+        this.uploadSuccess = true;
+        
+        setTimeout(() => {
+          this.uploadSuccess = false;
+        }, 3000);
+      } catch (error) {
+        console.error('[StreamControls] Error uploading image:', error);
+        this.uploadError = error.message;
+        this.imagePreviewUrl = null;
+      } finally {
+        this.uploadingFile = false;
+        event.target.value = '';
+        this.selectedImageFile = null;
+      }
+    },
+    async handleVideoUpload(event) {
+      const file = event.target.files[0];
+      if (!file) {
+        this.selectedVideoFile = null;
+        this.videoThumbnailUrl = null;
+        return;
+      }
+      
+      this.selectedVideoFile = file.name;
+      this.uploadingFile = true;
+      this.uploadSuccess = false;
+      this.uploadError = null;
+      
+      try {
+        const formData = new FormData();
+        formData.append('video', file);
+        
+        const response = await fetch('/api/fallback/upload-video', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Upload failed');
+        }
+        
+        const result = await response.json();
+        console.log('[StreamControls] Video uploaded:', result);
+        this.uploadSuccess = true;
+        
+        // Load the generated thumbnail
+        if (result.thumbnailGenerated) {
+          this.videoThumbnailUrl = `/api/fallback/video-thumbnail?t=${Date.now()}`;
+        }
+        
+        setTimeout(() => {
+          this.uploadSuccess = false;
+        }, 3000);
+      } catch (error) {
+        console.error('[StreamControls] Error uploading video:', error);
+        this.uploadError = error.message;
+        this.videoThumbnailUrl = null;
+      } finally {
+        this.uploadingFile = false;
+        event.target.value = '';
+        this.selectedVideoFile = null;
+      }
+    },
+    handleIframeError() {
+      console.warn('[StreamControls] Iframe failed to load, likely due to cross-origin restrictions');
+      this.iframeError = true;
+    },
+    async handleBrowserUrlUpdate() {
+      if (!this.browserUrl || this.updatingFallback) return;
+      
+      this.updatingFallback = true;
+      this.iframeError = false;
+      
+      try {
+        const response = await fetch('/api/fallback/config', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            source: 'BROWSER',
+            browserUrl: this.browserUrl
+          })
+        });
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Failed to update browser URL');
+        }
+        
+        const result = await response.json();
+        console.log('[StreamControls] Browser URL updated:', result);
+      } catch (error) {
+        console.error('[StreamControls] Error updating browser URL:', error);
+        alert(`Failed to update browser URL: ${error.message}`);
+      } finally {
+        this.updatingFallback = false;
+      }
+    },
+    handlePrivacyToggle(event) {
+      const enabled = event.target.checked;
+      this.setPrivacyMode(enabled);
+    },
+    async setPrivacyMode(enabled) {
+      if (this.settingPrivacy) return;
+      
+      this.settingPrivacy = true;
+      console.log(`[StreamControls] Setting privacy mode to: ${enabled}`);
+      
+      try {
+        const endpoint = enabled ? '/api/privacy/enable' : '/api/privacy/disable';
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Failed to set privacy mode');
+        }
+        
+        const result = await response.json();
+        console.log(`[StreamControls] Privacy mode set successfully:`, result);
+        this.privacyEnabled = enabled;
+      } catch (error) {
+        console.error(`[StreamControls] Error setting privacy mode:`, error);
+        alert(`Failed to set privacy mode: ${error.message}`);
+      } finally {
+        this.settingPrivacy = false;
+      }
+    },
+    handleKickToggle(event) {
+      event.preventDefault();
+      this.pendingKickAction = this.isKickLive ? 'stop' : 'start';
+      this.showKickConfirmModal = true;
+    },
+    cancelKickToggle() {
+      this.showKickConfirmModal = false;
+      this.pendingKickAction = null;
+    },
+    async confirmKickToggle() {
+      this.kickActionPending = true;
+      
+      try {
+        const endpoint = this.pendingKickAction === 'start'
+          ? '/api/kick/start'
+          : '/api/kick/stop';
+        
+        console.log(`[StreamControls] ${this.pendingKickAction === 'start' ? 'Starting' : 'Stopping'} Kick stream...`);
+        
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || `Failed to ${this.pendingKickAction} stream`);
+        }
+        
+        console.log(`[StreamControls] Kick stream ${this.pendingKickAction} successful`);
+      } catch (error) {
+        console.error('[StreamControls] Kick toggle error:', error);
+        alert(`Failed to ${this.pendingKickAction} Kick stream: ${error.message}`);
+      } finally {
+        this.kickActionPending = false;
+        this.showKickConfirmModal = false;
+        this.pendingKickAction = null;
+      }
+    }
+  }
+};
+</script>
+
+<style scoped>
+.stream-controls-card {
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+h2 {
+  margin: 0 0 20px 0;
+  font-size: 1.25rem;
+  color: #f1f5f9;
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 20px;
+}
+
+.control-section,
+.scene-selection-section {
+  background: #0f172a;
+  border-radius: 6px;
+  padding: 15px;
+}
+
+.fallback-section {
+  background: #0f172a;
+  border-radius: 6px;
+  padding: 15px;
+  grid-column: span 2;
+}
+
+@media (max-width: 768px) {
+  .fallback-section {
+    grid-column: span 1;
+  }
+}
+
+.section-title {
+  font-size: 1rem;
+  color: #f1f5f9;
+  margin-bottom: 15px;
+  font-weight: 600;
+}
+
+.toggle-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.toggle-label {
+  font-size: 0.9rem;
+  color: #e2e8f0;
+  flex: 1;
+}
+
+.kick-link {
+  color: #10b981;
+  text-decoration: none;
+  font-weight: 600;
+  border-bottom: 2px solid transparent;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.kick-link:hover {
+  color: #059669;
+  border-bottom-color: #059669;
+}
+
+.toggle-control-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.toggle-slider-wrapper {
+  position: relative;
+}
+
+.toggle-checkbox {
+  display: none;
+}
+
+.toggle-switch {
+  display: block;
+  width: 100px;
+  height: 40px;
+  background: #475569;
+  border-radius: 20px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.3s ease;
+  user-select: none;
+}
+
+.toggle-switch span {
+  display: none;
+}
+
+.toggle-checkbox:checked + .toggle-switch {
+  background: #10b981;
+}
+
+.toggle-checkbox:disabled + .toggle-switch {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toggle-switch::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 32px;
+  height: 32px;
+  background: white;
+  border-radius: 16px;
+  transition: transform 0.3s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.toggle-checkbox:checked + .toggle-switch::before {
+  transform: translateX(60px);
+}
+
+.toggle-text-off,
+.toggle-text-on {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: white;
+  transition: opacity 0.3s ease;
+}
+
+.toggle-text-off {
+  left: 10px;
+  opacity: 1;
+}
+
+.toggle-text-on {
+  right: 12px;
+  opacity: 0;
+}
+
+.toggle-checkbox:checked + .toggle-switch .toggle-text-off {
+  opacity: 0;
+}
+
+.toggle-checkbox:checked + .toggle-switch .toggle-text-on {
+  opacity: 1;
+}
+
+.toggle-status-text {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #94a3b8;
+  text-align: center;
+  transition: color 0.3s ease;
+}
+
+.toggle-status-text.active {
+  color: #10b981;
+  font-weight: 600;
+}
+
+.fallback-content {
+  display: flex;
+  flex-direction: row;
+  gap: 15px;
+}
+
+.fallback-left {
+  flex-grow: 1;
+}
+
+.fallback-select-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fallback-label {
+  font-size: 0.875rem;
+  color: #e2e8f0;
+  font-weight: 500;
+}
+
+.fallback-select-vue {
+  width: 100%;
+  position: relative;
+}
+
+/* Vue-select custom dark theme styling */
+.fallback-select-vue :deep(.vs__dropdown-toggle) {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 6px 8px;
+  transition: border-color 0.2s ease;
+}
+
+.fallback-select-vue :deep(.vs__dropdown-toggle:hover) {
+  border-color: #3b82f6;
+}
+
+.fallback-select-vue :deep(.vs__selected) {
+  color: #e2e8f0;
+  font-size: 0.9rem;
+  margin: 2px;
+  padding: 2px 6px;
+}
+
+.fallback-select-vue :deep(.vs__search),
+.fallback-select-vue :deep(.vs__search:focus) {
+  color: #e2e8f0;
+  margin: 2px 0;
+  padding: 2px;
+}
+
+.fallback-select-vue :deep(.vs__search::placeholder) {
+  color: #64748b;
+}
+
+.fallback-select-vue :deep(.vs__actions) {
+  padding: 2px 6px;
+}
+
+.fallback-select-vue :deep(.vs__open-indicator) {
+  fill: #94a3b8;
+  transition: transform 0.2s ease;
+}
+
+.fallback-select-vue :deep(.vs__dropdown-toggle:hover .vs__open-indicator) {
+  fill: #3b82f6;
+}
+
+.fallback-select-vue :deep(.vs__clear) {
+  fill: #94a3b8;
+  transition: fill 0.2s ease;
+}
+
+.fallback-select-vue :deep(.vs__clear:hover) {
+  fill: #ef4444;
+}
+
+.fallback-select-vue :deep(.vs__dropdown-menu) {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  margin-top: 4px;
+  padding: 4px 0;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+}
+
+.fallback-select-vue :deep(.vs__dropdown-option) {
+  color: #e2e8f0;
+  padding: 8px 12px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.fallback-select-vue :deep(.vs__dropdown-option--highlight) {
+  background: #3b82f6;
+  color: #ffffff;
+}
+
+.fallback-select-vue :deep(.vs__dropdown-option--selected) {
+  background: rgba(59, 130, 246, 0.2);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.fallback-select-vue :deep(.vs__dropdown-option--disabled) {
+  color: #64748b;
+  cursor: not-allowed;
+}
+
+.fallback-select-vue :deep(.vs__no-options) {
+  color: #94a3b8;
+  padding: 12px;
+  text-align: center;
+}
+
+.fallback-select-vue :deep(.vs__spinner) {
+  border-left-color: #3b82f6;
+}
+
+/* Disabled state */
+.fallback-select-vue :deep(.vs--disabled .vs__dropdown-toggle) {
+  background: #0f172a;
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.fallback-select-vue :deep(.vs--disabled .vs__selected) {
+  color: #64748b;
+}
+
+.fallback-select-vue :deep(.vs--disabled .vs__open-indicator) {
+  fill: #64748b;
+}
+
+.file-upload-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.file-upload-group.image-layout {
+  flex-direction: row;
+  gap: 20px;
+  min-height: 200px;
+}
+
+.upload-controls-column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.upload-content-wrapper {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.upload-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.image-preview-container {
+  flex-shrink: 0;
+  width: 280px;
+  height: 100%;
+  min-height: 200px;
+  border: 2px solid #334155;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0f172a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+}
+
+.image-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.image-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #64748b;
+  padding: 20px;
+  text-align: center;
+}
+
+.placeholder-icon {
+  font-size: 3rem;
+  opacity: 0.5;
+}
+
+.placeholder-text {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+@media (max-width: 768px) {
+  .file-upload-group.image-layout {
+    flex-direction: column;
+    min-height: auto;
+  }
+  
+  .image-preview-container {
+    width: 100%;
+    height: 200px;
+    min-height: 200px;
+  }
+}
+
+.file-input-hidden {
+  opacity: 0;
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.custom-file-button {
+  display: inline-block;
+  padding: 10px 20px;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+  user-select: none;
+}
+
+.custom-file-button:hover {
+  background: #2563eb;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(59, 130, 246, 0.3);
+}
+
+.custom-file-button:active {
+  background: #1d4ed8;
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+}
+
+.custom-file-button.disabled {
+  background: #475569;
+  cursor: not-allowed;
+  opacity: 0.6;
+  pointer-events: none;
+  transform: none;
+}
+
+.selected-file {
+  font-size: 0.875rem;
+  color: #94a3b8;
+  padding: 8px 0;
+  font-style: italic;
+}
+
+.upload-status {
+  font-size: 0.875rem;
+  padding: 8px 12px;
+  border-radius: 4px;
+  text-align: center;
+}
+
+.upload-status.success {
+  background: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+  border: 1px solid #10b981;
+}
+
+.upload-status.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border: 1px solid #ef4444;
+}
+
+.url-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.url-input-container {
+  display: flex;
+  gap: 8px;
+}
+
+.url-input {
+  flex: 1;
+  padding: 10px 12px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 0.9rem;
+  transition: border-color 0.2s ease;
+}
+
+.url-input:hover:not(:disabled) {
+  border-color: #3b82f6;
+}
+
+.url-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.url-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.url-update-btn {
+  padding: 10px 20px;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.url-update-btn:hover:not(:disabled) {
+  background: #2563eb;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(59, 130, 246, 0.3);
+}
+
+.url-update-btn:active:not(:disabled) {
+  background: #1d4ed8;
+  transform: translateY(0);
+}
+
+.url-update-btn:disabled {
+  background: #475569;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Browser Preview Styles */
+.browser-preview-container {
+  position: relative;
+  flex-shrink: 0;
+  width: 280px;
+  height: 100%;
+  min-height: 200px;
+  border: 2px solid #334155;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0f172a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+}
+
+.browser-preview-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: white;
+}
+
+.iframe-error-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 23, 42, 0.95);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #f59e0b;
+  padding: 20px;
+  text-align: center;
+  z-index: 10;
+}
+
+.placeholder-subtext {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+@media (max-width: 768px) {
+  .browser-preview-container {
+    width: 100%;
+    height: 200px;
+    min-height: 200px;
+  }
+}
+</style>

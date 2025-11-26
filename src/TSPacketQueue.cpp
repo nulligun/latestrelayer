@@ -2,7 +2,7 @@
 #include <iostream>
 
 TSPacketQueue::TSPacketQueue(size_t max_size)
-    : max_size_(max_size), current_size_(0) {
+    : max_size_(max_size), current_size_(0), dropped_count_(0) {
 }
 
 TSPacketQueue::~TSPacketQueue() {
@@ -16,7 +16,13 @@ bool TSPacketQueue::push(const ts::TSPacket& packet) {
     if (queue_.size() >= max_size_) {
         // Drop oldest packet to make room (prevent unbounded growth)
         queue_.pop();
-        std::cerr << "Warning: Queue full, dropping oldest packet" << std::endl;
+        dropped_count_++;
+        
+        // Rate-limit the warning to avoid log spam (log every 1000 dropped packets)
+        if (dropped_count_ == 1 || dropped_count_ % 1000 == 0) {
+            std::cerr << "Warning: Queue full, dropping oldest packet (total dropped: "
+                      << dropped_count_ << ")" << std::endl;
+        }
     }
     
     queue_.push(packet);
