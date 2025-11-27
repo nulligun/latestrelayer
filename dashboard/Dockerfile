@@ -45,6 +45,7 @@ RUN apk add --no-cache \
     git openssh \
     curl \
     ffmpeg \
+    iputils \
     libc6-compat ca-certificates
 RUN npm i -g npm@10
 

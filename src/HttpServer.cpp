@@ -1,0 +1,246 @@
+#include "HttpServer.h"
+#include <iostream>
+#include <sstream>
+#include <cstring>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <poll.h>
+
+HttpServer::HttpServer(uint16_t port)
+    : port_(port),
+      running_(false),
+      server_fd_(-1) {
+}
+
+HttpServer::~HttpServer() {
+    stop();
+}
+
+bool HttpServer::start() {
+    if (running_.load()) {
+        std::cerr << "[HttpServer] Already running" << std::endl;
+        return false;
+    }
+    
+    // Create socket
+    server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd_ < 0) {
+        std::cerr << "[HttpServer] Failed to create socket: " << strerror(errno) << std::endl;
+        return false;
+    }
+    
+    // Set socket options
+    int opt = 1;
+    if (setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        std::cerr << "[HttpServer] Failed to set SO_REUSEADDR: " << strerror(errno) << std::endl;
+        close(server_fd_);
+        server_fd_ = -1;
+        return false;
+    }
+    
+    // Set non-blocking
+    int flags = fcntl(server_fd_, F_GETFL, 0);
+    fcntl(server_fd_, F_SETFL, flags | O_NONBLOCK);
+    
+    // Bind socket
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(port_);
+    
+    if (bind(server_fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        std::cerr << "[HttpServer] Failed to bind to port " << port_ << ": " << strerror(errno) << std::endl;
+        close(server_fd_);
+        server_fd_ = -1;
+        return false;
+    }
+    
+    // Listen
+    if (listen(server_fd_, 5) < 0) {
+        std::cerr << "[HttpServer] Failed to listen: " << strerror(errno) << std::endl;
+        close(server_fd_);
+        server_fd_ = -1;
+        return false;
+    }
+    
+    running_ = true;
+    server_thread_ = std::thread(&HttpServer::serverLoop, this);
+    
+    std::cout << "[HttpServer] Started on port " << port_ << std::endl;
+    return true;
+}
+
+void HttpServer::stop() {
+    if (!running_.load()) {
+        return;
+    }
+    
+    running_ = false;
+    
+    // Close server socket to unblock accept
+    if (server_fd_ >= 0) {
+        close(server_fd_);
+        server_fd_ = -1;
+    }
+    
+    // Wait for server thread
+    if (server_thread_.joinable()) {
+        server_thread_.join();
+    }
+    
+    std::cout << "[HttpServer] Stopped" << std::endl;
+}
+
+void HttpServer::setPrivacyCallback(PrivacyCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    privacy_callback_ = std::move(callback);
+}
+
+void HttpServer::serverLoop() {
+    while (running_.load()) {
+        // Use poll to wait for connections with timeout
+        struct pollfd pfd;
+        pfd.fd = server_fd_;
+        pfd.events = POLLIN;
+        
+        int ret = poll(&pfd, 1, 500); // 500ms timeout
+        
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            if (running_.load()) {
+                std::cerr << "[HttpServer] Poll error: " << strerror(errno) << std::endl;
+            }
+            break;
+        }
+        
+        if (ret == 0) {
+            // Timeout, check running flag and continue
+            continue;
+        }
+        
+        // Accept connection
+        struct sockaddr_in client_addr;
+        socklen_t client_len = sizeof(client_addr);
+        int client_fd = accept(server_fd_, (struct sockaddr*)&client_addr, &client_len);
+        
+        if (client_fd < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            if (running_.load()) {
+                std::cerr << "[HttpServer] Accept error: " << strerror(errno) << std::endl;
+            }
+            continue;
+        }
+        
+        // Read request with timeout
+        char buffer[4096];
+        memset(buffer, 0, sizeof(buffer));
+        
+        struct pollfd read_pfd;
+        read_pfd.fd = client_fd;
+        read_pfd.events = POLLIN;
+        
+        if (poll(&read_pfd, 1, 1000) > 0) {
+            ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
+            if (bytes_read > 0) {
+                std::string request(buffer, bytes_read);
+                std::string method, path, body;
+                
+                if (parseRequest(request, method, path, body)) {
+                    std::string response = handleRequest(method, path, body);
+                    write(client_fd, response.c_str(), response.length());
+                } else {
+                    std::string response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+                    write(client_fd, response.c_str(), response.length());
+                }
+            }
+        }
+        
+        close(client_fd);
+    }
+}
+
+bool HttpServer::parseRequest(const std::string& request, std::string& method, std::string& path, std::string& body) {
+    // Parse first line
+    std::istringstream stream(request);
+    std::string line;
+    
+    if (!std::getline(stream, line)) {
+        return false;
+    }
+    
+    // Parse method and path
+    std::istringstream first_line(line);
+    std::string http_version;
+    if (!(first_line >> method >> path >> http_version)) {
+        return false;
+    }
+    
+    // Find body (after empty line)
+    size_t body_start = request.find("\r\n\r\n");
+    if (body_start != std::string::npos) {
+        body = request.substr(body_start + 4);
+    }
+    
+    return true;
+}
+
+std::string HttpServer::handleRequest(const std::string& method, const std::string& path, const std::string& body) {
+    std::cout << "[HttpServer] " << method << " " << path << std::endl;
+    
+    // Handle POST /privacy
+    if (method == "POST" && path == "/privacy") {
+        // Parse JSON body for "enabled" field
+        bool enabled = false;
+        if (body.find("\"enabled\": true") != std::string::npos ||
+            body.find("\"enabled\":true") != std::string::npos) {
+            enabled = true;
+        }
+        
+        std::cout << "[HttpServer] Privacy mode callback: enabled=" << (enabled ? "true" : "false") << std::endl;
+        
+        // Call privacy callback
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            if (privacy_callback_) {
+                privacy_callback_(enabled);
+            }
+        }
+        
+        std::string response_body = "{\"status\": \"ok\"}";
+        std::ostringstream response;
+        response << "HTTP/1.1 200 OK\r\n"
+                 << "Content-Type: application/json\r\n"
+                 << "Content-Length: " << response_body.length() << "\r\n"
+                 << "\r\n"
+                 << response_body;
+        return response.str();
+    }
+    
+    // Handle GET /health
+    if (method == "GET" && path == "/health") {
+        std::string response_body = "{\"status\": \"ok\"}";
+        std::ostringstream response;
+        response << "HTTP/1.1 200 OK\r\n"
+                 << "Content-Type: application/json\r\n"
+                 << "Content-Length: " << response_body.length() << "\r\n"
+                 << "\r\n"
+                 << response_body;
+        return response.str();
+    }
+    
+    // 404 for other paths
+    std::string response_body = "{\"error\": \"Not found\"}";
+    std::ostringstream response;
+    response << "HTTP/1.1 404 Not Found\r\n"
+             << "Content-Type: application/json\r\n"
+             << "Content-Length: " << response_body.length() << "\r\n"
+             << "\r\n"
+             << response_body;
+    return response.str();
+}

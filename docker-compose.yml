@@ -1,4 +1,146 @@
 services:
+  # ============================================================================
+  # Tier 1: Core Services (start first - no streaming dependencies)
+  # ============================================================================
+  
+  controller:
+    stop_grace_period: 2s
+    build:
+      context: ./controller
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-controller
+    ports:
+      - "${CONTROLLER_API_PORT:-8089}:8089"
+      - "${CONTROLLER_WS_PORT:-8090}:8090"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${APP_FOLDER}:/app:ro
+      - ${SHARED_FOLDER}:/app/shared:rw
+    environment:
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-latestrelayer}
+      - PROJECT_PATH=/app
+      - SRT_DOMAIN=${SRT_DOMAIN:-localhost}
+      - SRT_PORT=${SRT_PORT:-1937}
+      - MULTIPLEXER_URL=http://multiplexer:8091
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8089/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  dashboard:
+    stop_grace_period: 2s
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-dashboard
+    depends_on:
+      controller:
+        condition: service_healthy
+    volumes:
+      - /proc/net/dev:/host_proc/net/dev:ro
+      - ${SHARED_FOLDER}:/app/shared:rw
+    environment:
+      - PORT=3000
+      - CONTROLLER_API=http://controller:8089
+      - NGINX_STATS=http://nginx-rtmp:8080/stat
+      - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
+      - SRT_PORT=${SRT_PORT:-1937}
+      - SRT_DOMAIN=${SRT_DOMAIN:-localhost}
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx-proxy:
+    stop_grace_period: 2s
+    build:
+      context: ./nginx-proxy
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-nginx-proxy
+    depends_on:
+      dashboard:
+        condition: service_healthy
+    ports:
+      - "443:443"
+    volumes:
+      - ${SHARED_FOLDER}/ssl:/etc/nginx/ssl
+    environment:
+      - NGINX_USER=${NGINX_USER:-admin}
+      - NGINX_PASSWORD=${NGINX_PASSWORD:-changeme}
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ============================================================================
+  # Tier 2: Streaming Infrastructure (requires controller)
+  # ============================================================================
+
+  nginx-rtmp:
+    stop_grace_period: 2s
+    build:
+      context: .
+      dockerfile: nginx-rtmp/Dockerfile
+    container_name: nginx-rtmp-server
+    depends_on:
+      controller:
+        condition: service_healthy
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx-start.sh:/usr/local/bin/nginx-start.sh:ro
+    ports:
+      - "1935:1935"    # RTMP
+      - "8080:8080"    # HTTP/HLS
+    networks:
+      - tsnet
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/usr/local/bin/nginx-start.sh"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ============================================================================
+  # Tier 3: Multiplexer (requires nginx-rtmp and controller)
+  # ============================================================================
+
   multiplexer:
     stop_grace_period: 2s
     build:
@@ -6,7 +148,10 @@ services:
       dockerfile: docker/Dockerfile.multiplexer
     container_name: ts-multiplexer
     depends_on:
-      - nginx-rtmp
+      nginx-rtmp:
+        condition: service_healthy
+      controller:
+        condition: service_healthy
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./src:/app/src:ro
@@ -27,6 +172,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ============================================================================
+  # Tier 4: Stream Sources (requires multiplexer healthy)
+  # ============================================================================
 
   ffmpeg-srt-live:
     stop_grace_period: 2s
@@ -65,6 +214,7 @@ services:
         condition: service_healthy
     volumes:
       - ./fallback.ts:/media/fallback.ts:ro
+      - ${SHARED_FOLDER}:/media/shared:ro
     networks:
       - tsnet
     restart: unless-stopped
@@ -80,6 +230,10 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ============================================================================
+  # Manual/Optional Services
+  # ============================================================================
+
   mock-camera:
     stop_grace_period: 2s
     build:
@@ -93,125 +247,12 @@ services:
     networks:
       - tsnet
     restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  nginx-rtmp:
-    stop_grace_period: 2s
-    build:
-      context: .
-      dockerfile: nginx-rtmp/Dockerfile
-    container_name: nginx-rtmp-server
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx-start.sh:/usr/local/bin/nginx-start.sh:ro
-    ports:
-      - "1935:1935"    # RTMP
-      - "8080:8080"    # HTTP/HLS
-    networks:
-      - tsnet
-    restart: unless-stopped
-    entrypoint: ["/bin/bash", "/usr/local/bin/nginx-start.sh"]
     healthcheck:
       test: ["CMD", "/usr/local/bin/health-check.sh"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 10s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  controller:
-    stop_grace_period: 2s
-    build:
-      context: ./controller
-      dockerfile: Dockerfile
-    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-controller
-    ports:
-      - "${CONTROLLER_API_PORT:-8089}:8089"
-      - "${CONTROLLER_WS_PORT:-8090}:8090"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ${APP_FOLDER}:/app:ro
-    environment:
-      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-latestrelayer}
-      - PROJECT_PATH=/app
-      - SRT_DOMAIN=${SRT_DOMAIN:-localhost}
-      - SRT_PORT=${SRT_PORT:-1937}
-    networks:
-      - tsnet
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8089/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  dashboard:
-    stop_grace_period: 2s
-    build:
-      context: ./dashboard
-      dockerfile: Dockerfile
-    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-dashboard
-    volumes:
-      - /proc/net/dev:/host_proc/net/dev:ro
-      - ${SHARED_FOLDER}:/app/shared:rw
-    environment:
-      - PORT=3000
-      - CONTROLLER_API=http://controller:8089
-      - NGINX_STATS=http://nginx-rtmp:8080/stat
-      - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
-      - SRT_PORT=${SRT_PORT:-1937}
-      - SRT_DOMAIN=${SRT_DOMAIN:-localhost}
-    networks:
-      - tsnet
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  nginx-proxy:
-    stop_grace_period: 2s
-    build:
-      context: ./nginx-proxy
-      dockerfile: Dockerfile
-    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-nginx-proxy
-    ports:
-      - "443:443"
-    volumes:
-      - ${SHARED_FOLDER}/ssl:/etc/nginx/ssl
-    environment:
-      - NGINX_USER=${NGINX_USER:-admin}
-      - NGINX_PASSWORD=${NGINX_PASSWORD:-changeme}
-    networks:
-      - tsnet
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/health-check.sh"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      start_period: 15s
     logging:
       driver: "json-file"
       options:

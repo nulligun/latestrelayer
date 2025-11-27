@@ -24,6 +24,10 @@ class ControllerWebSocketClient extends EventEmitter {
     // Queue for pending log subscriptions when not connected
     this.pendingSubscriptions = new Map(); // containerName -> { lines }
     
+    // Scene and privacy state from controller
+    this.currentScene = 'unknown';
+    this.privacyEnabled = false;
+    
     console.log(`[controller-ws] Initialized with URL: ${this.wsUrl}`);
   }
   
@@ -53,6 +57,7 @@ class ControllerWebSocketClient extends EventEmitter {
       this.ws.on('message', (data) => {
         try {
           const message = JSON.parse(data.toString());
+          console.log(`[scene_change_debug] Received WebSocket message type: ${message.type}`);
           this.handleMessage(message);
         } catch (error) {
           console.error('[controller-ws] Error parsing message:', error.message);
@@ -106,12 +111,75 @@ class ControllerWebSocketClient extends EventEmitter {
     switch (type) {
       case 'initial_state':
         console.log(`[controller-ws] Received initial state with ${message.containers?.length || 0} containers`);
+        // Update scene and privacy state from initial state
+        if (message.current_scene !== undefined) {
+          this.currentScene = message.current_scene;
+          console.log(`[controller-ws] Initial scene: ${this.currentScene}`);
+        }
+        if (message.privacy_enabled !== undefined) {
+          this.privacyEnabled = message.privacy_enabled;
+          console.log(`[controller-ws] Initial privacy mode: ${this.privacyEnabled}`);
+        }
         this.emit('initial_state', message);
         break;
         
       case 'status_change':
         console.log(`[controller-ws] Container status changed: ${message.changes?.length || 0} change(s)`);
+        // Update scene and privacy state from status change
+        if (message.current_scene !== undefined) {
+          const previousScene = this.currentScene;
+          this.currentScene = message.current_scene;
+          if (previousScene !== this.currentScene) {
+            console.log(`[controller-ws] Scene changed: ${previousScene} -> ${this.currentScene}`);
+            this.emit('scene_change', {
+              previousScene,
+              currentScene: this.currentScene
+            });
+          }
+        }
+        if (message.privacy_enabled !== undefined) {
+          const previousPrivacy = this.privacyEnabled;
+          this.privacyEnabled = message.privacy_enabled;
+          if (previousPrivacy !== this.privacyEnabled) {
+            console.log(`[controller-ws] Privacy mode changed: ${this.privacyEnabled}`);
+            this.emit('privacy_change', {
+              privacyEnabled: this.privacyEnabled
+            });
+          }
+        }
         this.emit('status_change', message);
+        break;
+        
+      case 'scene_change':
+        console.log(`[controller-ws] Scene change received: ${message.current_scene}`);
+        console.log(`[scene_change_debug] controllerWebSocket received scene_change: ${JSON.stringify(message)}`);
+        this.currentScene = message.current_scene;
+        if (message.privacy_enabled !== undefined) {
+          this.privacyEnabled = message.privacy_enabled;
+        }
+        console.log(`[scene_change_debug] Emitting scene_change event with currentScene=${this.currentScene}`);
+        this.emit('scene_change', {
+          currentScene: this.currentScene,
+          privacyEnabled: this.privacyEnabled,
+          changeData: message.change_data,
+          timestamp: message.timestamp
+        });
+        break;
+        
+      case 'privacy_change':
+        console.log(`[controller-ws] Privacy change received: ${message.privacy_enabled}`);
+        console.log(`[scene_change_debug] controllerWebSocket received privacy_change: ${JSON.stringify(message)}`);
+        this.privacyEnabled = message.privacy_enabled;
+        if (message.current_scene !== undefined) {
+          this.currentScene = message.current_scene;
+        }
+        console.log(`[scene_change_debug] Emitting privacy_change event with privacyEnabled=${this.privacyEnabled}`);
+        this.emit('privacy_change', {
+          privacyEnabled: this.privacyEnabled,
+          currentScene: this.currentScene,
+          changeData: message.change_data,
+          timestamp: message.timestamp
+        });
         break;
         
       case 'new_logs':
@@ -211,6 +279,30 @@ class ControllerWebSocketClient extends EventEmitter {
       connected: this.isConnected,
       reconnectAttempts: this.reconnectAttempts,
       wsUrl: this.wsUrl
+    };
+  }
+  
+  /**
+   * Get the current scene state
+   */
+  getCurrentScene() {
+    return this.currentScene;
+  }
+  
+  /**
+   * Get the current privacy mode state
+   */
+  getPrivacyEnabled() {
+    return this.privacyEnabled;
+  }
+  
+  /**
+   * Get both scene and privacy state
+   */
+  getSceneState() {
+    return {
+      currentScene: this.currentScene,
+      privacyEnabled: this.privacyEnabled
     };
   }
 }

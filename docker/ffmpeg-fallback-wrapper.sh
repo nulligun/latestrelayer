@@ -21,6 +21,24 @@ trap cleanup SIGTERM SIGINT
 echo "[Wrapper] Waiting for multiplexer to be ready..."
 sleep 5
 
+# Select the appropriate fallback source based on configuration
+echo "[Wrapper] Selecting fallback source..."
+FALLBACK_FILE=$(/usr/local/bin/fallback-source-selector.sh)
+
+if [ -z "$FALLBACK_FILE" ]; then
+    echo "[Wrapper] ERROR: Could not determine fallback file, using default"
+    FALLBACK_FILE="/media/fallback.ts"
+fi
+
+# Verify the file exists
+if [ ! -f "$FALLBACK_FILE" ]; then
+    echo "[Wrapper] ERROR: Fallback file not found: $FALLBACK_FILE"
+    echo "[Wrapper] Falling back to default: /media/fallback.ts"
+    FALLBACK_FILE="/media/fallback.ts"
+fi
+
+echo "[Wrapper] Using fallback file: $FALLBACK_FILE"
+
 # Start ffmpeg in background
 echo "[Wrapper] Starting ffmpeg fallback stream..."
 ffmpeg -nostdin \
@@ -29,7 +47,7 @@ ffmpeg -nostdin \
     -re \
     -stream_loop -1 \
     -fflags +genpts \
-    -i /media/fallback.ts \
+    -i "$FALLBACK_FILE" \
     -c copy \
     -f mpegts 'udp://multiplexer:10001?pkt_size=1316' &
 

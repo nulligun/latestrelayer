@@ -25,6 +25,7 @@ fallback.ts
 config.local.yaml
 
 # Shared cache directory (persistent data)
+shared/*
 shared/ssl/
 shared/tsduck/
 shared/multiplexer-build/

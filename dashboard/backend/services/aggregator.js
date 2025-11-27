@@ -37,6 +37,9 @@ class AggregatorService {
     this.pollingInterval = config.pollingInterval || 2000;
     this.clients = new Set();
     
+    // Controller WebSocket client for scene/privacy state
+    this.controllerWs = config.controllerWs;
+    
     // SRT configuration from environment
     this.srtPort = config.srtPort;
     this.srtDomain = config.srtDomain;
@@ -44,9 +47,9 @@ class AggregatorService {
     // Fallback config path
     this.fallbackConfigPath = '/app/shared/fallback_config.json';
     
-    // Stream status tracking
+    // Stream status tracking - now using controller state via WebSocket
     this.streamStatus = {
-      currentScene: null,
+      currentScene: 'unknown',
       stateChangeTimestamp: Date.now()
     };
     
@@ -73,50 +76,17 @@ class AggregatorService {
   }
 
   /**
-   * Get compositor health including SRT connection status, bitrate, and current scene
+   * Get scene and privacy state from controller WebSocket
+   * This replaces the old compositor health endpoint
    */
-  async getCompositorHealth() {
-    const url = `${this.compositorUrl}/health`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    
-    try {
-      const response = await fetch(url, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: {
-          'Accept': 'application/json',
-          'Connection': 'close'  // Force new connection for each request
-        },
-        agent: (parsedUrl) => {
-          return parsedUrl.protocol === 'http:' ? this.httpAgent : this.httpsAgent;
-        }
-      });
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      
-      const data = await response.json();
-      return {
-        status: data.status || 'ok',
-        scene: data.scene || null,
-        srt_connected: data.srt_connected || false,
-        srt_bitrate_kbps: data.srt_bitrate_kbps || 0,
-        privacy_enabled: data.privacy_enabled || false
-      };
-    } catch (error) {
-      clearTimeout(timeoutId);
-      console.error('[aggregator] Error fetching compositor health:', error.message);
-      return {
-        status: 'error',
-        scene: null,
-        srt_connected: false,
-        srt_bitrate_kbps: 0,
-        privacy_enabled: false
-      };
+  getSceneState() {
+    if (this.controllerWs) {
+      return this.controllerWs.getSceneState();
     }
+    return {
+      currentScene: 'unknown',
+      privacyEnabled: false
+    };
   }
 
   /**
@@ -213,12 +183,16 @@ class AggregatorService {
     const timestamp = new Date().toISOString();
 
     try {
-      const [containersResult, systemMetrics, compositorHealth, fallbackConfig] = await Promise.all([
+      const [containersResult, systemMetrics, fallbackConfig] = await Promise.all([
         this.controllerService.listContainers(),
         metricsService.getSystemMetrics(),
-        this.getCompositorHealth(),
         this.getFallbackConfig()
       ]);
+      
+      // Get scene and privacy state from controller WebSocket
+      const sceneState = this.getSceneState();
+      const currentScene = sceneState.currentScene;
+      const privacyEnabled = sceneState.privacyEnabled;
       
       // Extract containers and error state
       let containers = containersResult.containers || [];
@@ -244,9 +218,6 @@ class AggregatorService {
           isCritical: true
         }));
       }
-      
-      // Extract scene from compositor health response
-      const currentScene = compositorHealth.scene;
 
       // Reconcile fallback config with actual running containers
       const reconciledFallbackConfig = await this.reconcileFallbackConfig(containers, fallbackConfig);
@@ -273,9 +244,9 @@ class AggregatorService {
       // Calculate duration in current scene (seconds)
       const sceneDurationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
 
-      // Determine if compositor is online
-      const compositorContainer = containers.find(c => c.name === 'compositor');
-      const isOnline = compositorContainer?.running && compositorContainer?.health === 'healthy';
+      // Determine if multiplexer is online by checking container status
+      const multiplexerContainer = containers.find(c => c.name === 'multiplexer');
+      const isOnline = multiplexerContainer?.running && multiplexerContainer?.health === 'healthy';
 
       return {
         timestamp,
@@ -293,18 +264,18 @@ class AggregatorService {
         compositorHealth: {
           status: isOnline ? 'healthy' : 'unavailable',
           current_scene: currentScene,
-          srt_connected: compositorHealth.srt_connected,
-          srt_bitrate_kbps: compositorHealth.srt_bitrate_kbps,
-          privacy_enabled: compositorHealth.privacy_enabled,
+          srt_connected: currentScene === 'LIVE',  // Infer SRT connection from scene
+          srt_bitrate_kbps: 0,  // Not available without compositor
+          privacy_enabled: privacyEnabled,
           kick_streaming_enabled: kickStreamingEnabled
         },
         currentScene: currentScene,
         streamStatus: {
           isOnline,
           durationSeconds: sceneDurationSeconds,
-          srtConnected: compositorHealth.srt_connected,
-          srtBitrateKbps: compositorHealth.srt_bitrate_kbps,
-          privacyEnabled: compositorHealth.privacy_enabled
+          srtConnected: currentScene === 'LIVE',
+          srtBitrateKbps: 0,
+          privacyEnabled: privacyEnabled
         },
         sceneDurationSeconds,
         cameraConfig: {
@@ -330,7 +301,7 @@ class AggregatorService {
           privacy_enabled: false,
           kick_streaming_enabled: false
         },
-        currentScene: null,
+        currentScene: 'unknown',
         streamStatus: {
           isOnline: false,
           durationSeconds,

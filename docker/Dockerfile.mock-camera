@@ -1,15 +1,20 @@
 # FFmpeg Mock Camera - Generates H.264 test pattern with audio
 FROM jrottenberg/ffmpeg:4.4-ubuntu
 
-# Install network debugging tools (optional, for troubleshooting)
+# Install network debugging tools
 RUN apt-get update && apt-get install -y \
     iputils-ping \
     iproute2 \
+    tcpdump \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy wrapper script
 COPY docker/mock-camera-wrapper.sh /usr/local/bin/mock-camera-wrapper.sh
 RUN chmod +x /usr/local/bin/mock-camera-wrapper.sh
+
+# Copy health check script
+COPY docker/mock-camera-health-check.sh /usr/local/bin/health-check.sh
+RUN chmod +x /usr/local/bin/health-check.sh
 
 # Use wrapper script as entrypoint
 ENTRYPOINT ["/usr/local/bin/mock-camera-wrapper.sh"]

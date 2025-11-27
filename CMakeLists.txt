@@ -17,6 +17,9 @@ find_package(yaml-cpp REQUIRED)
 # Find Threads
 find_package(Threads REQUIRED)
 
+# Find CURL
+find_package(CURL REQUIRED)
+
 # Source files
 set(SOURCES
     src/main.cpp
@@ -29,6 +32,8 @@ set(SOURCES
     src/StreamSwitcher.cpp
     src/RTMPOutput.cpp
     src/Multiplexer.cpp
+    src/HttpClient.cpp
+    src/HttpServer.cpp
 )
 
 # Create executable
@@ -38,6 +43,7 @@ add_executable(ts-multiplexer ${SOURCES})
 target_include_directories(ts-multiplexer PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${TSDUCK_INCLUDE_DIRS}
+    ${CURL_INCLUDE_DIRS}
 )
 
 # Link libraries
@@ -45,6 +51,7 @@ target_link_libraries(ts-multiplexer PRIVATE
     ${TSDUCK_LIBRARIES}
     yaml-cpp
     Threads::Threads
+    CURL::libcurl
 )
 
 # Compiler warnings

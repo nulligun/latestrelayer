@@ -8,6 +8,8 @@
 #include "PIDMapper.h"
 #include "StreamSwitcher.h"
 #include "RTMPOutput.h"
+#include "HttpClient.h"
+#include "HttpServer.h"
 #include <memory>
 #include <atomic>
 #include <thread>
@@ -39,7 +41,22 @@ private:
     // Process a single packet
     void processPacket(ts::TSPacket& packet, Source source);
     
+    // Query initial privacy mode from controller
+    void queryInitialPrivacyMode();
+    
+    // Handle privacy mode callback from controller
+    void onPrivacyModeChange(bool enabled);
+    
+    // Notify controller of initial scene with retry logic
+    void notifyInitialScene();
+    
     const Config& config_;
+    
+    // HTTP client for controller communication
+    std::shared_ptr<HttpClient> http_client_;
+    
+    // HTTP server for receiving callbacks
+    std::unique_ptr<HttpServer> http_server_;
     
     // Packet queues
     std::unique_ptr<TSPacketQueue> live_queue_;
@@ -65,8 +82,13 @@ private:
     std::atomic<bool> running_;
     std::atomic<bool> initialized_;
     std::atomic<bool> live_stream_ready_;
+    std::atomic<bool> initial_privacy_mode_;  // Privacy mode queried on startup
     
     // Statistics
     std::atomic<uint64_t> packets_processed_;
     std::chrono::steady_clock::time_point start_time_;
+    
+    // Controller URL
+    static constexpr const char* CONTROLLER_URL = "http://controller:8089";
+    static constexpr uint16_t HTTP_SERVER_PORT = 8091;
 };
