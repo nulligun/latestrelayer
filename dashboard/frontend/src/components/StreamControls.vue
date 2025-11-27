@@ -974,9 +974,9 @@ h2 {
 
 .image-preview-container {
   flex-shrink: 0;
-  width: 280px;
-  height: 100%;
-  min-height: 200px;
+  width: auto;
+  height: 200px;
+  max-height: 200px;
   border: 2px solid #334155;
   border-radius: 8px;
   overflow: hidden;
@@ -984,12 +984,13 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: center;
-  align-self: stretch;
 }
 
 .image-preview {
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  height: auto;
+  width: auto;
   object-fit: contain;
 }
 
@@ -1023,7 +1024,7 @@ h2 {
   .image-preview-container {
     width: 100%;
     height: 200px;
-    min-height: 200px;
+    max-height: 200px;
   }
 }
 
@@ -1167,9 +1168,9 @@ h2 {
 .browser-preview-container {
   position: relative;
   flex-shrink: 0;
-  width: 280px;
-  height: 100%;
-  min-height: 200px;
+  width: auto;
+  height: 200px;
+  max-height: 200px;
   border: 2px solid #334155;
   border-radius: 8px;
   overflow: hidden;
@@ -1177,7 +1178,6 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: center;
-  align-self: stretch;
 }
 
 .browser-preview-iframe {
@@ -1215,7 +1215,7 @@ h2 {
   .browser-preview-container {
     width: 100%;
     height: 200px;
-    min-height: 200px;
+    max-height: 200px;
   }
 }
 </style>

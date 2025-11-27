@@ -1,13 +1,29 @@
 # FFmpeg Fallback with Network Debugging Tools
 FROM jrottenberg/ffmpeg:latest
 
-# Install network debugging tools
+# Install network debugging tools and fonts for text rendering
 RUN apt-get update && apt-get install -y \
     iputils-ping \
     tcpdump \
     iproute2 \
     netcat-openbsd \
+    fontconfig \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
+
+# Create media directory
+RUN mkdir -p /media
+
+# Copy fallback generation scripts
+COPY generate-fallback.sh /usr/local/bin/generate-fallback.sh
+COPY convert-fallback.sh /usr/local/bin/convert-fallback.sh
+RUN chmod +x /usr/local/bin/generate-fallback.sh /usr/local/bin/convert-fallback.sh
+
+# Generate the default fallback.ts during build
+# This creates a black screen with "BRB..." text as the default fallback
+RUN /usr/local/bin/generate-fallback.sh /tmp/fallback.mp4 && \
+    /usr/local/bin/convert-fallback.sh /tmp/fallback.mp4 /media/fallback.ts && \
+    rm -f /tmp/fallback.mp4
 
 # Copy wrapper script for signal handling
 COPY docker/ffmpeg-fallback-wrapper.sh /usr/local/bin/ffmpeg-fallback-wrapper.sh

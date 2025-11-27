@@ -3,16 +3,18 @@
 # Convert MP4 to MPEG-TS with proper PSI tables
 # This script converts fallback.mp4 to fallback.ts with proper PAT/PMT tables
 #
+# Usage: ./convert-fallback.sh [input.mp4] [output.ts]
+#
 
 set -e
 
-INPUT="fallback.mp4"
-OUTPUT="fallback.ts"
+INPUT="${1:-fallback.mp4}"
+OUTPUT="${2:-fallback.ts}"
 
 # Check if input file exists
 if [ ! -f "$INPUT" ]; then
     echo "Error: $INPUT not found!"
-    echo "Please place your fallback video as fallback.mp4 in the project root."
+    echo "Usage: $0 [input.mp4] [output.ts]"
     exit 1
 fi
 
