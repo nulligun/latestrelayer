@@ -11,6 +11,7 @@ const AggregatorService = require('./services/aggregator');
 const ControllerService = require('./services/controller');
 const ControllerWebSocketClient = require('./services/controllerWebSocket');
 const SceneService = require('./services/scene');
+const metricsService = require('./services/metrics');
 
 const execPromise = promisify(exec);
 
@@ -36,17 +37,18 @@ console.log(`[config] Polling Interval: ${POLLING_INTERVAL}ms`);
 console.log(`[config] SRT: srt://${SRT_DOMAIN}:${SRT_PORT}`);
 console.log('='.repeat(60));
 
-// Initialize services
+const controller = new ControllerService(CONTROLLER_API);
+const controllerWs = new ControllerWebSocketClient(CONTROLLER_API);
+
+// Initialize aggregator with reference to controller WebSocket for scene state
 const aggregator = new AggregatorService({
   controllerUrl: CONTROLLER_API,
   compositorUrl: NGINX_STATS,
   pollingInterval: POLLING_INTERVAL,
   srtPort: SRT_PORT,
-  srtDomain: SRT_DOMAIN
+  srtDomain: SRT_DOMAIN,
+  controllerWs: controllerWs  // Pass reference to get scene state
 });
-
-const controller = new ControllerService(CONTROLLER_API);
-const controllerWs = new ControllerWebSocketClient(CONTROLLER_API);
 // Note: SceneService not initialized - no compositor in this project
 // const sceneService = new SceneService(COMPOSITOR_API);
 
@@ -121,12 +123,16 @@ const wss = new WebSocket.Server({ server });
 wss.on('connection', (ws) => {
   console.log('[ws] Frontend client connected');
   
-  // Send latest container state to newly connected client
+  // Send latest container state to newly connected client with current scene/privacy
   if (latestContainerState.containers.length > 0) {
+    const sceneState = controllerWs.getSceneState();
+    console.log(`[ws] Sending initial state to new client: scene=${sceneState.currentScene}, privacy=${sceneState.privacyEnabled}`);
     ws.send(JSON.stringify({
       type: 'container_update',
       containers: latestContainerState.containers,
-      timestamp: latestContainerState.timestamp
+      timestamp: latestContainerState.timestamp,
+      currentScene: sceneState.currentScene,
+      privacyEnabled: sceneState.privacyEnabled
     }));
   }
   
@@ -190,21 +196,27 @@ controllerWs.on('disconnected', () => {
 
 controllerWs.on('initial_state', (message) => {
   console.log(`[main] Received initial state from controller`);
+  console.log(`[main] Initial scene: ${message.current_scene}, privacy: ${message.privacy_enabled}`);
   latestContainerState = {
     containers: message.containers,
     timestamp: message.timestamp
   };
   
-  // Broadcast to all connected frontend clients
+  // Broadcast to all connected frontend clients with scene info
   broadcast({
     type: 'container_update',
     containers: message.containers,
-    timestamp: message.timestamp
+    timestamp: message.timestamp,
+    currentScene: message.current_scene,
+    privacyEnabled: message.privacy_enabled
   });
 });
 
 controllerWs.on('status_change', (message) => {
   console.log(`[main] Container status changed: ${message.changes.length} change(s)`);
+  if (message.current_scene !== undefined) {
+    console.log(`[main] Status includes scene: ${message.current_scene}, privacy: ${message.privacy_enabled}`);
+  }
   
   // Update our state with the changes
   message.changes.forEach(change => {
@@ -222,18 +234,25 @@ controllerWs.on('status_change', (message) => {
   
   latestContainerState.timestamp = message.timestamp;
   
-  // Broadcast updated state to frontend
+  // Broadcast updated state to frontend with scene info
   broadcast({
     type: 'container_update',
     containers: latestContainerState.containers,
     timestamp: message.timestamp,
-    changes: message.changes
+    changes: message.changes,
+    currentScene: message.current_scene,
+    privacyEnabled: message.privacy_enabled
   });
 });
 
 controllerWs.on('new_logs', (message) => {
+  // Skip if no logs to send
+  if (!message.logs || message.logs.length === 0) {
+    return;
+  }
+  
   // Limit log messages to max 50 lines for performance
-  const limitedLogs = message.logs && message.logs.length > 50
+  const limitedLogs = message.logs.length > 50
     ? message.logs.slice(-50)
     : message.logs;
   
@@ -257,6 +276,34 @@ controllerWs.on('log_snapshot', (message) => {
     container: message.container,
     logs: limitedLogs
   });
+});
+
+controllerWs.on('scene_change', (data) => {
+  console.log(`[main] Scene changed to: ${data.currentScene}`);
+  console.log(`[scene_change_debug] server.js received scene_change event: ${JSON.stringify(data)}`);
+  console.log(`[scene_change_debug] Broadcasting to ${wss.clients.size} frontend client(s)`);
+  broadcast({
+    type: 'scene_change',
+    currentScene: data.currentScene,
+    privacyEnabled: data.privacyEnabled,
+    changeData: data.changeData,
+    timestamp: data.timestamp
+  });
+  console.log(`[scene_change_debug] Broadcast complete for scene_change`);
+});
+
+controllerWs.on('privacy_change', (data) => {
+  console.log(`[main] Privacy mode changed to: ${data.privacyEnabled}`);
+  console.log(`[scene_change_debug] server.js received privacy_change event: ${JSON.stringify(data)}`);
+  console.log(`[scene_change_debug] Broadcasting to ${wss.clients.size} frontend client(s)`);
+  broadcast({
+    type: 'privacy_change',
+    privacyEnabled: data.privacyEnabled,
+    currentScene: data.currentScene,
+    changeData: data.changeData,
+    timestamp: data.timestamp
+  });
+  console.log(`[scene_change_debug] Broadcast complete for privacy_change`);
 });
 
 controllerWs.on('error', (error) => {
@@ -344,44 +391,65 @@ app.post('/api/container/:name/create-and-start', async (req, res) => {
   }
 });
 
-// Scene switching endpoints - DISABLED (no compositor in this project)
-// These endpoints are kept for API compatibility but return not implemented
-app.post('/api/scene/switch', async (req, res) => {
-  res.status(501).json({
-    error: 'Scene switching not available - no compositor service configured',
-    message: 'This feature requires a compositor service which is not part of this deployment'
-  });
+// Scene endpoints - proxy to controller
+app.get('/api/scene/current', async (req, res) => {
+  try {
+    // Get scene from controller WebSocket client state
+    const sceneState = controllerWs.getSceneState();
+    res.json({
+      scene: sceneState.currentScene,
+      privacy_enabled: sceneState.privacyEnabled,
+      source: 'controller_websocket'
+    });
+  } catch (error) {
+    console.error('[api] Error getting current scene:', error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
-app.get('/api/scene/current', async (req, res) => {
+// Scene switching not supported - scenes are controlled by multiplexer
+app.post('/api/scene/switch', async (req, res) => {
   res.status(501).json({
-    error: 'Scene query not available - no compositor service configured'
+    error: 'Scene switching not available',
+    message: 'Scenes are automatically controlled by the multiplexer based on live stream availability'
   });
 });
 
 app.get('/api/scene/mode', async (req, res) => {
   res.status(501).json({
-    error: 'Scene mode not available - no compositor service configured'
+    error: 'Scene mode not available - use /api/scene/current instead'
   });
 });
 
-// Privacy mode endpoints - DISABLED (no compositor in this project)
+// Privacy mode endpoints - proxy to controller REST API
 app.post('/api/privacy/enable', async (req, res) => {
-  res.status(501).json({
-    error: 'Privacy mode not available - no compositor service configured'
-  });
+  try {
+    const result = await controller.enablePrivacyMode();
+    res.json(result);
+  } catch (error) {
+    console.error('[api] Error enabling privacy mode:', error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/api/privacy/disable', async (req, res) => {
-  res.status(501).json({
-    error: 'Privacy mode not available - no compositor service configured'
-  });
+  try {
+    const result = await controller.disablePrivacyMode();
+    res.json(result);
+  } catch (error) {
+    console.error('[api] Error disabling privacy mode:', error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.get('/api/privacy', async (req, res) => {
-  res.status(501).json({
-    error: 'Privacy mode not available - no compositor service configured'
-  });
+  try {
+    const result = await controller.getPrivacyMode();
+    res.json(result);
+  } catch (error) {
+    console.error('[api] Error getting privacy mode:', error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 // Fallback configuration endpoints
 
@@ -516,10 +584,21 @@ app.post('/api/fallback/config', async (req, res) => {
     await fs.writeFile(FALLBACK_CONFIG_PATH, JSON.stringify(config, null, 2));
     console.log(`[fallback] Configuration saved: source=${source}, activeContainer=${config.activeContainer}`);
     
+    // Restart ffmpeg-fallback container to pick up the new configuration
+    try {
+      console.log(`[fallback] Restarting ffmpeg-fallback container to apply new fallback source...`);
+      await controller.restartContainer('ffmpeg-fallback');
+      console.log(`[fallback] ffmpeg-fallback container restart initiated`);
+    } catch (restartError) {
+      console.error('[fallback] Error restarting ffmpeg-fallback container:', restartError.message);
+      // Continue anyway - config was saved, container can be manually restarted
+    }
+    
     res.json({
       success: true,
       config: config,
-      message: `Fallback source set to ${source}`
+      message: `Fallback source set to ${source}`,
+      fallbackContainerRestarted: true
     });
   } catch (error) {
     console.error('[api] Error updating fallback config:', error.message);
@@ -536,11 +615,49 @@ app.post('/api/fallback/upload-image', upload.single('image'), async (req, res) 
     
     console.log(`[fallback] Image uploaded: ${req.file.filename} (${req.file.size} bytes)`);
     
+    // Convert image to MPEG-TS format for streaming
+    const imagePath = req.file.path;
+    const tsOutputPath = path.join(SHARED_DIR, 'static-image.ts');
+    const thumbnailPath = path.join(SHARED_DIR, 'offline-thumbnail.png');
+    
+    try {
+      // Copy the image as the thumbnail (for static images, the image IS the thumbnail)
+      await fs.copyFile(imagePath, thumbnailPath);
+      console.log(`[fallback] Created thumbnail from static image: ${thumbnailPath}`);
+      
+      // Convert image to a 30-second MPEG-TS video with audio
+      // Uses same format as convert-fallback.sh for compatibility
+      const ffmpegCommand = `ffmpeg -y -loop 1 -i "${imagePath}" \
+        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+        -c:v libx264 -preset fast -crf 23 \
+        -g 30 -keyint_min 30 -sc_threshold 0 \
+        -r 30 -pix_fmt yuv420p \
+        -c:a aac -b:a 128k \
+        -bsf:v h264_mp4toannexb \
+        -f mpegts \
+        -mpegts_flags +resend_headers \
+        -mpegts_service_id 1 \
+        -mpegts_pmt_start_pid 256 \
+        -mpegts_start_pid 257 \
+        -muxrate 10000000 \
+        -t 30 \
+        "${tsOutputPath}"`;
+      
+      console.log(`[fallback] Converting image to MPEG-TS format...`);
+      await execPromise(ffmpegCommand);
+      console.log(`[fallback] Successfully converted image to: ${tsOutputPath}`);
+      
+    } catch (conversionError) {
+      console.error('[fallback] Error converting image to MPEG-TS:', conversionError.message);
+      // Continue anyway - the image is uploaded, conversion can be retried
+    }
+    
     res.json({
       success: true,
       filename: req.file.filename,
       size: req.file.size,
-      path: req.file.path
+      path: req.file.path,
+      tsConverted: true
     });
   } catch (error) {
     console.error('[api] Error uploading image:', error.message);
@@ -560,6 +677,7 @@ app.post('/api/fallback/upload-video', uploadVideo.single('video'), async (req, 
     // Extract thumbnail from the middle of the video
     const videoPath = req.file.path;
     const thumbnailPath = path.join(SHARED_DIR, 'offline-thumbnail.png');
+    const tsOutputPath = path.join(SHARED_DIR, 'video.ts');
     
     try {
       // First, get video duration
@@ -573,10 +691,10 @@ app.post('/api/fallback/upload-video', uploadVideo.single('video'), async (req, 
       
       // Extract frame at 50% of video duration
       const seekTime = duration / 2;
-      const ffmpegCommand = `ffmpeg -ss ${seekTime} -i "${videoPath}" -vframes 1 -y "${thumbnailPath}"`;
+      const thumbnailCommand = `ffmpeg -ss ${seekTime} -i "${videoPath}" -vframes 1 -y "${thumbnailPath}"`;
       
       console.log(`[fallback] Extracting thumbnail at ${seekTime.toFixed(2)}s (50% of ${duration.toFixed(2)}s)`);
-      await execPromise(ffmpegCommand);
+      await execPromise(thumbnailCommand);
       
       console.log(`[fallback] Thumbnail generated successfully: ${thumbnailPath}`);
     } catch (thumbnailError) {
@@ -584,12 +702,38 @@ app.post('/api/fallback/upload-video', uploadVideo.single('video'), async (req, 
       // Continue even if thumbnail generation fails - video is still uploaded
     }
     
+    // Convert video to MPEG-TS format for streaming
+    try {
+      // Uses same format as convert-fallback.sh for compatibility
+      const tsCommand = `ffmpeg -y -i "${videoPath}" \
+        -c:v libx264 -preset fast -crf 23 \
+        -g 30 -keyint_min 30 -sc_threshold 0 \
+        -c:a aac -b:a 128k \
+        -bsf:v h264_mp4toannexb \
+        -f mpegts \
+        -mpegts_flags +resend_headers \
+        -mpegts_service_id 1 \
+        -mpegts_pmt_start_pid 256 \
+        -mpegts_start_pid 257 \
+        -muxrate 10000000 \
+        "${tsOutputPath}"`;
+      
+      console.log(`[fallback] Converting video to MPEG-TS format...`);
+      await execPromise(tsCommand);
+      console.log(`[fallback] Successfully converted video to: ${tsOutputPath}`);
+      
+    } catch (conversionError) {
+      console.error('[fallback] Error converting video to MPEG-TS:', conversionError.message);
+      // Continue anyway - the video is uploaded, conversion can be retried
+    }
+    
     res.json({
       success: true,
       filename: req.file.filename,
       size: req.file.size,
       path: req.file.path,
-      thumbnailGenerated: true
+      thumbnailGenerated: true,
+      tsConverted: true
     });
   } catch (error) {
     console.error('[api] Error uploading video:', error.message);
@@ -821,6 +965,32 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'frontend/dist/index.html'));
 });
 
+// Start system metrics polling interval
+let metricsIntervalId = null;
+
+function startMetricsPolling() {
+  console.log(`[metrics] Starting system metrics polling every ${POLLING_INTERVAL}ms`);
+  
+  const pollMetrics = async () => {
+    try {
+      const systemMetrics = await metricsService.getSystemMetrics();
+      broadcast({
+        type: 'metrics_update',
+        systemMetrics,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('[metrics] Error collecting system metrics:', error.message);
+    }
+  };
+  
+  // Initial poll
+  pollMetrics();
+  
+  // Set up interval
+  metricsIntervalId = setInterval(pollMetrics, POLLING_INTERVAL);
+}
+
 // Start server
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[http] Server listening on port ${PORT}`);
@@ -841,12 +1011,22 @@ server.listen(PORT, '0.0.0.0', () => {
   // Connect to controller WebSocket
   controllerWs.connect();
   console.log('[main] Connecting to controller WebSocket...');
+  
+  // Start system metrics polling
+  startMetricsPolling();
+  
   console.log('[main] Dashboard backend is now running');
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('[main] SIGTERM received, shutting down gracefully');
+  
+  // Stop metrics polling
+  if (metricsIntervalId) {
+    clearInterval(metricsIntervalId);
+    console.log('[main] Metrics polling stopped');
+  }
   
   // Disconnect from controller WebSocket
   controllerWs.disconnect();
@@ -870,6 +1050,12 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   console.log('[main] SIGINT received, shutting down gracefully');
+  
+  // Stop metrics polling
+  if (metricsIntervalId) {
+    clearInterval(metricsIntervalId);
+    console.log('[main] Metrics polling stopped');
+  }
   
   // Disconnect from controller WebSocket
   controllerWs.disconnect();

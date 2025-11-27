@@ -5,14 +5,21 @@
 
 Multiplexer::Multiplexer(const Config& config)
     : config_(config),
+      http_client_(std::make_shared<HttpClient>(CONTROLLER_URL)),
       running_(false),
       initialized_(false),
       live_stream_ready_(false),
+      initial_privacy_mode_(false),
       packets_processed_(0) {
 }
 
 Multiplexer::~Multiplexer() {
     stop();
+    
+    // Stop HTTP server if running
+    if (http_server_) {
+        http_server_->stop();
+    }
 }
 
 bool Multiplexer::initialize() {
@@ -25,6 +32,23 @@ bool Multiplexer::initialize() {
     running_ = true;
     
     std::cout << "[Multiplexer] Initializing..." << std::endl;
+    
+    // Start HTTP server for receiving callbacks (privacy mode changes)
+    http_server_ = std::make_unique<HttpServer>(HTTP_SERVER_PORT);
+    http_server_->setPrivacyCallback([this](bool enabled) {
+        onPrivacyModeChange(enabled);
+    });
+    
+    if (!http_server_->start()) {
+        std::cerr << "[Multiplexer] Failed to start HTTP server on port " << HTTP_SERVER_PORT << std::endl;
+        // Non-fatal - continue without callback server
+        std::cout << "[Multiplexer] Continuing without privacy callback server" << std::endl;
+    } else {
+        std::cout << "[Multiplexer] HTTP server started on port " << HTTP_SERVER_PORT << std::endl;
+    }
+    
+    // Query initial privacy mode from controller
+    queryInitialPrivacyMode();
     
     // Create packet queues
     live_queue_ = std::make_unique<TSPacketQueue>(10000);
@@ -43,7 +67,21 @@ bool Multiplexer::initialize() {
     // Create processing components
     timestamp_mgr_ = std::make_unique<TimestampManager>();
     pid_mapper_ = std::make_unique<PIDMapper>();
-    switcher_ = std::make_unique<StreamSwitcher>(config_.getMaxLiveGapMs());
+    switcher_ = std::make_unique<StreamSwitcher>(config_.getMaxLiveGapMs(), http_client_);
+    
+    // Apply initial privacy mode that was queried earlier
+    if (initial_privacy_mode_.load()) {
+        switcher_->setPrivacyMode(true);
+    }
+    
+    // Set up mode change callback to notify controller
+    switcher_->setModeChangeCallback([this](Mode mode) {
+        if (mode == Mode::LIVE) {
+            http_client_->notifySceneLive();
+        } else {
+            http_client_->notifySceneFallback();
+        }
+    });
     
     // Create RTMP output
     rtmp_output_ = std::make_unique<RTMPOutput>(config_.getRtmpUrl());
@@ -66,8 +104,11 @@ bool Multiplexer::initialize() {
         return false;
     }
     
-    // Set initial mode based on live stream availability
-    if (!live_stream_ready_.load()) {
+    // Set initial mode based on privacy mode and live stream availability
+    if (initial_privacy_mode_.load()) {
+        std::cout << "[Multiplexer] Starting in FALLBACK mode (privacy mode enabled)" << std::endl;
+        switcher_->setMode(Mode::FALLBACK);
+    } else if (!live_stream_ready_.load()) {
         std::cout << "[Multiplexer] Starting in FALLBACK mode (no live stream detected)" << std::endl;
         switcher_->setMode(Mode::FALLBACK);
     } else {
@@ -84,8 +125,45 @@ bool Multiplexer::initialize() {
     initialized_ = true;
     start_time_ = std::chrono::steady_clock::now();
     
+    // Explicitly notify controller of initial scene (in case callback didn't work)
+    notifyInitialScene();
+    
     std::cout << "[Multiplexer] Initialization complete" << std::endl;
     return true;
+}
+
+void Multiplexer::notifyInitialScene() {
+    std::cout << "[Multiplexer] Notifying controller of initial scene..." << std::endl;
+    
+    Mode current_mode = switcher_->getMode();
+    bool success = false;
+    int max_retries = 5;
+    int retry_delay_ms = 1000;
+    
+    for (int attempt = 1; attempt <= max_retries && !success; attempt++) {
+        try {
+            if (current_mode == Mode::LIVE) {
+                std::cout << "[Multiplexer] Sending initial scene: LIVE (attempt " << attempt << "/" << max_retries << ")" << std::endl;
+                http_client_->notifySceneLive();
+            } else {
+                std::cout << "[Multiplexer] Sending initial scene: FALLBACK (attempt " << attempt << "/" << max_retries << ")" << std::endl;
+                http_client_->notifySceneFallback();
+            }
+            success = true;
+            std::cout << "[Multiplexer] Initial scene notification successful" << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[Multiplexer] Failed to notify initial scene (attempt " << attempt << "): " << e.what() << std::endl;
+            if (attempt < max_retries) {
+                std::cout << "[Multiplexer] Retrying in " << retry_delay_ms << "ms..." << std::endl;
+                std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms));
+                retry_delay_ms *= 2; // Exponential backoff
+            }
+        }
+    }
+    
+    if (!success) {
+        std::cerr << "[Multiplexer] WARNING: Failed to notify controller of initial scene after " << max_retries << " attempts" << std::endl;
+    }
 }
 
 void Multiplexer::run() {
@@ -111,6 +189,10 @@ void Multiplexer::stop() {
     std::cout << "[Multiplexer] ========================================" << std::endl;
     
     running_ = false;
+    
+    // Stop HTTP server
+    std::cout << "[Multiplexer] Stopping HTTP server..." << std::endl;
+    if (http_server_) http_server_->stop();
     
     // Stop receivers
     std::cout << "[Multiplexer] Stopping UDP receivers..." << std::endl;
@@ -437,7 +519,7 @@ void Multiplexer::processLoop() {
 
 void Multiplexer::processPacket(ts::TSPacket& packet, Source source) {
     // Extract timestamps
-    TimestampInfo ts_info = (source == Source::LIVE) 
+    TimestampInfo ts_info = (source == Source::LIVE)
         ? live_analyzer_->extractTimestamps(packet)
         : fallback_analyzer_->extractTimestamps(packet);
     
@@ -454,4 +536,37 @@ void Multiplexer::processPacket(ts::TSPacket& packet, Source source) {
     
     // Write to RTMP output
     rtmp_output_->writePacket(packet);
+}
+
+void Multiplexer::queryInitialPrivacyMode() {
+    std::cout << "[Multiplexer] Querying initial privacy mode from controller..." << std::endl;
+    
+    try {
+        bool privacy_enabled = http_client_->queryPrivacyMode();
+        initial_privacy_mode_ = privacy_enabled;
+        
+        if (privacy_enabled) {
+            std::cout << "[Multiplexer] Privacy mode is ENABLED on controller" << std::endl;
+        } else {
+            std::cout << "[Multiplexer] Privacy mode is DISABLED on controller" << std::endl;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[Multiplexer] Failed to query privacy mode: " << e.what() << std::endl;
+        std::cout << "[Multiplexer] Defaulting to privacy mode disabled" << std::endl;
+        initial_privacy_mode_ = false;
+    }
+}
+
+void Multiplexer::onPrivacyModeChange(bool enabled) {
+    std::cout << "[Multiplexer] Received privacy mode change: " << (enabled ? "ENABLED" : "DISABLED") << std::endl;
+    
+    if (switcher_) {
+        switcher_->setPrivacyMode(enabled);
+        
+        if (enabled && switcher_->getMode() == Mode::LIVE) {
+            // Force switch to fallback immediately
+            std::cout << "[Multiplexer] Forcing switch to FALLBACK mode due to privacy mode" << std::endl;
+            switcher_->setMode(Mode::FALLBACK);
+        }
+    }
 }

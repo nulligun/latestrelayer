@@ -387,6 +387,132 @@ class ControllerService {
       return { error: error.message, logs: [] };
     }
   }
+
+  // Privacy mode endpoints
+  
+  async enablePrivacyMode() {
+    const url = `${this.controllerUrl}/privacy/enable`;
+    
+    try {
+      console.log(`[controller] Enabling privacy mode`);
+      const result = await this._fetchWithRetry(url, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: '{}'
+      }, 3, 10000);
+      
+      if (!result.success) {
+        console.error(`[controller] Failed to enable privacy mode:`, result.error.message);
+        return { error: result.error.message };
+      }
+      
+      const response = result.response;
+      const rawText = await response.text();
+      console.log(`[controller] Enable privacy response (${response.status}):`, rawText);
+      
+      if (!response.ok) {
+        return { error: `HTTP ${response.status}: ${response.statusText}` };
+      }
+      
+      return JSON.parse(rawText);
+    } catch (error) {
+      console.error(`[controller] Error enabling privacy mode:`, error.message);
+      return { error: error.message };
+    }
+  }
+
+  async disablePrivacyMode() {
+    const url = `${this.controllerUrl}/privacy/disable`;
+    
+    try {
+      console.log(`[controller] Disabling privacy mode`);
+      const result = await this._fetchWithRetry(url, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: '{}'
+      }, 3, 10000);
+      
+      if (!result.success) {
+        console.error(`[controller] Failed to disable privacy mode:`, result.error.message);
+        return { error: result.error.message };
+      }
+      
+      const response = result.response;
+      const rawText = await response.text();
+      console.log(`[controller] Disable privacy response (${response.status}):`, rawText);
+      
+      if (!response.ok) {
+        return { error: `HTTP ${response.status}: ${response.statusText}` };
+      }
+      
+      return JSON.parse(rawText);
+    } catch (error) {
+      console.error(`[controller] Error disabling privacy mode:`, error.message);
+      return { error: error.message };
+    }
+  }
+
+  async getPrivacyMode() {
+    const url = `${this.controllerUrl}/privacy`;
+    
+    try {
+      console.log(`[controller] Getting privacy mode`);
+      const result = await this._fetchWithRetry(url, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' }
+      }, 3, 5000);
+      
+      if (!result.success) {
+        console.error(`[controller] Failed to get privacy mode:`, result.error.message);
+        return { error: result.error.message, privacy_enabled: false };
+      }
+      
+      const response = result.response;
+      const rawText = await response.text();
+      
+      if (!response.ok) {
+        console.error(`[controller] Privacy response error (${response.status}):`, rawText);
+        return { error: `HTTP ${response.status}: ${response.statusText}`, privacy_enabled: false };
+      }
+      
+      return JSON.parse(rawText);
+    } catch (error) {
+      console.error(`[controller] Error getting privacy mode:`, error.message);
+      return { error: error.message, privacy_enabled: false };
+    }
+  }
+
+  // Scene endpoints
+  
+  async getCurrentScene() {
+    const url = `${this.controllerUrl}/scene`;
+    
+    try {
+      console.log(`[controller] Getting current scene`);
+      const result = await this._fetchWithRetry(url, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' }
+      }, 3, 5000);
+      
+      if (!result.success) {
+        console.error(`[controller] Failed to get current scene:`, result.error.message);
+        return { error: result.error.message, scene: 'unknown' };
+      }
+      
+      const response = result.response;
+      const rawText = await response.text();
+      
+      if (!response.ok) {
+        console.error(`[controller] Scene response error (${response.status}):`, rawText);
+        return { error: `HTTP ${response.status}: ${response.statusText}`, scene: 'unknown' };
+      }
+      
+      return JSON.parse(rawText);
+    } catch (error) {
+      console.error(`[controller] Error getting current scene:`, error.message);
+      return { error: error.message, scene: 'unknown' };
+    }
+  }
 }
 
 module.exports = ControllerService;

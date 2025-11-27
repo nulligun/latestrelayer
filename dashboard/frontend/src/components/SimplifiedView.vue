@@ -138,32 +138,35 @@ export default {
       return props.switcherHealth?.privacy_enabled || false;
     });
 
-    // Computed: Is current scene Camera (SRT)
+    // Computed: Is current scene Camera (LIVE)
     const isCameraScene = computed(() => {
-      return props.currentScene === 'SRT';
+      return props.currentScene === 'LIVE';
     });
 
     // Computed: Display scene
     const displayScene = computed(() => {
       if (!props.currentScene) return 'UNKNOWN';
       
-      // Get privacy status from switcherHealth (compositor health)
+      const scene = props.currentScene.toUpperCase();
       const privacyEnabled = props.switcherHealth?.privacy_enabled || false;
-      const srtConnected = props.switcherHealth?.srt_connected || false;
       
-      // Map scene names to display text
-      if (props.currentScene === 'SRT') {
+      // New scene values from multiplexer: LIVE, FALLBACK, unknown
+      if (scene === 'LIVE') {
         return 'Camera';
-      } else if (props.currentScene === 'VIDEO') {
-        return privacyEnabled ? 'PRIVACY' : 'Video Fallback';
-      } else if (props.currentScene === 'BLACK') {
-        if (privacyEnabled) {
-          return 'PRIVACY';
-        }
-        return srtConnected ? 'BRB' : 'Camera Not Connected';
+      } else if (scene === 'FALLBACK') {
+        return privacyEnabled ? 'PRIVACY' : 'Fallback';
+      } else if (scene === 'UNKNOWN') {
+        return 'Camera Not Connected';
       }
       
-      // Fallback for any unknown scene
+      // Legacy support for old scene names (SRT/VIDEO/BLACK)
+      if (scene === 'SRT') {
+        return 'Camera';
+      } else if (scene === 'VIDEO' || scene === 'BLACK') {
+        return privacyEnabled ? 'PRIVACY' : 'Fallback';
+      }
+      
+      // Return original scene name for any unknown scenes
       return props.currentScene;
     });
 

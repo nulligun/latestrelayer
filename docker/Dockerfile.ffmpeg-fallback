@@ -13,6 +13,10 @@ RUN apt-get update && apt-get install -y \
 COPY docker/ffmpeg-fallback-wrapper.sh /usr/local/bin/ffmpeg-fallback-wrapper.sh
 RUN chmod +x /usr/local/bin/ffmpeg-fallback-wrapper.sh
 
+# Copy fallback source selector script
+COPY docker/fallback-source-selector.sh /usr/local/bin/fallback-source-selector.sh
+RUN chmod +x /usr/local/bin/fallback-source-selector.sh
+
 # Copy health check script
 COPY docker/ffmpeg-fallback-health-check.sh /usr/local/bin/health-check.sh
 RUN chmod +x /usr/local/bin/health-check.sh

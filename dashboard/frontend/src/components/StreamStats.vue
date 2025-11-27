@@ -109,32 +109,53 @@ export default {
       return this.cameraConfig?.srtUrl || this.localSrtUrl || 'Loading...';
     },
     displayScene() {
-      if (!this.currentScene) return 'UNKNOWN';
+      if (!this.currentScene) return 'Unknown';
       
       const scene = this.currentScene.toUpperCase();
+      const privacyEnabled = this.switcherHealth?.privacy_enabled || false;
       
-      // Map scene names according to requirements
-      if (scene === 'SRT') {
+      // New scene values from multiplexer: LIVE, FALLBACK, unknown
+      if (scene === 'LIVE') {
         return 'Camera';
-      } else if (scene === 'BLACK') {
-        return 'Black Screen';
-      } else if (scene === 'VIDEO') {
+      } else if (scene === 'FALLBACK') {
+        if (privacyEnabled) {
+          return 'Privacy Mode';
+        }
         // Show fallback source based on configuration
         const source = this.fallbackConfig?.source || 'BLACK';
-        
         if (source === 'IMAGE') {
           return 'Fallback: Static Image';
         } else if (source === 'VIDEO') {
           return 'Fallback: Video Loop';
         } else if (source === 'BROWSER') {
           return 'Fallback: Web Browser';
-        } else {
-          // Default fallback if source is BLACK or unknown
-          return 'Fallback: Black Screen';
         }
+        return 'Fallback';
+      } else if (scene === 'UNKNOWN') {
+        return 'Camera Not Connected';
       }
       
-      // Return original scene name in uppercase for any unknown scenes
+      // Legacy support for old scene names (SRT/VIDEO/BLACK)
+      if (scene === 'SRT') {
+        return 'Camera';
+      } else if (scene === 'BLACK') {
+        return privacyEnabled ? 'Privacy Mode' : 'Black Screen';
+      } else if (scene === 'VIDEO') {
+        if (privacyEnabled) {
+          return 'Privacy Mode';
+        }
+        const source = this.fallbackConfig?.source || 'BLACK';
+        if (source === 'IMAGE') {
+          return 'Fallback: Static Image';
+        } else if (source === 'VIDEO') {
+          return 'Fallback: Video Loop';
+        } else if (source === 'BROWSER') {
+          return 'Fallback: Web Browser';
+        }
+        return 'Fallback: Black Screen';
+      }
+      
+      // Return original scene name for any unknown scenes
       return scene;
     }
   },

@@ -169,8 +169,9 @@ export default {
         warnings.push('NOT LIVE ON KICK!');
       }
       
-      const camStream = data.value.rtmpStats?.streams?.cam;
-      if (!camStream || !camStream.active || !camStream.publishing) {
+      // Check if ffmpeg-srt-live container is running and healthy (indicates SRT camera connection on port 1937)
+      const srtLiveContainer = data.value.containers?.find(c => c.name === 'ffmpeg-srt-live');
+      if (!srtLiveContainer?.running || srtLiveContainer?.health !== 'healthy') {
         warnings.push('CAMERA NOT CONNECTED');
       }
       
@@ -241,6 +242,34 @@ export default {
       // Handle different message types from WebSocket
       if (message.type === 'container_update') {
         handleContainerUpdate(message);
+      } else if (message.type === 'metrics_update') {
+        // Handle system metrics updates
+        if (message.systemMetrics) {
+          data.value.systemMetrics = message.systemMetrics;
+        }
+      } else if (message.type === 'scene_change') {
+        // Handle dedicated scene change messages
+        console.log(`[app] Scene change received: ${message.currentScene}`);
+        data.value.currentScene = message.currentScene;
+        if (message.privacyEnabled !== undefined) {
+          data.value.switcherHealth.privacy_enabled = message.privacyEnabled;
+        }
+        // Clear switching state if scene matches what we were switching to
+        if (switchingScene.value && message.currentScene === switchingScene.value) {
+          console.log('[app] Scene switch completed, clearing switching state');
+          switchingScene.value = null;
+          if (switchingTimeout) {
+            clearTimeout(switchingTimeout);
+            switchingTimeout = null;
+          }
+        }
+      } else if (message.type === 'privacy_change') {
+        // Handle dedicated privacy change messages
+        console.log(`[app] Privacy change received: ${message.privacyEnabled}`);
+        data.value.switcherHealth.privacy_enabled = message.privacyEnabled;
+        if (message.currentScene !== undefined) {
+          data.value.currentScene = message.currentScene;
+        }
       } else if (message.type === 'log_snapshot' || message.type === 'new_logs') {
         // Forward log messages to ContainerLogs component
         console.log(`[app] Forwarding ${message.type} message for ${message.container}`);
@@ -258,6 +287,15 @@ export default {
       
       // Update last update time
       lastUpdate.value = formatTime(message.timestamp);
+      
+      // Update scene from status_change messages (fallback mechanism)
+      if (message.currentScene !== undefined) {
+        console.log(`[app] Scene from container_update: ${message.currentScene}`);
+        data.value.currentScene = message.currentScene;
+      }
+      if (message.privacyEnabled !== undefined) {
+        data.value.switcherHealth.privacy_enabled = message.privacyEnabled;
+      }
       
       // Process containers and apply pending operations
       const processedContainers = (message.containers || []).map(container => {

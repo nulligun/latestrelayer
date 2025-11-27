@@ -7,6 +7,8 @@ import subprocess
 import threading
 import asyncio
 import websockets
+import urllib.request
+import urllib.error
 from datetime import datetime
 from urllib.parse import urlparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -37,8 +39,186 @@ print(f"[startup] Project name: {PROJECT_NAME}", flush=True)
 # Get project path from environment
 PROJECT_PATH = os.getenv("PROJECT_PATH", "/app")
 COMPOSE_FILE = os.path.join(PROJECT_PATH, "docker-compose.yml")
+SHARED_DIR = os.getenv("SHARED_DIR", "/app/shared")
+PRIVACY_MODE_FILE = os.path.join(SHARED_DIR, "privacy_mode.json")
+MULTIPLEXER_URL = os.getenv("MULTIPLEXER_URL", "http://multiplexer:8091")
 print(f"[startup] Project path: {PROJECT_PATH}", flush=True)
 print(f"[startup] Compose file: {COMPOSE_FILE}", flush=True)
+print(f"[startup] Shared directory: {SHARED_DIR}", flush=True)
+print(f"[startup] Privacy mode file: {PRIVACY_MODE_FILE}", flush=True)
+print(f"[startup] Multiplexer URL: {MULTIPLEXER_URL}", flush=True)
+
+
+class ScenePrivacyManager:
+    """Manages scene and privacy mode state."""
+    
+    def __init__(self, privacy_file_path, multiplexer_url):
+        self.privacy_file_path = privacy_file_path
+        self.multiplexer_url = multiplexer_url
+        self._current_scene = "unknown"
+        self._scene_timestamp = datetime.utcnow()
+        self._privacy_enabled = False
+        self._lock = threading.Lock()
+        self._change_callbacks = []
+        
+        # Load privacy state from file
+        self._load_privacy_state()
+        
+        print(f"[scene-privacy] Initialized: scene={self._current_scene}, privacy={self._privacy_enabled}", flush=True)
+    
+    def _load_privacy_state(self):
+        """Load privacy mode state from persistent file."""
+        try:
+            if os.path.exists(self.privacy_file_path):
+                with open(self.privacy_file_path, 'r') as f:
+                    data = json.load(f)
+                    self._privacy_enabled = data.get('enabled', False)
+                    print(f"[scene-privacy] Loaded privacy state from file: {self._privacy_enabled}", flush=True)
+            else:
+                print(f"[scene-privacy] No privacy file found, defaulting to disabled", flush=True)
+        except Exception as e:
+            print(f"[scene-privacy] Error loading privacy state: {e}", file=sys.stderr)
+            self._privacy_enabled = False
+    
+    def _save_privacy_state(self):
+        """Save privacy mode state to persistent file."""
+        try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(self.privacy_file_path), exist_ok=True)
+            
+            data = {
+                'enabled': self._privacy_enabled,
+                'updated_at': datetime.utcnow().isoformat() + 'Z'
+            }
+            with open(self.privacy_file_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            print(f"[scene-privacy] Saved privacy state to file: {self._privacy_enabled}", flush=True)
+        except Exception as e:
+            print(f"[scene-privacy] Error saving privacy state: {e}", file=sys.stderr)
+    
+    def _notify_multiplexer(self, enabled):
+        """Notify the multiplexer about privacy mode change via HTTP callback."""
+        def do_notify():
+            try:
+                url = f"{self.multiplexer_url}/privacy"
+                data = json.dumps({'enabled': enabled}).encode('utf-8')
+                req = urllib.request.Request(
+                    url,
+                    data=data,
+                    headers={'Content-Type': 'application/json'},
+                    method='POST'
+                )
+                
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    result = response.read().decode('utf-8')
+                    print(f"[scene-privacy] Notified multiplexer of privacy change: {result}", flush=True)
+                    
+            except urllib.error.URLError as e:
+                print(f"[scene-privacy] Failed to notify multiplexer (may not be running): {e}", file=sys.stderr)
+            except Exception as e:
+                print(f"[scene-privacy] Error notifying multiplexer: {e}", file=sys.stderr)
+        
+        # Run in background thread to not block
+        thread = threading.Thread(target=do_notify, daemon=True)
+        thread.start()
+    
+    def register_change_callback(self, callback):
+        """Register a callback to be called when scene or privacy changes."""
+        self._change_callbacks.append(callback)
+    
+    def _trigger_change_callbacks(self, change_type, data):
+        """Trigger all registered callbacks."""
+        print(f"[scene_change_debug] _trigger_change_callbacks: type={change_type}, callbacks={len(self._change_callbacks)}", flush=True)
+        for i, callback in enumerate(self._change_callbacks):
+            try:
+                print(f"[scene_change_debug] Calling callback {i+1}/{len(self._change_callbacks)}", flush=True)
+                callback(change_type, data)
+            except Exception as e:
+                print(f"[scene-privacy] Error in change callback: {e}", file=sys.stderr)
+    
+    @property
+    def current_scene(self):
+        with self._lock:
+            return self._current_scene
+    
+    @property
+    def scene_timestamp(self):
+        with self._lock:
+            return self._scene_timestamp
+    
+    @property
+    def privacy_enabled(self):
+        with self._lock:
+            return self._privacy_enabled
+    
+    def set_scene(self, scene):
+        """Set the current scene (called by multiplexer)."""
+        with self._lock:
+            old_scene = self._current_scene
+            print(f"[scene_change_debug] set_scene called: old={old_scene}, new={scene}", flush=True)
+            if old_scene != scene:
+                self._current_scene = scene
+                self._scene_timestamp = datetime.utcnow()
+                print(f"[scene-privacy] Scene changed: {old_scene} -> {scene}", flush=True)
+                print(f"[scene_change_debug] Triggering callbacks with type='scene_change'", flush=True)
+                
+                # Trigger callbacks outside the lock
+                self._trigger_change_callbacks('scene_change', {
+                    'previous_scene': old_scene,
+                    'current_scene': scene,
+                    'timestamp': self._scene_timestamp.isoformat() + 'Z'
+                })
+                return True
+            else:
+                print(f"[scene_change_debug] Scene unchanged, skipping callbacks", flush=True)
+            return False
+    
+    def enable_privacy(self):
+        """Enable privacy mode."""
+        with self._lock:
+            if not self._privacy_enabled:
+                self._privacy_enabled = True
+                print(f"[scene-privacy] Privacy mode ENABLED", flush=True)
+                self._save_privacy_state()
+                
+                # Notify multiplexer in background
+                self._notify_multiplexer(True)
+                
+                # Trigger callbacks
+                self._trigger_change_callbacks('privacy_change', {
+                    'enabled': True,
+                    'timestamp': datetime.utcnow().isoformat() + 'Z'
+                })
+                return True
+            return False
+    
+    def disable_privacy(self):
+        """Disable privacy mode."""
+        with self._lock:
+            if self._privacy_enabled:
+                self._privacy_enabled = False
+                print(f"[scene-privacy] Privacy mode DISABLED", flush=True)
+                self._save_privacy_state()
+                
+                # Notify multiplexer in background
+                self._notify_multiplexer(False)
+                
+                # Trigger callbacks
+                self._trigger_change_callbacks('privacy_change', {
+                    'enabled': False,
+                    'timestamp': datetime.utcnow().isoformat() + 'Z'
+                })
+                return True
+            return False
+    
+    def get_state(self):
+        """Get the current state as a dictionary."""
+        with self._lock:
+            return {
+                'current_scene': self._current_scene,
+                'scene_timestamp': self._scene_timestamp.isoformat() + 'Z',
+                'privacy_enabled': self._privacy_enabled
+            }
 
 
 class ComposeParser:
@@ -835,16 +1015,78 @@ compose_parser = ComposeParser(COMPOSE_FILE)
 
 controller = ContainerController(PROJECT_NAME, compose_parser)
 
+# Initialize scene and privacy manager
+print("[startup] Initializing scene and privacy manager...", flush=True)
+scene_privacy_manager = ScenePrivacyManager(PRIVACY_MODE_FILE, MULTIPLEXER_URL)
+
 
 class WebSocketServer:
     """WebSocket server for real-time container status and log streaming."""
     
-    def __init__(self, controller):
+    def __init__(self, controller, scene_privacy_manager):
         self.controller = controller
+        self.scene_privacy_manager = scene_privacy_manager
         self.clients = set()
         self.log_subscribers = {}  # {container_name: {client: last_timestamp}}
         self.last_container_state = {}
+        self.last_sent_logs = {}  # {container_name: last_log_line} - tracks last sent log per container
         self.monitoring_task = None
+        self.loop = None  # Event loop reference for cross-thread access
+        
+        # Register for scene/privacy change notifications
+        self.scene_privacy_manager.register_change_callback(self._on_scene_privacy_change)
+    
+    def _on_scene_privacy_change(self, change_type, data):
+        """Handle scene or privacy change events."""
+        print(f"[scene_change_debug] _on_scene_privacy_change: type={change_type}, data={data}", flush=True)
+        # Schedule broadcast in the event loop using stored reference
+        try:
+            if self.loop is not None:
+                print(f"[scene_change_debug] Scheduling WebSocket broadcast for type={change_type} using stored loop", flush=True)
+                asyncio.run_coroutine_threadsafe(
+                    self._broadcast_scene_privacy_change(change_type, data),
+                    self.loop
+                )
+            else:
+                print(f"[scene_change_debug] WARNING: Event loop not stored yet!", flush=True)
+        except Exception as e:
+            print(f"[ws] Error scheduling scene/privacy broadcast: {e}", file=sys.stderr)
+            print(f"[scene_change_debug] Exception in _on_scene_privacy_change: {e}", flush=True)
+    
+    async def _broadcast_scene_privacy_change(self, change_type, data):
+        """Broadcast scene or privacy change to all clients."""
+        print(f"[scene_change_debug] _broadcast_scene_privacy_change: type={change_type}, clients={len(self.clients)}", flush=True)
+        if not self.clients:
+            print(f"[scene_change_debug] No clients connected, skipping broadcast", flush=True)
+            return
+        
+        state = self.scene_privacy_manager.get_state()
+        message = {
+            'type': change_type,
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'current_scene': state['current_scene'],
+            'privacy_enabled': state['privacy_enabled'],
+            'change_data': data
+        }
+        
+        message_json = json.dumps(message)
+        print(f"[scene_change_debug] Broadcasting message: {message_json}", flush=True)
+        disconnected = set()
+        
+        for client in self.clients:
+            try:
+                await client.send(message_json)
+                print(f"[scene_change_debug] Sent to client {id(client)}", flush=True)
+            except Exception as e:
+                print(f"[ws] Error broadcasting scene/privacy change to client: {e}", file=sys.stderr)
+                disconnected.add(client)
+        
+        # Clean up disconnected clients
+        for client in disconnected:
+            await self.unregister_client(client)
+        
+        print(f"[ws] Broadcasted {change_type} to {len(self.clients) - len(disconnected)} client(s)", flush=True)
+        print(f"[scene_change_debug] Broadcast complete", flush=True)
         
     async def register_client(self, websocket):
         """Register a new WebSocket client."""
@@ -882,15 +1124,21 @@ class WebSocketServer:
             containers = result.get('containers', [])
             print(f"[ws] Got {len(containers)} containers for client {client_id}", flush=True)
             
+            # Get scene and privacy state
+            scene_privacy_state = self.scene_privacy_manager.get_state()
+            
             message = {
                 'type': 'initial_state',
                 'timestamp': datetime.utcnow().isoformat() + 'Z',
-                'containers': containers
+                'containers': containers,
+                'current_scene': scene_privacy_state['current_scene'],
+                'privacy_enabled': scene_privacy_state['privacy_enabled'],
+                'scene_timestamp': scene_privacy_state['scene_timestamp']
             }
             
             print(f"[ws] Sending initial_state message to client {client_id}", flush=True)
             await websocket.send(json.dumps(message))
-            print(f"[ws] Successfully sent initial state with {len(containers)} containers to client {client_id}", flush=True)
+            print(f"[ws] Successfully sent initial state with {len(containers)} containers, scene={scene_privacy_state['current_scene']}, privacy={scene_privacy_state['privacy_enabled']} to client {client_id}", flush=True)
             
         except Exception as e:
             print(f"[ws] Error in send_initial_state for client {client_id}: {e}", file=sys.stderr)
@@ -902,10 +1150,15 @@ class WebSocketServer:
         if not changes or not self.clients:
             return
         
+        # Include current scene/privacy state in every status_change as fallback
+        state = self.scene_privacy_manager.get_state()
+        
         message = {
             'type': 'status_change',
             'timestamp': datetime.utcnow().isoformat() + 'Z',
-            'changes': changes
+            'changes': changes,
+            'current_scene': state['current_scene'],
+            'privacy_enabled': state['privacy_enabled']
         }
         
         message_json = json.dumps(message)
@@ -1044,30 +1297,50 @@ class WebSocketServer:
                             logs = result.get('logs', [])
                             
                             if logs:
-                                # Find new logs for each subscriber
-                                disconnected = set()
+                                # Check if there are actually new logs since last send
+                                last_sent = self.last_sent_logs.get(container_name)
                                 
-                                for client, last_timestamp in list(subscribers.items()):
+                                if last_sent is not None:
+                                    # Find the index of the last sent log in current logs
                                     try:
-                                        # Send all logs (client will filter duplicates)
-                                        message = {
-                                            'type': 'new_logs',
-                                            'container': container_name,
-                                            'logs': logs,
-                                            'lastLogTimestamp': datetime.utcnow().isoformat() + 'Z'
-                                        }
-                                        
-                                        await client.send(json.dumps(message))
-                                        subscribers[client] = datetime.utcnow()
-                                        
-                                    except Exception as e:
-                                        print(f"[ws] Error streaming logs to client: {e}", file=sys.stderr)
-                                        disconnected.add(client)
+                                        last_sent_idx = logs.index(last_sent)
+                                        # Only get logs after the last sent one
+                                        new_logs = logs[last_sent_idx + 1:]
+                                    except ValueError:
+                                        # Last sent log not found (log rotation or container restart)
+                                        # Send all logs as they may all be new
+                                        new_logs = logs
+                                else:
+                                    # First time sending logs for this container
+                                    new_logs = logs
                                 
-                                # Clean up disconnected clients
-                                for client in disconnected:
-                                    if client in subscribers:
-                                        del subscribers[client]
+                                # Only send if there are actually new logs
+                                if new_logs:
+                                    # Update the last sent log marker
+                                    self.last_sent_logs[container_name] = logs[-1]
+                                    
+                                    disconnected = set()
+                                    
+                                    for client, last_timestamp in list(subscribers.items()):
+                                        try:
+                                            message = {
+                                                'type': 'new_logs',
+                                                'container': container_name,
+                                                'logs': new_logs,
+                                                'lastLogTimestamp': datetime.utcnow().isoformat() + 'Z'
+                                            }
+                                            
+                                            await client.send(json.dumps(message))
+                                            subscribers[client] = datetime.utcnow()
+                                            
+                                        except Exception as e:
+                                            print(f"[ws] Error streaming logs to client: {e}", file=sys.stderr)
+                                            disconnected.add(client)
+                                    
+                                    # Clean up disconnected clients
+                                    for client in disconnected:
+                                        if client in subscribers:
+                                            del subscribers[client]
                                 
                         except Exception as e:
                             print(f"[ws] Error getting logs for {container_name}: {e}", file=sys.stderr)
@@ -1075,8 +1348,8 @@ class WebSocketServer:
             except Exception as e:
                 print(f"[ws] Error in log streaming loop: {e}", file=sys.stderr)
             
-            # Check for new logs every 500ms
-            await asyncio.sleep(0.5)
+            # Check for new logs every 1 second
+            await asyncio.sleep(1)
     
     async def handle_client_message(self, websocket, message_text):
         """Handle incoming messages from clients."""
@@ -1132,6 +1405,10 @@ class WebSocketServer:
     
     async def start(self):
         """Start the WebSocket server and monitoring tasks."""
+        # Store event loop reference for cross-thread access (e.g., from HTTP thread)
+        self.loop = asyncio.get_running_loop()
+        print(f"[ws] Stored event loop reference for cross-thread access", flush=True)
+        
         # Start monitoring task
         self.monitoring_task = asyncio.create_task(self.monitor_container_status())
         
@@ -1145,7 +1422,7 @@ class WebSocketServer:
 
 
 # Global WebSocket server instance
-ws_server = WebSocketServer(controller)
+ws_server = WebSocketServer(controller, scene_privacy_manager)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1178,10 +1455,61 @@ class Handler(BaseHTTPRequestHandler):
             # Client closed connection before we could send response
             print(f"[http] Client disconnected before response could be sent: {e.__class__.__name__}", file=sys.stderr)
     
+    def _read_request_body(self):
+        """Read and parse JSON request body."""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length > 0:
+                body = self.rfile.read(content_length)
+                return json.loads(body.decode('utf-8'))
+        except Exception as e:
+            print(f"[http] Error reading request body: {e}", file=sys.stderr)
+        return {}
+    
     def do_POST(self):
         """Handle POST requests for container operations."""
         parsed = urlparse(self.path)
         path_parts = parsed.path.strip("/").split("/")
+        
+        # Scene notification from multiplexer: POST /scene/live or /scene/fallback
+        if len(path_parts) == 2 and path_parts[0] == "scene":
+            scene = path_parts[1].upper()
+            if scene in ["LIVE", "FALLBACK"]:
+                print(f"[http] Scene notification from multiplexer: {scene}")
+                print(f"[scene_change_debug] HTTP received POST /scene/{scene}", flush=True)
+                changed = scene_privacy_manager.set_scene(scene)
+                print(f"[scene_change_debug] set_scene returned changed={changed}", flush=True)
+                self.send_json({
+                    "status": "ok",
+                    "scene": scene,
+                    "changed": changed
+                })
+            else:
+                self.send_json({"error": f"Invalid scene: {scene}"}, 400)
+            return
+        
+        # Privacy mode control: POST /privacy/enable or /privacy/disable
+        if len(path_parts) == 2 and path_parts[0] == "privacy":
+            action = path_parts[1].lower()
+            if action == "enable":
+                print(f"[http] Privacy mode enable request")
+                changed = scene_privacy_manager.enable_privacy()
+                self.send_json({
+                    "status": "ok",
+                    "privacy_enabled": True,
+                    "changed": changed
+                })
+            elif action == "disable":
+                print(f"[http] Privacy mode disable request")
+                changed = scene_privacy_manager.disable_privacy()
+                self.send_json({
+                    "status": "ok",
+                    "privacy_enabled": False,
+                    "changed": changed
+                })
+            else:
+                self.send_json({"error": f"Invalid privacy action: {action}"}, 400)
+            return
         
         # Expected format: /container/<name>/<action>
         if len(path_parts) == 3 and path_parts[0] == "container":
@@ -1236,6 +1564,31 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             print("[http] Health check request")
             self.send_text("ok")
+            return
+        
+        # Scene state endpoint: GET /scene
+        if parsed.path == "/scene":
+            print("[http] Scene state request")
+            state = scene_privacy_manager.get_state()
+            self.send_json({
+                "current_scene": state['current_scene'],
+                "scene_timestamp": state['scene_timestamp']
+            })
+            return
+        
+        # Privacy state endpoint: GET /privacy
+        if parsed.path == "/privacy":
+            print("[http] Privacy state request")
+            state = scene_privacy_manager.get_state()
+            self.send_json({
+                "privacy_enabled": state['privacy_enabled']
+            })
+            return
+        
+        # Combined state endpoint: GET /state
+        if parsed.path == "/state":
+            print("[http] Full state request")
+            self.send_json(scene_privacy_manager.get_state())
             return
         
         # List all containers endpoint
@@ -1319,6 +1672,13 @@ def run_http():
     print("[http]   GET  /container/<name>/logs?tail=N     - Get container logs")
     print("[http]   GET  /containers                       - List all containers")
     print("[http]   GET  /health                           - Health check")
+    print("[http]   POST /scene/live                       - Notify scene change to LIVE")
+    print("[http]   POST /scene/fallback                   - Notify scene change to FALLBACK")
+    print("[http]   GET  /scene                            - Get current scene")
+    print("[http]   POST /privacy/enable                   - Enable privacy mode")
+    print("[http]   POST /privacy/disable                  - Disable privacy mode")
+    print("[http]   GET  /privacy                          - Get privacy mode state")
+    print("[http]   GET  /state                            - Get full state (scene + privacy)")
     print("[http] Ready to accept requests")
     srv.serve_forever()
 
