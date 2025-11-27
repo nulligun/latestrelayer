@@ -627,8 +627,10 @@ app.post('/api/fallback/upload-image', upload.single('image'), async (req, res) 
       
       // Convert image to a 30-second MPEG-TS video with audio
       // Uses same format as convert-fallback.sh for compatibility
+      // Scale to 1280x720 with letterboxing to maintain aspect ratio
       const ffmpegCommand = `ffmpeg -y -loop 1 -i "${imagePath}" \
         -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+        -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black" \
         -c:v libx264 -preset fast -crf 23 \
         -g 30 -keyint_min 30 -sc_threshold 0 \
         -r 30 -pix_fmt yuv420p \
@@ -705,7 +707,9 @@ app.post('/api/fallback/upload-video', uploadVideo.single('video'), async (req, 
     // Convert video to MPEG-TS format for streaming
     try {
       // Uses same format as convert-fallback.sh for compatibility
+      // Scale to 1280x720 with letterboxing to maintain aspect ratio
       const tsCommand = `ffmpeg -y -i "${videoPath}" \
+        -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black" \
         -c:v libx264 -preset fast -crf 23 \
         -g 30 -keyint_min 30 -sc_threshold 0 \
         -c:a aac -b:a 128k \
