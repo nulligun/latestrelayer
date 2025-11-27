@@ -1,0 +1,24 @@
+# FFmpeg Kick Streaming Container
+# Reads from nginx-rtmp and pushes to Kick via RTMPS
+FROM jrottenberg/ffmpeg:4.4-ubuntu
+
+# Install network debugging tools for health check
+RUN apt-get update && apt-get install -y \
+    iputils-ping \
+    tcpdump \
+    iproute2 \
+    netcat-openbsd \
+    curl \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy wrapper script for signal handling
+COPY docker/ffmpeg-kick-wrapper.sh /usr/local/bin/ffmpeg-kick-wrapper.sh
+RUN chmod +x /usr/local/bin/ffmpeg-kick-wrapper.sh
+
+# Copy health check script
+COPY docker/ffmpeg-kick-health-check.sh /usr/local/bin/health-check.sh
+RUN chmod +x /usr/local/bin/health-check.sh
+
+# Use wrapper script as entrypoint
+ENTRYPOINT ["/usr/local/bin/ffmpeg-kick-wrapper.sh"]

@@ -234,6 +234,39 @@ services:
   # Manual/Optional Services
   # ============================================================================
 
+  ffmpeg-kick:
+    stop_grace_period: 2s
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ffmpeg-kick
+    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-ffmpeg-kick
+    profiles:
+      - manual
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
+    volumes:
+      - ${SHARED_FOLDER}:/app/shared:ro
+    environment:
+      - KICK_URL=${KICK_URL:-}
+      - KICK_KEY=${KICK_KEY:-}
+      - KICK_STREAM_URL=${KICK_STREAM_URL:-}
+      - KICK_STREAM_KEY=${KICK_STREAM_KEY:-}
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   mock-camera:
     stop_grace_period: 2s
     build:
