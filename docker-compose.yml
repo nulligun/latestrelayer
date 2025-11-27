@@ -14,7 +14,7 @@ services:
       - "${CONTROLLER_WS_PORT:-8090}:8090"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ${APP_FOLDER}:/app:ro
+      - ${APP_FOLDER}:/app:rw
       - ${SHARED_FOLDER}:/app/shared:rw
     environment:
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-latestrelayer}
