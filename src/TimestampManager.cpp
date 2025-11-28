@@ -11,20 +11,56 @@ TimestampManager::TimestampManager()
       last_output_pcr_(0),
       last_live_pts_(0),
       last_fallback_pts_(0),
-      last_fallback_dts_(0) {
+      last_fallback_dts_(0),
+      last_live_packet_wall_time_(std::chrono::steady_clock::now()),
+      has_live_reference_(false) {
 }
 
 TimestampManager::~TimestampManager() {
 }
 
+void TimestampManager::trackLiveTimestamps(const TimestampInfo& ts_info) {
+    // Track timestamps from live packets without modifying them
+    // This is used for gap-aware fallback transitions
+    
+    auto now = std::chrono::steady_clock::now();
+    
+    if (ts_info.pts.has_value()) {
+        last_live_pts_ = ts_info.pts.value();
+        last_live_packet_wall_time_ = now;
+        has_live_reference_ = true;
+        
+        // Also update output tracking since live is passthrough
+        // (the live PTS becomes the output PTS)
+        last_output_pts_ = ts_info.pts.value();
+    }
+    
+    if (ts_info.dts.has_value()) {
+        last_output_dts_ = ts_info.dts.value();
+    }
+    
+    if (ts_info.pcr.has_value()) {
+        last_output_pcr_ = ts_info.pcr.value();
+    }
+}
+
 bool TimestampManager::adjustPacket(ts::TSPacket& packet, Source source, const TimestampInfo& input_ts) {
+    // LIVE packets pass through unmodified - the camera is the canonical time source
+    // Only track timestamps for fallback offset calculation
+    if (source == Source::LIVE) {
+        trackLiveTimestamps(input_ts);
+        return true;  // No modification to packet
+    }
+    
+    // FALLBACK processing below
+    
     // Skip packets without timestamps
     if (!input_ts.pts.has_value() && !input_ts.dts.has_value()) {
         return true;
     }
     
     // Check for loop boundary in fallback stream
-    if (source == Source::FALLBACK && input_ts.pts.has_value()) {
+    if (input_ts.pts.has_value()) {
         if (detectLoopBoundary(source, input_ts.pts.value())) {
             std::cout << "[TimestampManager] Loop boundary detected in fallback stream" << std::endl;
             std::cout << "[TimestampManager] Recalculating offset to maintain continuity" << std::endl;
@@ -32,97 +68,32 @@ bool TimestampManager::adjustPacket(ts::TSPacket& packet, Source source, const T
         }
     }
     
-    // Determine which offset to use
-    int64_t offset = (source == Source::LIVE) ? live_offset_ : fallback_offset_;
+    // Use fallback offset (live_offset_ is always 0 since live is passthrough)
+    int64_t offset = fallback_offset_;
     
     std::optional<uint64_t> adjusted_pts;
     std::optional<uint64_t> adjusted_dts;
     
-    // Adjust PTS if present
+    // Adjust PTS if present - NO monotonic enforcement to preserve B-frame timing
     if (input_ts.pts.has_value()) {
         uint64_t raw_pts = input_ts.pts.value();
         uint64_t new_pts = (raw_pts + offset) & MAX_TIMESTAMP;
         
-        // Enforce monotonic increase
-        uint64_t original_new_pts = new_pts;
-        new_pts = enforceMonotonic(new_pts, last_output_pts_);
-        
-        if (new_pts != original_new_pts && false) {  // Disabled verbose logging
-            std::cout << "[TimestampManager] PTS enforced monotonic: " << original_new_pts
-                      << " -> " << new_pts << " (last=" << last_output_pts_ << ")" << std::endl;
-        }
-        
         adjusted_pts = new_pts;
-        
-        // Update source-specific tracking
-        if (source == Source::LIVE) {
-            last_live_pts_ = raw_pts;
-        } else {
-            last_fallback_pts_ = raw_pts;
-        }
+        last_fallback_pts_ = raw_pts;
     }
     
-    // Adjust DTS if present
+    // Adjust DTS if present - NO monotonic enforcement to preserve B-frame timing
     if (input_ts.dts.has_value()) {
         uint64_t raw_dts = input_ts.dts.value();
         uint64_t new_dts = (raw_dts + offset) & MAX_TIMESTAMP;
         
-        // First apply monotonic enforcement
-        uint64_t original_new_dts = new_dts;
-        new_dts = enforceMonotonic(new_dts, last_output_dts_);
-        
-        static int dts_correction_count = 0;
-        if (new_dts != original_new_dts) {
-            dts_correction_count++;
-            if (dts_correction_count % 100 == 1) {  // Log every 100th correction
-                std::cout << "[TimestampManager] DTS enforced monotonic: " << original_new_dts
-                          << " -> " << new_dts << " (last=" << last_output_dts_
-                          << ", count=" << dts_correction_count << ")" << std::endl;
-            }
-        }
-        
         adjusted_dts = new_dts;
-        
-        // Track fallback DTS
-        if (source == Source::FALLBACK) {
-            last_fallback_dts_ = raw_dts;
-        }
+        last_fallback_dts_ = raw_dts;
     }
     
-    // Enforce DTS <= PTS constraint AFTER monotonic enforcement
-    // This must also maintain monotonic DTS
-    if (adjusted_pts.has_value() && adjusted_dts.has_value()) {
-        uint64_t pts = adjusted_pts.value();
-        uint64_t dts = adjusted_dts.value();
-        
-        if (dts > pts) {
-            // DTS cannot exceed PTS
-            // But we also cannot let DTS go backwards
-            // Set DTS to minimum of PTS and last_output_dts_+1
-            uint64_t safe_dts = pts;
-            
-            // Ensure we don't go backwards
-            if (safe_dts <= last_output_dts_) {
-                safe_dts = last_output_dts_ + 1;
-                // If this makes DTS > PTS again, we have a problem
-                // In this case, also bump PTS
-                if (safe_dts > pts) {
-                    std::cout << "[TimestampManager] WARNING: Complex timestamp issue" << std::endl;
-                    std::cout << "  Bumping both PTS and DTS to maintain ordering" << std::endl;
-                    adjusted_pts = safe_dts;
-                    last_output_pts_ = safe_dts;
-                }
-            }
-            
-            std::cout << "[TimestampManager] WARNING: DTS > PTS violation corrected" << std::endl;
-            std::cout << "  Original: DTS=" << dts << " PTS=" << pts << std::endl;
-            std::cout << "  Corrected: DTS=" << safe_dts << " PTS=" << adjusted_pts.value() << std::endl;
-            
-            adjusted_dts = safe_dts;
-        }
-    }
-    
-    // Update last output timestamps AFTER all adjustments
+    // Update last output timestamps
+    // Note: No DTS > PTS constraint enforcement - trust the source stream
     if (adjusted_pts.has_value()) {
         last_output_pts_ = adjusted_pts.value();
     }
@@ -132,28 +103,14 @@ bool TimestampManager::adjustPacket(ts::TSPacket& packet, Source source, const T
     
     // Apply PES timestamp adjustments
     if (adjusted_pts.has_value() || adjusted_dts.has_value()) {
-        static int write_count = 0;
-        write_count++;
-        
-        if (adjusted_dts.has_value() && write_count % 100 == 1) {
-            std::cout << "[TimestampManager] Writing timestamps to packet #" << write_count << std::endl;
-            if (input_ts.dts.has_value()) {
-                std::cout << "  Input DTS: " << input_ts.dts.value()
-                          << " -> Output DTS: " << adjusted_dts.value()
-                          << " (last=" << last_output_dts_ << ")" << std::endl;
-            }
-        }
-        
         adjustPESTimestamps(packet, adjusted_pts, adjusted_dts);
     }
     
-    // Adjust PCR if present
+    // Adjust PCR if present - NO monotonic enforcement
     if (input_ts.pcr.has_value()) {
         uint64_t raw_pcr = input_ts.pcr.value();
         uint64_t new_pcr = (raw_pcr + offset) & MAX_TIMESTAMP;
         
-        // Enforce monotonic increase
-        new_pcr = enforceMonotonic(new_pcr, last_output_pcr_);
         adjustPCR(packet, new_pcr);
         last_output_pcr_ = new_pcr;
     }
@@ -162,26 +119,52 @@ bool TimestampManager::adjustPacket(ts::TSPacket& packet, Source source, const T
 }
 
 void TimestampManager::onSourceSwitch(Source new_source, const TimestampInfo& first_packet_ts) {
-    if (!first_packet_ts.pts.has_value()) {
-        return; // Can't calculate offset without PTS
-    }
-    
-    uint64_t first_pts = first_packet_ts.pts.value();
-    
-    // Calculate offset so that output continues from last_output_pts
-    // new_output_pts = first_pts + offset
-    // We want: new_output_pts = last_output_pts + frame_duration
-    
-    uint64_t target_pts = (last_output_pts_ + DEFAULT_FRAME_DURATION) & MAX_TIMESTAMP;
-    int64_t new_offset = static_cast<int64_t>(target_pts) - static_cast<int64_t>(first_pts);
-    
     if (new_source == Source::LIVE) {
-        live_offset_ = new_offset;
-        std::cout << "[TimestampManager] Switched to LIVE, offset=" << live_offset_ << std::endl;
-    } else {
-        fallback_offset_ = new_offset;
-        std::cout << "[TimestampManager] Switched to FALLBACK, offset=" << fallback_offset_ << std::endl;
+        // LIVE is passthrough - no offset needed
+        // The live stream's timestamps become the canonical output timestamps
+        live_offset_ = 0;
+        std::cout << "[TimestampManager] Switched to LIVE (passthrough mode, offset=0)" << std::endl;
+        return;
     }
+    
+    // Switching to FALLBACK - calculate gap-aware offset
+    if (!first_packet_ts.pts.has_value()) {
+        std::cout << "[TimestampManager] WARNING: Cannot calculate fallback offset without PTS" << std::endl;
+        return;
+    }
+    
+    uint64_t first_fallback_pts = first_packet_ts.pts.value();
+    uint64_t target_pts;
+    
+    if (has_live_reference_) {
+        // Calculate elapsed time since last live packet (gap time)
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_live_packet_wall_time_
+        );
+        
+        // Convert to 90kHz timestamp units (90 ticks per millisecond)
+        uint64_t elapsed_90kHz = static_cast<uint64_t>(elapsed.count()) * 90;
+        
+        // Target PTS = last live PTS + elapsed gap time
+        // This makes the timeline appear continuous as if the live stream never stopped
+        target_pts = (last_live_pts_ + elapsed_90kHz) & MAX_TIMESTAMP;
+        
+        std::cout << "[TimestampManager] Switched to FALLBACK with gap-aware offset" << std::endl;
+        std::cout << "  Last live PTS: " << last_live_pts_ << std::endl;
+        std::cout << "  Elapsed gap: " << elapsed.count() << "ms (" << elapsed_90kHz << " @ 90kHz)" << std::endl;
+        std::cout << "  Target PTS: " << target_pts << std::endl;
+    } else {
+        // No live reference yet - use default frame duration from last output
+        target_pts = (last_output_pts_ + DEFAULT_FRAME_DURATION) & MAX_TIMESTAMP;
+        std::cout << "[TimestampManager] Switched to FALLBACK (no live reference, using default)" << std::endl;
+    }
+    
+    // Calculate offset: fallback_pts + offset = target_pts
+    fallback_offset_ = static_cast<int64_t>(target_pts) - static_cast<int64_t>(first_fallback_pts);
+    
+    std::cout << "  First fallback PTS: " << first_fallback_pts << std::endl;
+    std::cout << "  Calculated offset: " << fallback_offset_ << std::endl;
 }
 
 void TimestampManager::adjustPESTimestamps(ts::TSPacket& packet, 
@@ -256,21 +239,6 @@ void TimestampManager::writePTS(uint8_t* pes_header, uint64_t pts, uint8_t marke
     pes_header[4] = ((pts << 1) & 0xFE) | 0x01;
 }
 
-uint64_t TimestampManager::enforceMonotonic(uint64_t ts, uint64_t last_ts) {
-    // Handle wraparound case
-    if (ts < last_ts && (last_ts - ts) > (MAX_TIMESTAMP / 2)) {
-        // This looks like a wraparound, allow it
-        return ts;
-    }
-    
-    // If timestamp would go backwards (and it's not wraparound), advance it
-    if (ts <= last_ts) {
-        ts = last_ts + 1;
-    }
-    
-    return ts & MAX_TIMESTAMP;
-}
-
 uint64_t TimestampManager::handleWraparound(uint64_t ts, uint64_t reference) {
     // Handle 33-bit wraparound
     int64_t diff = static_cast<int64_t>(ts) - static_cast<int64_t>(reference);
@@ -324,4 +292,6 @@ void TimestampManager::reset() {
     last_live_pts_ = 0;
     last_fallback_pts_ = 0;
     last_fallback_dts_ = 0;
+    last_live_packet_wall_time_ = std::chrono::steady_clock::now();
+    has_live_reference_ = false;
 }

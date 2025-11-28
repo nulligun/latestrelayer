@@ -213,8 +213,7 @@ services:
       multiplexer:
         condition: service_healthy
     volumes:
-      - ./fallback.ts:/media/fallback.ts:ro
-      - ${SHARED_FOLDER}:/media/shared:ro
+      - ${SHARED_FOLDER}:/media:rw
     networks:
       - tsnet
     restart: unless-stopped

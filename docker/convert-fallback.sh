@@ -45,14 +45,13 @@ ffmpeg -i "$INPUT" \
   -mpegts_pmt_start_pid 256 \
   -mpegts_start_pid 257 \
   -muxrate 10000000 \
+  -y \
   "$OUTPUT"
 
 if [ $? -eq 0 ]; then
     echo ""
     echo "✓ Conversion successful!"
     echo "✓ Output file: $OUTPUT"
-    echo ""
-    echo "You can now start the system with: docker-compose up"
 else
     echo ""
     echo "✗ Conversion failed!"

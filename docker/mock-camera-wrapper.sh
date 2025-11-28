@@ -28,7 +28,7 @@ ffmpeg -nostdin \
     -re \
     -f lavfi -i testsrc=size=1280x720:rate=30 \
     -f lavfi -i sine=frequency=440:sample_rate=48000 \
-    -c:v libx264 -preset veryfast -tune zerolatency -b:v 2M -g 60 -keyint_min 60 \
+    -c:v libx264 -preset slow -tune film -b:v 2M -g 60 -keyint_min 60 \
     -c:a aac -b:a 128k \
     -f mpegts 'srt://ffmpeg-srt-live:1937?mode=caller' &
 

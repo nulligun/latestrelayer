@@ -4,6 +4,7 @@
 #include "TSAnalyzer.h"
 #include <cstdint>
 #include <optional>
+#include <chrono>
 
 enum class Source {
     LIVE,
@@ -15,11 +16,18 @@ public:
     TimestampManager();
     ~TimestampManager();
     
-    // Process and adjust timestamps in a packet
+    // Process and adjust timestamps in a packet (FALLBACK only)
     // Returns true if timestamps were successfully adjusted
+    // Note: For LIVE source, this is now a no-op - live packets pass through unmodified
     bool adjustPacket(ts::TSPacket& packet, Source source, const TimestampInfo& input_ts);
     
+    // Track timestamps from live packets without modifying them
+    // Updates last_live_pts_ and wall-clock time for gap-aware fallback transitions
+    void trackLiveTimestamps(const TimestampInfo& ts_info);
+    
     // Called when switching sources to calculate new offset
+    // For LIVE: No-op (live is passthrough)
+    // For FALLBACK: Calculates offset based on last live PTS + elapsed gap time
     void onSourceSwitch(Source new_source, const TimestampInfo& first_packet_ts);
     
     // Get current output timestamps
@@ -32,7 +40,7 @@ public:
     
 private:
     // Adjust PTS/DTS in PES header
-    void adjustPESTimestamps(ts::TSPacket& packet, 
+    void adjustPESTimestamps(ts::TSPacket& packet,
                             std::optional<uint64_t> new_pts,
                             std::optional<uint64_t> new_dts);
     
@@ -41,9 +49,6 @@ private:
     
     // Write PTS value to PES header
     void writePTS(uint8_t* pes_header, uint64_t pts, uint8_t marker);
-    
-    // Ensure timestamp is monotonic (doesn't go backwards)
-    uint64_t enforceMonotonic(uint64_t ts, uint64_t last_ts);
     
     // Handle 33-bit timestamp wraparound
     uint64_t handleWraparound(uint64_t ts, uint64_t reference);
@@ -61,6 +66,10 @@ private:
     uint64_t last_live_pts_;
     uint64_t last_fallback_pts_;
     uint64_t last_fallback_dts_;
+    
+    // Wall-clock time tracking for gap-aware fallback transitions
+    std::chrono::steady_clock::time_point last_live_packet_wall_time_;
+    bool has_live_reference_;  // True once we've received at least one live packet
     
     // Detect loop boundaries in fallback stream
     bool detectLoopBoundary(Source source, uint64_t current_pts);

@@ -49,7 +49,7 @@ All containers run on a single Docker bridge network: `tsduck-multiplexer-networ
 docker exec ts-multiplexer ping nginx-rtmp
 
 # Connect to RTMP server
-rtmp://nginx-rtmp/live/test
+rtmp://nginx-rtmp/live/stream
 
 # Send UDP to multiplexer
 udp://multiplexer:10000
@@ -61,7 +61,7 @@ udp://multiplexer:10000
 docker exec ts-multiplexer ping nginx-rtmp-server
 
 # This will fail!
-rtmp://nginx-rtmp-server/live/test
+rtmp://nginx-rtmp-server/live/stream
 ```
 
 ## Port Configuration
@@ -113,7 +113,7 @@ This script will verify:
 ### config.yaml
 Uses the correct service name for RTMP:
 ```yaml
-rtmp_url: "rtmp://nginx-rtmp/live/test"
+rtmp_url: "rtmp://nginx-rtmp/live/stream"
 ```
 
 ### docker-compose.yml
@@ -187,8 +187,8 @@ docker exec ts-multiplexer ping nginx-rtmp
 
 ### RTMP Streaming
 Players can connect from outside Docker using:
-- **RTMP**: `rtmp://localhost:1935/live/test`
-- **HLS**: `http://localhost:8080/hls/test.m3u8`
+- **RTMP**: `rtmp://localhost:1935/live/stream`
+- **HLS**: `http://localhost:8080/hls/stream.m3u8`
 
 ### SRT Input
 Send live SRT stream to:

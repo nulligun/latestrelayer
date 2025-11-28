@@ -111,13 +111,22 @@
     </main>
 
     <footer class="footer">
-      <p>Latest Relayer v1.0 | Polling interval: {{ pollingInterval }}ms</p>
+      <a
+        v-if="lastCommitTime"
+        :href="lastCommitUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="footer-link"
+      >
+        Latest Relayer last updated {{ formattedTimeAgo }}.
+      </a>
+      <span v-else class="footer-loading">Loading update info...</span>
     </footer>
   </div>
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted, provide } from 'vue';
+import { ref, computed, onMounted, onUnmounted, provide, watch } from 'vue';
 import { WebSocketService } from './services/websocket.js';
 import SystemMetrics from './components/SystemMetrics.vue';
 import StreamStats from './components/StreamStats.vue';
@@ -149,6 +158,13 @@ export default {
     const lastUpdate = ref('Never');
     const error = ref(null);
     const pollingInterval = ref(2000);
+    
+    // GitHub commit tracking
+    const lastCommitTime = ref(null);
+    const lastCommitUrl = ref('https://github.com/nulligun/latestrelayer/commits');
+    const currentTime = ref(Date.now());
+    let commitRefreshInterval = null;
+    let timeUpdateInterval = null;
     
     // Provide WebSocket service to child components
     provide('wsService', wsService);
@@ -236,6 +252,87 @@ export default {
       if (!timestamp) return 'Never';
       const date = new Date(timestamp);
       return date.toLocaleTimeString();
+    };
+
+    // Format time ago with exactly two units, minutes as smallest
+    const formatTimeAgo = (dateString) => {
+      if (!dateString) return '';
+      
+      const date = new Date(dateString);
+      const now = currentTime.value;
+      const diffMs = now - date.getTime();
+      
+      // Convert to minutes (smallest unit)
+      const totalMinutes = Math.floor(diffMs / (1000 * 60));
+      
+      if (totalMinutes < 1) {
+        return '1 minute'; // Show at least 1 minute
+      }
+      
+      // Define time units in descending order
+      const units = [
+        { name: 'year', minutes: 365 * 24 * 60 },
+        { name: 'month', minutes: 30 * 24 * 60 },
+        { name: 'week', minutes: 7 * 24 * 60 },
+        { name: 'day', minutes: 24 * 60 },
+        { name: 'hour', minutes: 60 },
+        { name: 'minute', minutes: 1 }
+      ];
+      
+      let remaining = totalMinutes;
+      const parts = [];
+      
+      for (const unit of units) {
+        if (remaining >= unit.minutes) {
+          const count = Math.floor(remaining / unit.minutes);
+          remaining = remaining % unit.minutes;
+          parts.push(`${count} ${unit.name}${count !== 1 ? 's' : ''}`);
+          
+          // Stop after two parts
+          if (parts.length === 2) break;
+        }
+      }
+      
+      // If we only have one part (e.g., "5 minutes"), add "0" of the next smaller unit
+      // But only if there's a meaningful smaller unit to show
+      if (parts.length === 1) {
+        // Find the current unit index
+        const currentUnitName = parts[0].split(' ')[1].replace(/s$/, '');
+        const currentIndex = units.findIndex(u => u.name === currentUnitName);
+        
+        // If there's a smaller unit and it makes sense to show it
+        if (currentIndex < units.length - 1 && remaining > 0) {
+          const nextUnit = units[currentIndex + 1];
+          const nextCount = Math.floor(remaining / nextUnit.minutes);
+          if (nextCount > 0) {
+            parts.push(`${nextCount} ${nextUnit.name}${nextCount !== 1 ? 's' : ''}`);
+          }
+        }
+      }
+      
+      return parts.join(' ') + ' ago';
+    };
+    
+    // Computed property for formatted time
+    const formattedTimeAgo = computed(() => {
+      return formatTimeAgo(lastCommitTime.value);
+    });
+    
+    // Fetch last commit from GitHub
+    const fetchLastCommit = async () => {
+      try {
+        const response = await fetch('/api/github/last-commit');
+        if (response.ok) {
+          const data = await response.json();
+          lastCommitTime.value = data.date;
+          if (data.url) {
+            lastCommitUrl.value = data.url;
+          }
+          console.log('[app] Last commit:', data.date);
+        }
+      } catch (err) {
+        console.error('[app] Error fetching last commit:', err.message);
+      }
     };
 
     const handleMessage = (message) => {
@@ -402,6 +499,17 @@ export default {
     onMounted(() => {
       console.log('[app] Mounting dashboard...');
       wsService.connect(handleMessage, handleError, handleReconnect);
+      
+      // Fetch last commit info
+      fetchLastCommit();
+      
+      // Refresh commit data every 5 minutes
+      commitRefreshInterval = setInterval(fetchLastCommit, 5 * 60 * 1000);
+      
+      // Update current time every minute to refresh the "ago" display
+      timeUpdateInterval = setInterval(() => {
+        currentTime.value = Date.now();
+      }, 60 * 1000);
     });
 
     onUnmounted(() => {
@@ -409,6 +517,12 @@ export default {
       wsService.disconnect();
       if (switchingTimeout) {
         clearTimeout(switchingTimeout);
+      }
+      if (commitRefreshInterval) {
+        clearInterval(commitRefreshInterval);
+      }
+      if (timeUpdateInterval) {
+        clearInterval(timeUpdateInterval);
       }
     });
 
@@ -424,6 +538,9 @@ export default {
       statusSuccess,
       logMessages,
       wsReconnectCount,
+      lastCommitTime,
+      lastCommitUrl,
+      formattedTimeAgo,
       updateContainerStatus,
       handleSceneSwitching,
       toggleInterface
@@ -668,6 +785,22 @@ body {
   color: #64748b;
   font-size: 0.875rem;
   border-top: 1px solid #334155;
+}
+
+.footer-link {
+  color: #94a3b8;
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.footer-link:hover {
+  color: #e2e8f0;
+  text-decoration: underline;
+}
+
+.footer-loading {
+  color: #64748b;
+  font-style: italic;
 }
 
 @media (max-width: 768px) {

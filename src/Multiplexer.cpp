@@ -523,16 +523,20 @@ void Multiplexer::processPacket(ts::TSPacket& packet, Source source) {
         ? live_analyzer_->extractTimestamps(packet)
         : fallback_analyzer_->extractTimestamps(packet);
     
-    // Adjust timestamps
-    timestamp_mgr_->adjustPacket(packet, source, ts_info);
-    
-    // Remap PIDs if from fallback
-    if (source == Source::FALLBACK) {
+    if (source == Source::LIVE) {
+        // LIVE: Passthrough mode - only track timestamps, don't modify packet
+        // Camera is the canonical time source
+        timestamp_mgr_->trackLiveTimestamps(ts_info);
+        // No PID remapping needed (live PIDs are already correct)
+        // No continuity counter fix (preserve original stream integrity)
+    } else {
+        // FALLBACK: Full processing - adjust timestamps to continue from live timeline
+        timestamp_mgr_->adjustPacket(packet, source, ts_info);
+        // Remap PIDs to match live stream PIDs
         pid_mapper_->remapPacket(packet);
+        // Fix continuity counters for seamless stream
+        pid_mapper_->fixContinuityCounter(packet);
     }
-    
-    // Fix continuity counters
-    pid_mapper_->fixContinuityCounter(packet);
     
     // Write to RTMP output
     rtmp_output_->writePacket(packet);
