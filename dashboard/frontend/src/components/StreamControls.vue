@@ -101,7 +101,23 @@
               <div v-if="selectedImageFile && !uploadSuccess" class="selected-file">
                 Selected: {{ selectedImageFile }}
               </div>
-              <div v-if="uploadingFile" class="upload-status">Uploading...</div>
+              <div v-if="uploadingFile && !isProcessing" class="upload-status uploading">
+                <span class="upload-icon">
+                  <svg class="upload-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 19V5M5 12l7-7 7 7"/>
+                  </svg>
+                </span>
+                <span>Uploading...</span>
+              </div>
+              <div v-if="isProcessing" class="upload-status processing">
+                <span class="processing-icon">
+                  <svg class="processing-gear" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/>
+                    <path fill-rule="evenodd" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+                  </svg>
+                </span>
+                <span>Processing...</span>
+              </div>
               <div v-if="uploadSuccess" class="upload-status success">✓ Upload successful</div>
               <div v-if="uploadError" class="upload-status error">{{ uploadError }}</div>
             </div>
@@ -127,7 +143,23 @@
             <div v-if="selectedVideoFile && !uploadSuccess" class="selected-file">
               Selected: {{ selectedVideoFile }}
             </div>
-            <div v-if="uploadingFile" class="upload-status">Uploading...</div>
+            <div v-if="uploadingFile && !isProcessing" class="upload-status uploading">
+              <span class="upload-icon">
+                <svg class="upload-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 19V5M5 12l7-7 7 7"/>
+                </svg>
+              </span>
+              <span>Uploading...</span>
+            </div>
+            <div v-if="isProcessing" class="upload-status processing">
+              <span class="processing-icon">
+                <svg class="processing-gear" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/>
+                  <path fill-rule="evenodd" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+                </svg>
+              </span>
+              <span>Processing...</span>
+            </div>
             <div v-if="uploadSuccess" class="upload-status success">✓ Upload successful</div>
             <div v-if="uploadError" class="upload-status error">{{ uploadError }}</div>
           </div>
@@ -244,6 +276,7 @@ export default {
       browserUrl: '',
       updatingFallback: false,
       uploadingFile: false,
+      isProcessing: false,
       uploadSuccess: false,
       uploadError: null,
       selectedImageFile: null,
@@ -426,6 +459,7 @@ export default {
       
       this.selectedImageFile = file.name;
       this.uploadingFile = true;
+      this.isProcessing = false;
       this.uploadSuccess = false;
       this.uploadError = null;
       
@@ -436,36 +470,64 @@ export default {
       };
       reader.readAsDataURL(file);
       
-      try {
-        const formData = new FormData();
-        formData.append('image', file);
-        
-        const response = await fetch('/api/fallback/upload-image', {
-          method: 'POST',
-          body: formData
-        });
-        
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || 'Upload failed');
+      const formData = new FormData();
+      formData.append('image', file);
+      
+      // Use XMLHttpRequest to track upload progress
+      const xhr = new XMLHttpRequest();
+      
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const percentComplete = (e.loaded / e.total) * 100;
+          console.log(`[StreamControls] Image upload progress: ${percentComplete.toFixed(1)}%`);
+          // When upload is complete but response not yet received, switch to processing
+          if (percentComplete >= 100 && !this.isProcessing) {
+            this.isProcessing = true;
+            console.log('[StreamControls] Upload complete, now processing...');
+          }
         }
-        
-        const result = await response.json();
-        console.log('[StreamControls] Image uploaded:', result);
-        this.uploadSuccess = true;
-        
-        setTimeout(() => {
-          this.uploadSuccess = false;
-        }, 3000);
-      } catch (error) {
-        console.error('[StreamControls] Error uploading image:', error);
-        this.uploadError = error.message;
-        this.imagePreviewUrl = null;
-      } finally {
+      });
+      
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const result = JSON.parse(xhr.responseText);
+            console.log('[StreamControls] Image uploaded:', result);
+            this.uploadSuccess = true;
+            
+            setTimeout(() => {
+              this.uploadSuccess = false;
+            }, 3000);
+          } catch (error) {
+            this.uploadError = 'Invalid response from server';
+          }
+        } else {
+          try {
+            const errorData = JSON.parse(xhr.responseText);
+            this.uploadError = errorData.error || 'Upload failed';
+          } catch {
+            this.uploadError = `Upload failed with status ${xhr.status}`;
+          }
+          this.imagePreviewUrl = null;
+        }
         this.uploadingFile = false;
+        this.isProcessing = false;
         event.target.value = '';
         this.selectedImageFile = null;
-      }
+      });
+      
+      xhr.addEventListener('error', () => {
+        console.error('[StreamControls] Error uploading image');
+        this.uploadError = 'Network error during upload';
+        this.imagePreviewUrl = null;
+        this.uploadingFile = false;
+        this.isProcessing = false;
+        event.target.value = '';
+        this.selectedImageFile = null;
+      });
+      
+      xhr.open('POST', '/api/fallback/upload-image');
+      xhr.send(formData);
     },
     async handleVideoUpload(event) {
       const file = event.target.files[0];
@@ -477,44 +539,73 @@ export default {
       
       this.selectedVideoFile = file.name;
       this.uploadingFile = true;
+      this.isProcessing = false;
       this.uploadSuccess = false;
       this.uploadError = null;
       
-      try {
-        const formData = new FormData();
-        formData.append('video', file);
-        
-        const response = await fetch('/api/fallback/upload-video', {
-          method: 'POST',
-          body: formData
-        });
-        
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || 'Upload failed');
+      const formData = new FormData();
+      formData.append('video', file);
+      
+      // Use XMLHttpRequest to track upload progress
+      const xhr = new XMLHttpRequest();
+      
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const percentComplete = (e.loaded / e.total) * 100;
+          console.log(`[StreamControls] Video upload progress: ${percentComplete.toFixed(1)}%`);
+          // When upload is complete but response not yet received, switch to processing
+          if (percentComplete >= 100 && !this.isProcessing) {
+            this.isProcessing = true;
+            console.log('[StreamControls] Upload complete, now processing...');
+          }
         }
-        
-        const result = await response.json();
-        console.log('[StreamControls] Video uploaded:', result);
-        this.uploadSuccess = true;
-        
-        // Load the generated thumbnail
-        if (result.thumbnailGenerated) {
-          this.videoThumbnailUrl = `/api/fallback/video-thumbnail?t=${Date.now()}`;
+      });
+      
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const result = JSON.parse(xhr.responseText);
+            console.log('[StreamControls] Video uploaded:', result);
+            this.uploadSuccess = true;
+            
+            // Load the generated thumbnail
+            if (result.thumbnailGenerated) {
+              this.videoThumbnailUrl = `/api/fallback/video-thumbnail?t=${Date.now()}`;
+            }
+            
+            setTimeout(() => {
+              this.uploadSuccess = false;
+            }, 3000);
+          } catch (error) {
+            this.uploadError = 'Invalid response from server';
+          }
+        } else {
+          try {
+            const errorData = JSON.parse(xhr.responseText);
+            this.uploadError = errorData.error || 'Upload failed';
+          } catch {
+            this.uploadError = `Upload failed with status ${xhr.status}`;
+          }
+          this.videoThumbnailUrl = null;
         }
-        
-        setTimeout(() => {
-          this.uploadSuccess = false;
-        }, 3000);
-      } catch (error) {
-        console.error('[StreamControls] Error uploading video:', error);
-        this.uploadError = error.message;
-        this.videoThumbnailUrl = null;
-      } finally {
         this.uploadingFile = false;
+        this.isProcessing = false;
         event.target.value = '';
         this.selectedVideoFile = null;
-      }
+      });
+      
+      xhr.addEventListener('error', () => {
+        console.error('[StreamControls] Error uploading video');
+        this.uploadError = 'Network error during upload';
+        this.videoThumbnailUrl = null;
+        this.uploadingFile = false;
+        this.isProcessing = false;
+        event.target.value = '';
+        this.selectedVideoFile = null;
+      });
+      
+      xhr.open('POST', '/api/fallback/upload-video');
+      xhr.send(formData);
     },
     handleIframeError() {
       console.warn('[StreamControls] Iframe failed to load, likely due to cross-origin restrictions');
@@ -1095,6 +1186,62 @@ h2 {
   background: rgba(239, 68, 68, 0.1);
   color: #ef4444;
   border: 1px solid #ef4444;
+}
+
+/* Upload status with animation */
+.upload-status.uploading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+  border: 1px solid #3b82f6;
+}
+
+.upload-status.processing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(249, 115, 22, 0.1);
+  color: #f97316;
+  border: 1px solid #f97316;
+}
+
+.upload-icon,
+.processing-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.upload-arrow {
+  width: 18px;
+  height: 18px;
+  animation: upload-bounce 0.8s ease-in-out infinite;
+}
+
+.processing-gear {
+  width: 18px;
+  height: 18px;
+  animation: gear-spin 1.5s linear infinite;
+}
+
+@keyframes upload-bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes gear-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .url-input-group {

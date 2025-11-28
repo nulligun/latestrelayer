@@ -22,7 +22,9 @@ const NGINX_STATS = process.env.NGINX_STATS || 'http://nginx-rtmp:8080/stat';
 const POLLING_INTERVAL = parseInt(process.env.POLLING_INTERVAL || '2000');
 const SRT_PORT = process.env.SRT_PORT || '1937';
 const SRT_DOMAIN = process.env.SRT_DOMAIN || 'localhost';
+const RTMP_PORT = process.env.RTMP_PORT || '1935';
 const KICK_CHANNEL = process.env.KICK_CHANNEL || '';
+const NGINX_RTMP_HLS = process.env.NGINX_RTMP_HLS || 'http://nginx-rtmp:8080';
 const SHARED_DIR = '/app/shared';
 const FALLBACK_CONFIG_PATH = path.join(SHARED_DIR, 'fallback_config.json');
 const KICK_CONFIG_PATH = path.join(SHARED_DIR, 'kick_config.json');
@@ -35,6 +37,7 @@ console.log(`[config] Controller API: ${CONTROLLER_API}`);
 console.log(`[config] Nginx Stats: ${NGINX_STATS}`);
 console.log(`[config] Polling Interval: ${POLLING_INTERVAL}ms`);
 console.log(`[config] SRT: srt://${SRT_DOMAIN}:${SRT_PORT}`);
+console.log(`[config] RTMP Preview: rtmp://${SRT_DOMAIN}:${RTMP_PORT}/live/test`);
 console.log('='.repeat(60));
 
 const controller = new ControllerService(CONTROLLER_API);
@@ -336,11 +339,60 @@ app.get('/api/config', async (req, res) => {
       srtPort: SRT_PORT,
       srtDomain: SRT_DOMAIN,
       protocol: 'srt',
+      previewUrl: `rtmp://${SRT_DOMAIN}:${RTMP_PORT}/live/test`,
+      hlsUrl: '/api/hls/test.m3u8',
+      rtmpPort: RTMP_PORT,
       kickChannel: KICK_CHANNEL
     });
   } catch (error) {
     console.error('[api] Error getting config:', error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// HLS Proxy - forwards requests to nginx-rtmp server
+app.get('/api/hls/*', async (req, res) => {
+  const hlsPath = req.params[0];
+  const targetUrl = `${NGINX_RTMP_HLS}/hls/${hlsPath}`;
+  
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    
+    const response = await fetch(targetUrl, {
+      method: 'GET',
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      return res.status(response.status).send('HLS stream not available');
+    }
+    
+    // Set appropriate content-type headers
+    const contentType = response.headers.get('content-type');
+    if (contentType) {
+      res.setHeader('Content-Type', contentType);
+    } else if (hlsPath.endsWith('.m3u8')) {
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+    } else if (hlsPath.endsWith('.ts')) {
+      res.setHeader('Content-Type', 'video/mp2t');
+    }
+    
+    // Set CORS and caching headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-cache');
+    
+    // Stream the response body
+    const arrayBuffer = await response.arrayBuffer();
+    res.send(Buffer.from(arrayBuffer));
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.error('[hls-proxy] Request timeout for:', hlsPath);
+      return res.status(504).send('HLS proxy timeout');
+    }
+    console.error('[hls-proxy] Error proxying HLS:', error.message);
+    res.status(502).send('HLS proxy error');
   }
 });
 

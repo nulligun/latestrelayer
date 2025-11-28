@@ -2,9 +2,25 @@
   <div class="stream-card">
     <h2>Camera Details</h2>
     
-    <!-- Camera Details - 3 Column Grid -->
+    <!-- Camera Details - 4 Column Grid -->
     <div class="camera-details-grid">
-      <!-- Column 1: Copy Button + RTMP URL -->
+      <!-- Column 1: Preview URL -->
+      <div class="info-item url-item">
+        <div class="info-label">PREVIEW URL</div>
+        <div class="url-with-copy">
+          <button
+            class="copy-button"
+            :class="{ copied: copyPreviewSuccess }"
+            @click="copyPreviewToClipboard"
+            :disabled="!previewUrl"
+          >
+            {{ copyPreviewSuccess ? 'Copied!' : 'Copy' }}
+          </button>
+          <div class="url-display">{{ previewUrl }}</div>
+        </div>
+      </div>
+      
+      <!-- Column 2: Camera URL -->
       <div class="info-item url-item">
         <div class="info-label">CAMERA URL</div>
         <div class="url-with-copy">
@@ -20,7 +36,7 @@
         </div>
       </div>
       
-      <!-- Column 2: Stream Status -->
+      <!-- Column 3: Stream Status -->
       <div class="info-item">
         <div class="info-label">Stream Status</div>
         <div class="info-value status-badge" :class="isKickLive ? 'status-kick-live' : 'status-kick-offline'">
@@ -37,7 +53,7 @@
         </div>
       </div>
       
-      <!-- Column 3: Current Scene -->
+      <!-- Column 4: Current Scene -->
       <div class="info-item">
         <div class="info-label">Current Scene</div>
         <div class="info-value scene-value">
@@ -98,7 +114,9 @@ export default {
   data() {
     return {
       localSrtUrl: '',
-      copySuccess: false
+      localPreviewUrl: '',
+      copySuccess: false,
+      copyPreviewSuccess: false
     };
   },
   computed: {
@@ -107,6 +125,9 @@ export default {
     },
     srtUrl() {
       return this.cameraConfig?.srtUrl || this.localSrtUrl || 'Loading...';
+    },
+    previewUrl() {
+      return this.cameraConfig?.previewUrl || this.localPreviewUrl || 'Loading...';
     },
     displayScene() {
       if (!this.currentScene) return 'Unknown';
@@ -170,9 +191,11 @@ export default {
         const response = await fetch('/api/config');
         const config = await response.json();
         this.localSrtUrl = config.srtUrl;
+        this.localPreviewUrl = config.previewUrl;
       } catch (error) {
         console.error('[StreamStats] Error fetching SRT config:', error);
         this.localSrtUrl = 'Error loading URL';
+        this.localPreviewUrl = 'Error loading URL';
       }
     },
     async copyToClipboard() {
@@ -198,6 +221,36 @@ export default {
           this.copySuccess = true;
           setTimeout(() => {
             this.copySuccess = false;
+          }, 2000);
+        } catch (err) {
+          console.error('Fallback copy failed:', err);
+        }
+        document.body.removeChild(textArea);
+      }
+    },
+    async copyPreviewToClipboard() {
+      if (!this.previewUrl || this.previewUrl === 'Error loading URL') return;
+      
+      try {
+        await navigator.clipboard.writeText(this.previewUrl);
+        this.copyPreviewSuccess = true;
+        setTimeout(() => {
+          this.copyPreviewSuccess = false;
+        }, 2000);
+      } catch (error) {
+        console.error('Failed to copy preview URL to clipboard:', error);
+        const textArea = document.createElement('textarea');
+        textArea.value = this.previewUrl;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {
+          document.execCommand('copy');
+          this.copyPreviewSuccess = true;
+          setTimeout(() => {
+            this.copyPreviewSuccess = false;
           }, 2000);
         } catch (err) {
           console.error('Fallback copy failed:', err);
@@ -239,11 +292,17 @@ h2 {
 
 .camera-details-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 9fr 9fr 6fr 7fr;
   gap: 20px;
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1400px) {
+  .camera-details-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
   .camera-details-grid {
     grid-template-columns: 1fr;
   }

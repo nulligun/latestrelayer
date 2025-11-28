@@ -71,6 +71,11 @@
       </div>
     </div>
     
+    <!-- Video Preview Section -->
+    <div class="preview-section">
+      <VideoPreview :hlsUrl="hlsUrl" />
+    </div>
+    
     <ConfirmationModal
       :isVisible="showKickConfirmModal"
       :title="kickConfirmTitle"
@@ -83,13 +88,15 @@
 </template>
 
 <script>
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import ConfirmationModal from './ConfirmationModal.vue';
+import VideoPreview from './VideoPreview.vue';
 
 export default {
   name: 'SimplifiedView',
   components: {
-    ConfirmationModal
+    ConfirmationModal,
+    VideoPreview
   },
   props: {
     containers: {
@@ -127,6 +134,20 @@ export default {
     const showKickConfirmModal = ref(false);
     const pendingKickAction = ref(null);
     const kickChannelUrl = ref(null);
+    const hlsUrl = ref('/api/hls/test.m3u8');
+
+    // Fetch HLS URL from config
+    const fetchConfig = async () => {
+      try {
+        const response = await fetch('/api/config');
+        const data = await response.json();
+        if (data.hlsUrl) {
+          hlsUrl.value = data.hlsUrl;
+        }
+      } catch (err) {
+        console.error('[SimplifiedView] Error fetching config:', err);
+      }
+    };
 
     // Computed: Is Kick live
     const isKickLive = computed(() => {
@@ -360,13 +381,18 @@ export default {
         if (data.kickChannel) {
           kickChannelUrl.value = `https://kick.com/${data.kickChannel}`;
         }
+        if (data.hlsUrl) {
+          hlsUrl.value = data.hlsUrl;
+        }
       } catch (err) {
         console.error('[SimplifiedView] Error fetching Kick channel:', err);
       }
     };
 
     // Fetch on mount
-    fetchKickChannel();
+    onMounted(() => {
+      fetchKickChannel();
+    });
 
     return {
       error,
@@ -394,7 +420,8 @@ export default {
       cancelKickToggle,
       confirmKickToggle,
       handlePrivacyToggle,
-      kickChannelUrl
+      kickChannelUrl,
+      hlsUrl
     };
   }
 };
@@ -596,6 +623,10 @@ export default {
 .scene-duration {
   font-size: 1.1rem;
   color: #64748b;
+}
+
+.preview-section {
+  margin-bottom: 40px;
 }
 
 .control-title {

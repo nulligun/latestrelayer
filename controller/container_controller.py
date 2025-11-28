@@ -991,8 +991,6 @@ class ContainerController:
             # Split into lines and filter empty lines
             log_lines = [line for line in logs_str.split('\n') if line.strip()]
             
-            print(f"[controller] Retrieved {len(log_lines)} log lines for {container_name}")
-            
             return {
                 "container": short_name,
                 "logs": log_lines,
