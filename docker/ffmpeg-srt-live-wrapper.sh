@@ -25,9 +25,10 @@ sleep 3
 echo "[Wrapper] Starting ffmpeg SRT live stream..."
 ffmpeg -nostdin \
     -loglevel info \
-    -i 'srt://0.0.0.0:1937?mode=listener' \
+    -i 'srt://0.0.0.0:1937?mode=listener&latency=200000&transtype=live&payload_size=1316' \
     -c copy \
-    -f mpegts 'udp://multiplexer:10000?pkt_size=1316' &
+    -f mpegts 'udp://multiplexer:10000?pkt_size=1316' \
+    -f mpegts 'udp://host.docker.internal:10002?pkt_size=1316' &
 
 FFMPEG_PID=$!
 echo "[Wrapper] FFmpeg started with PID $FFMPEG_PID"

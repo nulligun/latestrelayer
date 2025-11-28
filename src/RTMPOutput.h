@@ -10,6 +10,14 @@
 
 class RTMPOutput {
 public:
+    // Connection states (must be declared before methods that use it)
+    enum class ConnectionState {
+        DISCONNECTED,
+        CONNECTING,
+        CONNECTED,
+        RECONNECTING
+    };
+    
     explicit RTMPOutput(const std::string& rtmp_url);
     ~RTMPOutput();
     
@@ -28,13 +36,14 @@ public:
     // Get packets written count
     uint64_t getPacketsWritten() const { return packets_written_.load(); }
     
-    // Connection states
-    enum class ConnectionState {
-        DISCONNECTED,
-        CONNECTING,
-        CONNECTED,
-        RECONNECTING
-    };
+    // Get connection state
+    ConnectionState getConnectionState() const { return connection_state_.load(); }
+    
+    // Check if connected
+    bool isConnected() const { return connection_state_.load() == ConnectionState::CONNECTED; }
+    
+    // Get milliseconds since last write (-1 if no write yet)
+    int64_t getMsSinceLastWrite() const;
     
 private:
     // Spawn FFmpeg process with pipes for stdin and stderr

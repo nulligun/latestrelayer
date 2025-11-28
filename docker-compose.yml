@@ -157,7 +157,9 @@ services:
       - ./src:/app/src:ro
       - ./CMakeLists.txt:/app/CMakeLists.txt:ro
       - ${SHARED_FOLDER}/multiplexer-build:/app/build
-      - ${SHARED_FOLDER}/tsduck:/opt/tsduck-cache
+      - ${SHARED_FOLDER}/tsduck-src:/opt/tsduck-src
+      - ${SHARED_FOLDER}/tsduck-build:/opt/tsduck-build
+      - ${SHARED_FOLDER}/tsduck:/opt/tsduck
     networks:
       - tsnet
     restart: unless-stopped
@@ -174,7 +176,7 @@ services:
         max-file: "3"
 
   # ============================================================================
-  # Tier 4: Stream Sources (requires multiplexer healthy)
+  # Tier 4: Stream Sources (will restart until they connect)
   # ============================================================================
 
   ffmpeg-srt-live:
@@ -183,9 +185,6 @@ services:
       context: .
       dockerfile: docker/Dockerfile.ffmpeg-srt-live
     container_name: ffmpeg-srt-live
-    depends_on:
-      multiplexer:
-        condition: service_healthy
     ports:
       - "1937:1937/udp"
     networks:
@@ -209,9 +208,6 @@ services:
       context: .
       dockerfile: docker/Dockerfile.ffmpeg-fallback
     container_name: ffmpeg-fallback
-    depends_on:
-      multiplexer:
-        condition: service_healthy
     volumes:
       - ${SHARED_FOLDER}:/media:rw
     networks:
@@ -274,8 +270,6 @@ services:
     container_name: mock-camera
     profiles:
       - manual
-    depends_on:
-      - ffmpeg-srt-live
     networks:
       - tsnet
     restart: unless-stopped

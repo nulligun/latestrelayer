@@ -23,14 +23,15 @@ sleep 5
 
 # Start ffmpeg in background
 echo "[Wrapper] Starting mock camera stream..."
-ffmpeg -nostdin \
-    -loglevel info \
-    -re \
-    -f lavfi -i testsrc=size=1280x720:rate=30 \
-    -f lavfi -i sine=frequency=440:sample_rate=48000 \
-    -c:v libx264 -preset slow -tune film -b:v 2M -g 60 -keyint_min 60 \
-    -c:a aac -b:a 128k \
-    -f mpegts 'srt://ffmpeg-srt-live:1937?mode=caller' &
+
+ffmpeg -re \
+  -f lavfi -i "testsrc2=size=1280x720:rate=30" \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+  -filter_complex "[1:a]aformat=channel_layouts=stereo[aout]" \
+  -map 0:v -map "[aout]" \
+  -c:v libx264 -tune zerolatency -preset veryfast -pix_fmt yuv420p \
+  -c:a aac -b:a 128k \
+  -f mpegts "srt://ffmpeg-srt-live:1937?mode=caller" &
 
 FFMPEG_PID=$!
 echo "[Wrapper] FFmpeg started with PID $FFMPEG_PID"

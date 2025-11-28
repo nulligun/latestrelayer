@@ -92,11 +92,17 @@ bool RTMPOutput::writePacket(const ts::TSPacket& packet) {
     ConnectionState state = connection_state_.load();
     if (state != ConnectionState::CONNECTED && state != ConnectionState::CONNECTING) {
         packets_dropped_++;
+        // Log periodically to avoid spam
+        if (packets_dropped_ % 1000 == 1) {
+            std::cerr << "[RTMPOutput] Dropping packets - connection state: "
+                      << static_cast<int>(state) << " (0=DISCONNECTED, 1=CONNECTING, 2=CONNECTED, 3=RECONNECTING)" << std::endl;
+        }
         return false;
     }
     
     // Verify pipe is valid
     if (stdin_pipe_[1] < 0) {
+        std::cerr << "[RTMPOutput] Write failed - stdin pipe is closed (fd=" << stdin_pipe_[1] << ")" << std::endl;
         handleDisconnection();
         packets_dropped_++;
         return false;
@@ -107,6 +113,10 @@ bool RTMPOutput::writePacket(const ts::TSPacket& packet) {
     
     if (written != ts::PKT_SIZE) {
         // Pipe broken or write error - handle disconnection
+        int err = errno;
+        std::cerr << "[RTMPOutput] Write failed - expected " << ts::PKT_SIZE
+                  << " bytes, wrote " << written << " bytes, errno=" << err
+                  << " (" << strerror(err) << ")" << std::endl;
         handleDisconnection();
         packets_dropped_++;
         return false;
@@ -174,13 +184,15 @@ bool RTMPOutput::spawnFFmpeg() {
         close(stderr_pipe_[1]);
         
         // Execute FFmpeg with timestamp handling compatible with -c copy
+        // Note: -f mpegts explicitly specifies input format for faster detection
         execlp("ffmpeg",
                "ffmpeg",
+               "-loglevel", "info",                // Ensure we get connection status in logs
+               "-f", "mpegts",                     // Explicit input format for faster detection
                "-i", "-",                          // Input from stdin
                "-c", "copy",                       // Copy codec (no re-encoding)
-               "-fflags", "+genpts+igndts",        // Generate PTS if missing, ignore DTS issues
+               "-fflags", "+genpts",               // Generate PTS if missing (preserve DTS for B-frames)
                "-avoid_negative_ts", "make_zero",  // Shift timestamps to avoid negatives
-               "-max_interleave_delta", "0",       // Don't reorder packets
                "-f", "flv",                        // Output format FLV
                rtmp_url_.c_str(),                  // RTMP URL
                nullptr);
@@ -202,14 +214,21 @@ bool RTMPOutput::spawnFFmpeg() {
     should_stop_monitor_ = false;
     monitor_thread_ = std::thread(&RTMPOutput::monitorFFmpegOutput, this);
     
-    // Give FFmpeg 2 seconds to report connection, then assume success
+    // Give FFmpeg 2 seconds to report connection, then verify process health
     std::thread([this]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(2000));
         
         if (connection_state_.load() == ConnectionState::CONNECTING) {
-            std::cout << "[RTMPOutput] Grace period elapsed - assuming connection succeeded" << std::endl;
-            connection_state_ = ConnectionState::CONNECTED;
-            reconnection_attempts_ = 0;
+            // CRITICAL FIX: Check if FFmpeg is still alive before assuming success
+            if (checkProcessHealth()) {
+                std::cout << "[RTMPOutput] Grace period elapsed - FFmpeg process alive, connection verified" << std::endl;
+                connection_state_ = ConnectionState::CONNECTED;
+                reconnection_attempts_ = 0;
+            } else {
+                std::cerr << "[RTMPOutput] Grace period elapsed - FFmpeg process DIED during connection!" << std::endl;
+                std::cerr << "[RTMPOutput] Triggering reconnection..." << std::endl;
+                connection_state_ = ConnectionState::DISCONNECTED;
+            }
         }
     }).detach();
     
@@ -289,6 +308,7 @@ void RTMPOutput::closeFFmpeg() {
 
 bool RTMPOutput::checkProcessHealth() {
     if (ffmpeg_pid_ <= 0) {
+        std::cerr << "[RTMPOutput] checkProcessHealth: No valid PID (pid=" << ffmpeg_pid_ << ")" << std::endl;
         return false;
     }
     
@@ -298,13 +318,31 @@ bool RTMPOutput::checkProcessHealth() {
     
     if (result == ffmpeg_pid_) {
         // Process has exited
+        std::cerr << "[RTMPOutput] ========================================" << std::endl;
         std::cerr << "[RTMPOutput] ✗ FFmpeg process exited unexpectedly" << std::endl;
+        std::cerr << "[RTMPOutput] ========================================" << std::endl;
         if (WIFEXITED(status)) {
-            std::cerr << "[RTMPOutput] Exit code: " << WEXITSTATUS(status) << std::endl;
+            int exit_code = WEXITSTATUS(status);
+            std::cerr << "[RTMPOutput] Exit code: " << exit_code << std::endl;
+            // Common FFmpeg exit codes:
+            // 0 = success, 1 = error, 255 = invalid arguments
+            if (exit_code == 1) {
+                std::cerr << "[RTMPOutput] Exit code 1 typically means FFmpeg encountered an error" << std::endl;
+                std::cerr << "[RTMPOutput] Check FFmpeg stderr output above for details" << std::endl;
+            }
+        } else if (WIFSIGNALED(status)) {
+            int signal = WTERMSIG(status);
+            std::cerr << "[RTMPOutput] Killed by signal: " << signal << " (" << strsignal(signal) << ")" << std::endl;
         }
+        ffmpeg_pid_ = -1;  // Mark as invalid
+        return false;
+    } else if (result == -1) {
+        // Error checking process
+        std::cerr << "[RTMPOutput] checkProcessHealth: waitpid error: " << strerror(errno) << std::endl;
         return false;
     }
     
+    // Process is still running (result == 0)
     return true;
 }
 
@@ -430,21 +468,36 @@ void RTMPOutput::parseFFmpegOutput(const std::string& line) {
 void RTMPOutput::handleDisconnection() {
     ConnectionState current_state = connection_state_.load();
     
-    // Only log and trigger reconnection if we were connected
-    if (current_state == ConnectionState::CONNECTED) {
+    // CRITICAL FIX: Handle disconnection for both CONNECTED and CONNECTING states
+    // FFmpeg can fail during the connection phase, not just after connected
+    if (current_state == ConnectionState::CONNECTED ||
+        current_state == ConnectionState::CONNECTING) {
+        
+        ConnectionState prev_state = current_state;
         connection_state_ = ConnectionState::DISCONNECTED;
         total_disconnections_++;
         disconnect_time_ = std::chrono::steady_clock::now();
         
         std::cerr << "[RTMPOutput] ========================================" << std::endl;
-        std::cerr << "[RTMPOutput] ✗ RTMP CONNECTION LOST" << std::endl;
+        if (prev_state == ConnectionState::CONNECTED) {
+            std::cerr << "[RTMPOutput] ✗ RTMP CONNECTION LOST" << std::endl;
+        } else {
+            std::cerr << "[RTMPOutput] ✗ RTMP CONNECTION FAILED DURING SETUP" << std::endl;
+        }
         std::cerr << "[RTMPOutput] ========================================" << std::endl;
+        std::cerr << "[RTMPOutput] Previous state: " << static_cast<int>(prev_state)
+                  << " (1=CONNECTING, 2=CONNECTED)" << std::endl;
         std::cerr << "[RTMPOutput] Write error detected - entering reconnection mode" << std::endl;
         std::cerr << "[RTMPOutput] Packets will be dropped until reconnection succeeds" << std::endl;
+        std::cerr << "[RTMPOutput] Total disconnections so far: " << total_disconnections_.load() << std::endl;
         
         // Close the broken FFmpeg process
         std::lock_guard<std::mutex> lock(reconnection_mutex_);
         closeFFmpeg();
+    } else {
+        // Log when we're called in an unexpected state (for debugging)
+        std::cerr << "[RTMPOutput] handleDisconnection called but state is "
+                  << static_cast<int>(current_state) << " - ignoring" << std::endl;
     }
 }
 
@@ -464,6 +517,18 @@ void RTMPOutput::reconnectionLoop() {
     }
     
     std::cout << "[RTMPOutput] Reconnection thread stopped" << std::endl;
+}
+
+int64_t RTMPOutput::getMsSinceLastWrite() const {
+    if (packets_written_.load() == 0) {
+        return -1;  // No write yet
+    }
+    
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - last_write_time_
+    );
+    return elapsed.count();
 }
 
 void RTMPOutput::attemptReconnection() {
