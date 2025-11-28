@@ -2,6 +2,7 @@
 set -e
 
 echo "=== TSDuck Multiplexer Entrypoint ==="
+echo "All build artifacts stored on host-mounted volumes"
 
 # Signal handler for graceful shutdown during setup
 cleanup() {
@@ -12,135 +13,264 @@ cleanup() {
 # Trap SIGTERM and SIGINT during compilation phase
 trap cleanup SIGTERM SIGINT
 
-# TSDuck cache directory (mounted from host)
-TSDUCK_CACHE="/opt/tsduck-cache"
+# Host-mounted directories
+TSDUCK_SRC="/opt/tsduck-src"
+TSDUCK_BUILD="/opt/tsduck-build"
+TSDUCK_INSTALL="/opt/tsduck"
+MULTIPLEXER_BUILD="/app/build"
 
-# Function to check if TSDuck is properly installed in the system
-check_tsduck_system() {
-    [ -f "/usr/bin/tsp" ] && [ -f "/usr/lib/libtsduck.so" ]
+# TSDuck build options (same as original Dockerfile)
+TSDUCK_MAKE_OPTS="NOTELETEXT=1 NOSRT=1 NORIST=1 NODTAPI=1 NOVATEK=1 NOWARNING=1 CXXFLAGS_EXTRA=-Wno-error=attributes"
+
+# ============================================================================
+# TSDuck Source Management
+# ============================================================================
+
+clone_tsduck_source() {
+    echo "[tsduck] Cloning TSDuck source to host mount..."
+    rm -rf "$TSDUCK_SRC"/*
+    git clone --depth=1 https://github.com/tsduck/tsduck.git "$TSDUCK_SRC"
+    
+    # Remove problem NIP files (same as original)
+    cd "$TSDUCK_SRC"
+    rm -rf src/libtsduck/dtv/dvbnip
+    find src/tsplugins -name "*nip*" -delete 2>/dev/null || true
+    find src/tstools -name "*nip*" -delete 2>/dev/null || true
+    
+    # Mark the source with a timestamp
+    date +%s > "$TSDUCK_SRC/.clone_timestamp"
+    echo "[tsduck] TSDuck source cloned successfully"
 }
 
-# Function to check if TSDuck is cached on host
-check_tsduck_cache() {
-    [ -f "$TSDUCK_CACHE/bin/tsp" ] && [ -f "$TSDUCK_CACHE/lib/libtsduck.so" ]
+check_tsduck_source() {
+    # Check if TSDuck source exists and has key files
+    [ -d "$TSDUCK_SRC/src" ] && [ -f "$TSDUCK_SRC/Makefile" ]
 }
 
-# Function to install TSDuck from cache to system
-install_tsduck_from_cache() {
-    echo "[tsduck] Installing TSDuck from host cache..."
-    cp -a "$TSDUCK_CACHE/bin/"* /usr/bin/
-    cp -a "$TSDUCK_CACHE/lib/"* /usr/lib/
-    if [ -d "$TSDUCK_CACHE/include" ]; then
-        cp -a "$TSDUCK_CACHE/include/"* /usr/include/
-    fi
-    if [ -d "$TSDUCK_CACHE/share" ]; then
-        cp -a "$TSDUCK_CACHE/share/"* /usr/share/
-    fi
-    ldconfig
-    echo "[tsduck] TSDuck installed from cache successfully"
+# ============================================================================
+# TSDuck Build Management
+# ============================================================================
+
+build_tsduck() {
+    echo "[tsduck] Building TSDuck from source..."
+    echo "[tsduck] This will take ~35 minutes on first run"
+    
+    cd "$TSDUCK_SRC"
+    
+    # Build TSDuck
+    echo "[tsduck] Running make..."
+    make -j$(nproc) $TSDUCK_MAKE_OPTS
+    
+    # Create timestamp marker for the build
+    date +%s > "$TSDUCK_BUILD/.build_timestamp"
+    
+    echo "[tsduck] TSDuck build complete"
 }
 
-# Function to export TSDuck from Docker layer to cache
-export_tsduck_to_cache() {
-    echo "[tsduck] Exporting TSDuck to host cache for future use..."
-    mkdir -p "$TSDUCK_CACHE/bin" "$TSDUCK_CACHE/lib" "$TSDUCK_CACHE/include" "$TSDUCK_CACHE/share"
+install_tsduck() {
+    echo "[tsduck] Installing TSDuck to host mount..."
+    
+    cd "$TSDUCK_SRC"
+    
+    # Create install directories
+    mkdir -p "$TSDUCK_INSTALL/bin"
+    mkdir -p "$TSDUCK_INSTALL/lib/tsduck"
+    mkdir -p "$TSDUCK_INSTALL/include/tsduck"
+    mkdir -p "$TSDUCK_INSTALL/include/tscore"
+    mkdir -p "$TSDUCK_INSTALL/share/tsduck"
     
     # Copy binaries
-    cp -a /usr/bin/ts* "$TSDUCK_CACHE/bin/" 2>/dev/null || true
+    cp -a bin/release-x86_64-linux-gnu/ts* "$TSDUCK_INSTALL/bin/" 2>/dev/null || \
+    cp -a bin/release-*/ts* "$TSDUCK_INSTALL/bin/" 2>/dev/null || true
     
     # Copy libraries
-    cp -a /usr/lib/libtsduck.so "$TSDUCK_CACHE/lib/" 2>/dev/null || true
-    cp -a /usr/lib/libtscore.so "$TSDUCK_CACHE/lib/" 2>/dev/null || true
-    cp -a /usr/lib/tsduck "$TSDUCK_CACHE/lib/" 2>/dev/null || true
+    cp -a bin/release-x86_64-linux-gnu/libtsduck.so "$TSDUCK_INSTALL/lib/" 2>/dev/null || \
+    cp -a bin/release-*/libtsduck.so "$TSDUCK_INSTALL/lib/" 2>/dev/null || true
+    cp -a bin/release-x86_64-linux-gnu/libtscore.so "$TSDUCK_INSTALL/lib/" 2>/dev/null || \
+    cp -a bin/release-*/libtscore.so "$TSDUCK_INSTALL/lib/" 2>/dev/null || true
+    
+    # Copy plugins
+    cp -a bin/release-x86_64-linux-gnu/tsplugins/*.so "$TSDUCK_INSTALL/lib/tsduck/" 2>/dev/null || \
+    cp -a bin/release-*/tsplugins/*.so "$TSDUCK_INSTALL/lib/tsduck/" 2>/dev/null || true
     
     # Copy headers
-    cp -a /usr/include/tsduck "$TSDUCK_CACHE/include/" 2>/dev/null || true
-    cp -a /usr/include/tscore "$TSDUCK_CACHE/include/" 2>/dev/null || true
+    cp -a src/libtsduck/*.h "$TSDUCK_INSTALL/include/tsduck/" 2>/dev/null || true
+    cp -a src/libtsduck/**/*.h "$TSDUCK_INSTALL/include/tsduck/" 2>/dev/null || true
+    cp -a src/libtscore/*.h "$TSDUCK_INSTALL/include/tscore/" 2>/dev/null || true
     
-    # Copy share files (pkgconfig, etc.)
-    cp -a /usr/share/tsduck "$TSDUCK_CACHE/share/" 2>/dev/null || true
-    cp -a /usr/share/pkgconfig/tsduck.pc "$TSDUCK_CACHE/share/" 2>/dev/null || true
-    cp -a /usr/share/pkgconfig/tscore.pc "$TSDUCK_CACHE/share/" 2>/dev/null || true
+    # Create pkgconfig directory and files
+    mkdir -p "$TSDUCK_INSTALL/lib/pkgconfig"
     
-    echo "[tsduck] TSDuck exported to cache: $TSDUCK_CACHE"
+    cat > "$TSDUCK_INSTALL/lib/pkgconfig/tsduck.pc" << 'PKGCONFIG'
+prefix=/opt/tsduck
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: tsduck
+Description: TSDuck MPEG Transport Stream Toolkit
+Version: 3.x
+Libs: -L${libdir} -ltsduck -ltscore
+Cflags: -I${includedir}/tsduck -I${includedir}/tscore
+PKGCONFIG
+
+    cat > "$TSDUCK_INSTALL/lib/pkgconfig/tscore.pc" << 'PKGCONFIG'
+prefix=/opt/tsduck
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: tscore
+Description: TSDuck Core Library
+Version: 3.x
+Libs: -L${libdir} -ltscore
+Cflags: -I${includedir}/tscore
+PKGCONFIG
+    
+    # Create timestamp marker
+    date +%s > "$TSDUCK_INSTALL/.install_timestamp"
+    
+    echo "[tsduck] TSDuck installed to $TSDUCK_INSTALL"
 }
 
-# Handle TSDuck installation/caching
-if [ -d "$TSDUCK_CACHE" ]; then
-    if check_tsduck_cache; then
-        echo "[tsduck] Found TSDuck in host cache"
-        install_tsduck_from_cache
-    elif check_tsduck_system; then
-        echo "[tsduck] TSDuck found in Docker layer, exporting to cache..."
-        export_tsduck_to_cache
-    else
-        echo "[tsduck] WARNING: No TSDuck found in cache or Docker layer!"
+check_tsduck_installed() {
+    # Check if TSDuck is properly installed on host mount
+    [ -f "$TSDUCK_INSTALL/bin/tsp" ] && [ -f "$TSDUCK_INSTALL/lib/libtsduck.so" ]
+}
+
+setup_tsduck_environment() {
+    # Add TSDuck to PATH and library path
+    export PATH="$TSDUCK_INSTALL/bin:$PATH"
+    export LD_LIBRARY_PATH="$TSDUCK_INSTALL/lib:$TSDUCK_INSTALL/lib/tsduck:${LD_LIBRARY_PATH:-}"
+    export PKG_CONFIG_PATH="$TSDUCK_INSTALL/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    export TSDUCK_INSTALL_PREFIX="$TSDUCK_INSTALL"
+    
+    # Update library cache for this session
+    ldconfig "$TSDUCK_INSTALL/lib" 2>/dev/null || true
+    
+    echo "[tsduck] Environment configured:"
+    echo "  PATH includes: $TSDUCK_INSTALL/bin"
+    echo "  LD_LIBRARY_PATH includes: $TSDUCK_INSTALL/lib"
+}
+
+# ============================================================================
+# TSDuck Orchestration
+# ============================================================================
+
+ensure_tsduck() {
+    echo "[tsduck] Checking TSDuck installation..."
+    
+    # Check if already installed
+    if check_tsduck_installed; then
+        echo "[tsduck] TSDuck found in host mount: $TSDUCK_INSTALL"
+        setup_tsduck_environment
+        echo "[tsduck] TSDuck version: $(tsp --version 2>&1 | head -1 || echo 'unknown')"
+        return 0
     fi
-else
-    echo "[tsduck] Cache directory not mounted, using Docker layer TSDuck"
-fi
+    
+    echo "[tsduck] TSDuck not found, need to build..."
+    
+    # Check if source exists
+    if ! check_tsduck_source; then
+        echo "[tsduck] Source not found, cloning..."
+        clone_tsduck_source
+    else
+        echo "[tsduck] Source found in host mount: $TSDUCK_SRC"
+    fi
+    
+    # Build TSDuck
+    build_tsduck
+    
+    # Install to host mount
+    install_tsduck
+    
+    # Setup environment
+    setup_tsduck_environment
+    
+    echo "[tsduck] TSDuck version: $(tsp --version 2>&1 | head -1 || echo 'unknown')"
+}
 
-# Verify TSDuck is available
-if ! check_tsduck_system; then
-    echo "ERROR: TSDuck is not properly installed!"
-    exit 1
-fi
-echo "[tsduck] TSDuck version: $(tsp --version 2>&1 | head -1)"
+# ============================================================================
+# Multiplexer Compilation (same as before, but uses host-mounted TSDuck)
+# ============================================================================
 
-# Check if source files are mounted
-if [ ! -d "/app/src" ]; then
-    echo "ERROR: Source directory /app/src not found!"
-    echo "Make sure to mount the source code volume in docker-compose.yml"
-    exit 1
-fi
+compile_multiplexer() {
+    echo "[multiplexer] Checking compilation status..."
+    
+    # Check if source files are mounted
+    if [ ! -d "/app/src" ]; then
+        echo "ERROR: Source directory /app/src not found!"
+        echo "Make sure to mount the source code volume in docker-compose.yml"
+        exit 1
+    fi
 
-if [ ! -f "/app/CMakeLists.txt" ]; then
-    echo "ERROR: CMakeLists.txt not found!"
-    echo "Make sure to mount CMakeLists.txt volume in docker-compose.yml"
-    exit 1
-fi
+    if [ ! -f "/app/CMakeLists.txt" ]; then
+        echo "ERROR: CMakeLists.txt not found!"
+        echo "Make sure to mount CMakeLists.txt volume in docker-compose.yml"
+        exit 1
+    fi
 
-# Create build directory if it doesn't exist
-mkdir -p /app/build
-cd /app/build
+    # Create build directory if it doesn't exist
+    mkdir -p "$MULTIPLEXER_BUILD"
+    cd "$MULTIPLEXER_BUILD"
 
-# Check if we need to compile
-NEED_COMPILE=0
+    # Check if we need to compile
+    NEED_COMPILE=0
+    BINARY_PATH="$MULTIPLEXER_BUILD/ts-multiplexer"
 
-# Check if binary exists
-if [ ! -f "/usr/local/bin/ts-multiplexer" ]; then
-    echo "Binary not found - compiling..."
-    NEED_COMPILE=1
-else
-    # Check if any source file is newer than the binary
-    if [ -n "$(find /app/src -name '*.cpp' -newer /usr/local/bin/ts-multiplexer)" ] || \
-       [ -n "$(find /app/src -name '*.h' -newer /usr/local/bin/ts-multiplexer)" ] || \
-       [ /app/CMakeLists.txt -nt /usr/local/bin/ts-multiplexer ]; then
-        echo "Source files changed - recompiling..."
+    # Check if binary exists
+    if [ ! -f "$BINARY_PATH" ]; then
+        echo "[multiplexer] Binary not found - compiling..."
         NEED_COMPILE=1
     else
-        echo "Binary is up to date - skipping compilation"
+        # Check if any source file is newer than the binary
+        if [ -n "$(find /app/src -name '*.cpp' -newer "$BINARY_PATH" 2>/dev/null)" ] || \
+           [ -n "$(find /app/src -name '*.h' -newer "$BINARY_PATH" 2>/dev/null)" ] || \
+           [ /app/CMakeLists.txt -nt "$BINARY_PATH" ]; then
+            echo "[multiplexer] Source files changed - recompiling..."
+            NEED_COMPILE=1
+        else
+            echo "[multiplexer] Binary is up to date - skipping compilation"
+        fi
     fi
-fi
 
-# Compile if needed
-if [ "$NEED_COMPILE" -eq 1 ]; then
-    echo "Running CMake..."
-    cmake .. || { echo "CMake failed!"; exit 1; }
+    # Compile if needed
+    if [ "$NEED_COMPILE" -eq 1 ]; then
+        echo "[multiplexer] Running CMake..."
+        cmake -DTSDUCK_INSTALL_PREFIX="$TSDUCK_INSTALL" .. || { echo "CMake failed!"; exit 1; }
+        
+        echo "[multiplexer] Running Make..."
+        make -j$(nproc) || { echo "Make failed!"; exit 1; }
+        
+        echo "[multiplexer] Compilation complete!"
+    fi
     
-    echo "Running Make..."
-    make -j$(nproc) || { echo "Make failed!"; exit 1; }
-    
-    echo "Installing binary..."
-    cp ts-multiplexer /usr/local/bin/ || { echo "Installation failed!"; exit 1; }
-    
-    echo "Compilation complete!"
-else
-    echo "Skipping compilation - binary is current"
-fi
+    # Ensure binary is executable
+    chmod +x "$BINARY_PATH"
+}
 
-# Execute the CMD (exec replaces shell with process, signals go directly to it)
-echo "Starting multiplexer: $@"
+# ============================================================================
+# Main Execution
+# ============================================================================
+
+echo "=== Phase 1: TSDuck Setup ==="
+ensure_tsduck
+
+echo ""
+echo "=== Phase 2: Multiplexer Compilation ==="
+compile_multiplexer
+
+echo ""
+echo "=== Phase 3: Starting Multiplexer ==="
+echo "Starting: $@"
+
 # Remove trap since exec will replace this shell with the target process
 trap - SIGTERM SIGINT
-exec "$@"
+
+# Execute the binary from the build directory
+if [ "$1" = "ts-multiplexer" ]; then
+    shift
+    exec "$MULTIPLEXER_BUILD/ts-multiplexer" "$@"
+else
+    exec "$@"
+fi

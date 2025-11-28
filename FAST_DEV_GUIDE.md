@@ -2,37 +2,45 @@
 
 ## Overview
 
-This project now uses an optimized build system that eliminates the 30-minute rebuild problem. The key improvements are:
+This project uses a **host-mounted build system** where ALL build artifacts are stored on your host filesystem. The Docker image contains only build dependencies - no compiled binaries. This means:
 
-1. **TSDuck Pre-compiled & Host-Cached**: Built once and persisted to host filesystem (survives even `docker system prune`)
-2. **Source Code Mounted**: Your code changes are instantly visible in the container
-3. **Auto-compilation**: Container automatically recompiles only when source changes
-4. **Persistent Build Cache**: CMake cache and object files persist on host filesystem
-5. **SSL Certificate Persistence**: Self-signed certs persist across container rebuilds
+1. **`docker compose build multiplexer`** → **seconds** (no compilation happens at build time)
+2. **First container start** → ~35 min (TSDuck compiles once to host)
+3. **Subsequent starts** → seconds (uses cached TSDuck from host)
+4. **`docker system prune -a`** → no impact (everything on host filesystem)
+5. **Code changes** → 5-10 seconds (only multiplexer recompiles)
 
 ## Build Time Comparison
 
-| Operation | Old | New | Improvement |
-|-----------|-----|-----|-------------|
-| Initial build | 30 min | ~35 min* | First time only |
-| Rebuild container | 30 min | ~2 min | 93% faster |
-| Code change iteration | 30 min | 5-10 sec | 99% faster |
-| After `docker system prune` | 30 min | ~2 min** | 93% faster |
+| Operation | Old Multi-Stage | New Host-Mounted |
+|-----------|-----------------|------------------|
+| `docker compose build` | ~35 min | **~10 seconds** |
+| First container start | ~30 sec | ~35 min* |
+| Code change + restart | 5-10 sec | 5-10 sec |
+| After `docker system prune` | ~35 min | **~10 seconds** |
+| After `docker builder prune` | ~35 min | **~10 seconds** |
 
-*First build compiles TSDuck once, then it's cached to host filesystem
-**TSDuck binaries are restored from host cache, only multiplexer recompiles
+*First start only - TSDuck compiles once and is cached on host forever
 
 ## Quick Start
 
 ### Initial Setup (One Time Only)
 
 ```bash
-# Build the container (TSDuck will compile and be cached)
+# 1. Build the container image (fast - just installs dependencies)
 docker compose build multiplexer
 
-# This takes ~35 minutes the first time
-# After this, TSDuck never needs to compile again!
+# 2. Start the container (first time will compile TSDuck ~35 min)
+docker compose up multiplexer
 ```
+
+The first startup will:
+1. Clone TSDuck source to `./shared/tsduck-src/`
+2. Compile TSDuck to `./shared/tsduck-build/`
+3. Install TSDuck binaries to `./shared/tsduck/`
+4. Compile the multiplexer to `./shared/multiplexer-build/`
+
+All subsequent starts will skip steps 1-3 entirely.
 
 ### Daily Development Workflow
 
@@ -46,49 +54,117 @@ docker compose restart multiplexer
 # That's it! Takes 5-10 seconds.
 ```
 
-### How It Works
+## How It Works
 
-#### Source Code Mounting
+### Host-Mounted Build System
 
-Your source files are mounted from the host:
-- `./src` → `/app/src` (read-only)
-- `./CMakeLists.txt` → `/app/CMakeLists.txt` (read-only)
-
-Changes you make on your host are immediately visible in the container.
-
-#### Auto-Compilation on Startup
-
-The container's entrypoint script ([`docker/entrypoint.sh`](docker/entrypoint.sh)):
-1. Checks if the binary exists
-2. Compares timestamps of source files vs binary
-3. Only recompiles if source is newer than binary
-4. Uses cached build artifacts for incremental compilation
-
-#### Host-Mounted Shared Directory
-
-All persistent data is stored in `./shared/` on your host machine:
+All build artifacts are stored on your host filesystem in `./shared/`:
 
 ```
 ./shared/
-├── ssl/                    # nginx-proxy SSL certificates
-│   ├── cert.pem
-│   └── key.pem
-├── tsduck/                 # Pre-built TSDuck binaries
-│   ├── bin/                # ts* executables
-│   ├── lib/                # libtsduck.so, libtscore.so
-│   ├── include/            # TSDuck headers
-│   └── share/              # pkgconfig files
-└── multiplexer-build/      # CMake cache and build artifacts
-    ├── CMakeCache.txt
-    ├── *.o                 # Object files
-    └── ts-multiplexer      # Compiled binary
+├── tsduck-src/              # TSDuck source code (cloned from GitHub)
+│   ├── src/
+│   ├── Makefile
+│   └── .clone_timestamp
+├── tsduck-build/            # TSDuck build artifacts (from make)
+│   └── .build_timestamp
+├── tsduck/                  # Installed TSDuck binaries
+│   ├── bin/                 # ts* executables
+│   ├── lib/                 # libtsduck.so, libtscore.so
+│   ├── include/             # TSDuck headers
+│   └── .install_timestamp
+├── multiplexer-build/       # Multiplexer build artifacts
+│   ├── CMakeCache.txt
+│   ├── *.o                  # Object files
+│   └── ts-multiplexer       # Compiled binary
+└── ssl/                     # nginx-proxy SSL certificates
 ```
 
-**Benefits:**
-- Survives `docker system prune`, image rebuilds, and container destruction
-- SSL certificates persist (no more clicking "Accept" in browser)
-- TSDuck binaries cached on host (skips 35-min rebuild)
-- Incremental multiplexer compilation via cached object files
+### Docker Image Contents
+
+The Docker image contains **only dependencies**, no compiled code:
+
+- Ubuntu 22.04 base
+- Build tools: cmake, gcc, git, make
+- TSDuck dependencies: libssl, libcurl, libedit, libpcap, libdvbcsa
+- Multiplexer dependencies: yaml-cpp, zlib
+- Runtime: ffmpeg, diagnostic tools
+- Entrypoint script
+
+### Volume Mounts
+
+```yaml
+volumes:
+  # Source code (read-only)
+  - ./src:/app/src:ro
+  - ./CMakeLists.txt:/app/CMakeLists.txt:ro
+  - ./config.yaml:/app/config.yaml:ro
+  
+  # TSDuck build system (read-write)
+  - ./shared/tsduck-src:/opt/tsduck-src
+  - ./shared/tsduck-build:/opt/tsduck-build
+  - ./shared/tsduck:/opt/tsduck
+  
+  # Multiplexer build (read-write)
+  - ./shared/multiplexer-build:/app/build
+```
+
+### Startup Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Container Startup                             │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                    ┌─────────────────┐
+                    │ TSDuck installed│
+                    │  on host mount? │
+                    └────────┬────────┘
+                             │
+              ┌──────────────┴──────────────┐
+              │ No                          │ Yes
+              ▼                             ▼
+    ┌─────────────────┐           ┌─────────────────┐
+    │ Clone TSDuck    │           │ Setup env vars  │
+    │ source to host  │           │ PATH, LD_PATH   │
+    └────────┬────────┘           └────────┬────────┘
+             │                             │
+             ▼                             │
+    ┌─────────────────┐                    │
+    │ Build TSDuck    │                    │
+    │ ~35 min         │                    │
+    └────────┬────────┘                    │
+             │                             │
+             ▼                             │
+    ┌─────────────────┐                    │
+    │ Install TSDuck  │                    │
+    │ to host mount   │                    │
+    └────────┬────────┘                    │
+             │                             │
+             └──────────────┬──────────────┘
+                            │
+                            ▼
+                  ┌─────────────────┐
+                  │ Source changed? │
+                  └────────┬────────┘
+                           │
+            ┌──────────────┴──────────────┐
+            │ Yes                         │ No
+            ▼                             ▼
+   ┌─────────────────┐          ┌─────────────────┐
+   │ Compile         │          │ Skip compile    │
+   │ multiplexer     │          │                 │
+   └────────┬────────┘          └────────┬────────┘
+            │                            │
+            └──────────────┬─────────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │ Run             │
+                  │ ts-multiplexer  │
+                  └─────────────────┘
+```
 
 ## Common Tasks
 
@@ -98,28 +174,56 @@ All persistent data is stored in `./shared/` on your host machine:
 docker compose logs -f multiplexer
 ```
 
-### Force Full Rebuild
+### Force Rebuild TSDuck
 
-If you need to recompile TSDuck (rare):
+If you need to rebuild TSDuck (e.g., new version):
 
 ```bash
-# Clear the host TSDuck cache
+# Remove TSDuck installation (keeps source)
 rm -rf ./shared/tsduck/*
 
-# Delete Docker builder cache
-docker builder prune -a
+# Or remove everything including source
+rm -rf ./shared/tsduck-src/*
+rm -rf ./shared/tsduck-build/*
+rm -rf ./shared/tsduck/*
 
-# Rebuild from scratch - TSDuck will be cached to host after build
+# Restart - will rebuild
+docker compose restart multiplexer
+```
+
+### Force Rebuild Multiplexer
+
+```bash
+# Remove multiplexer build cache
+rm -rf ./shared/multiplexer-build/*
+
+# Restart - will recompile
+docker compose restart multiplexer
+```
+
+### Rebuild Docker Image (Fast!)
+
+```bash
+# This is now fast because image has no compiled code
+docker compose build multiplexer
+
+# Even with --no-cache, still fast
 docker compose build multiplexer --no-cache
 ```
 
-### Clean Build Artifacts
+### Manual Compilation
 
 ```bash
-# Remove the multiplexer build cache (on host)
-rm -rf ./shared/multiplexer-build/*
+# Enter the container
+docker compose exec multiplexer bash
 
-# Next restart will do a full compile of multiplexer (not TSDuck)
+# Manually compile
+cd /app/build
+cmake ..
+make -j$(nproc)
+
+# Exit and restart
+exit
 docker compose restart multiplexer
 ```
 
@@ -133,181 +237,90 @@ rm -rf ./shared/ssl/*
 docker compose restart nginx-proxy
 ```
 
-### Manual Compilation
-
-If you prefer manual control:
-
-```bash
-# Enter the container
-docker compose exec multiplexer bash
-
-# Manually compile
-cd /app/build
-cmake ..
-make -j$(nproc)
-cp ts-multiplexer /usr/local/bin/
-
-# Exit and restart
-exit
-docker compose restart multiplexer
-```
-
-## Architecture
-
-### Multi-Stage Docker Build
-
-```
-┌─────────────────────────────────────┐
-│   Stage 1: tsduck-builder          │
-│   • Compiles TSDuck from source     │
-│   • Only runs once, then cached     │
-│   • Result: Pre-built binaries      │
-└──────────────┬──────────────────────┘
-               │ COPY binaries
-               ▼
-┌─────────────────────────────────────┐
-│   Stage 2: Runtime                  │
-│   • Lightweight base image          │
-│   • TSDuck binaries from Stage 1    │
-│   • Build tools (cmake, gcc)        │
-│   • Auto-compile entrypoint         │
-└─────────────────────────────────────┘
-               ▲
-               │ Volume mounts
-┌──────────────┴──────────────────────┐
-│   Host Files                        │
-│   • ./src/*.cpp (your code)         │
-│   • ./CMakeLists.txt                │
-│   Build Cache Volume                │
-│   • CMake cache                     │
-│   • Object files                    │
-└─────────────────────────────────────┘
-```
-
-### File Structure
-
-**Host (./shared/):**
-```
-./shared/
-├── ssl/                    # Mounted to nginx-proxy:/etc/nginx/ssl
-├── tsduck/                 # Mounted to multiplexer:/opt/tsduck-cache
-└── multiplexer-build/      # Mounted to multiplexer:/app/build
-```
-
-**Inside multiplexer container:**
-```
-/app/
-├── src/               # Mounted from host (read-only)
-├── CMakeLists.txt    # Mounted from host (read-only)
-├── build/            # Host-mounted: ./shared/multiplexer-build
-│   ├── CMakeCache.txt
-│   ├── *.o           # Object files for incremental builds
-│   └── ts-multiplexer
-└── config.yaml       # Mounted from host (read-only)
-
-/opt/tsduck-cache/     # Host-mounted: ./shared/tsduck
-├── bin/               # TSDuck binaries (copied to /usr/bin on startup)
-├── lib/               # TSDuck libraries (copied to /usr/lib on startup)
-├── include/           # TSDuck headers
-└── share/             # pkgconfig files
-
-/usr/bin/
-└── ts*               # TSDuck binaries (installed from cache or Docker layer)
-
-/usr/lib/
-├── libtsduck.so      # TSDuck library
-└── tsduck/           # TSDuck plugins
-```
-
 ## Troubleshooting
+
+### "pkg-config: tsduck not found"
+
+TSDuck isn't installed. Either:
+1. Wait for first startup to complete (~35 min)
+2. Or check `./shared/tsduck/lib/pkgconfig/tsduck.pc` exists
 
 ### "Binary not found" on startup
 
-The first startup after building will compile the multiplexer. This is normal and takes ~30 seconds.
+Normal on first startup or after clearing build cache. The entrypoint will compile it.
 
 ### "Source files changed - recompiling" but nothing changed
 
-Check file timestamps. Touch a file to force recompilation:
+CMake tracks timestamps. Touch a file to force recompilation:
 
 ```bash
 touch src/main.cpp
 docker compose restart multiplexer
 ```
 
-### Compilation errors
+### TSDuck build fails
 
-View the full build output:
+Check the logs for specific errors:
 
 ```bash
-docker compose up multiplexer
+docker compose logs multiplexer
 ```
+
+Common issues:
+- Network problems cloning from GitHub
+- Missing build dependencies (shouldn't happen with the Dockerfile)
+- Disk space issues
 
 ### Very slow builds even after caching
 
-Check Docker disk space:
+Verify host mounts have content:
 
 ```bash
-docker system df
-docker system prune  # Clean up if needed
+ls -la ./shared/tsduck/bin/
+ls -la ./shared/tsduck/lib/
 ```
+
+If empty, the volume might not be mounted correctly. Check docker-compose.yml.
+
+## Architecture Details
+
+### Why Host Mounts Instead of Docker Volumes?
+
+1. **Survives `docker system prune -a`** - Docker volumes get deleted, host dirs don't
+2. **Survives `docker builder prune`** - Build cache gets deleted, host dirs don't
+3. **Easy inspection** - Just `ls ./shared/tsduck/` to see installed files
+4. **Easy cleanup** - Just `rm -rf ./shared/tsduck-*` to reset
+5. **Portable** - Copy `./shared/tsduck/` to another machine to share builds
+
+### Why Compile at Runtime Instead of Build Time?
+
+1. **Fast image builds** - `docker compose build` takes seconds
+2. **Flexible** - Same image works with different TSDuck versions
+3. **Debuggable** - Can see compile errors in logs, not buried in build output
+4. **Recoverable** - If build fails, fix and restart (no need to rebuild image)
 
 ## Comparison to Old Approach
 
-### Old Workflow (TSDUCK_BUILD_FIX.md)
-- Compiled TSDuck from source every build
-- Source code baked into image
-- Any change required full 30-minute rebuild
-- No incremental compilation
+### Old Multi-Stage Dockerfile
+- TSDuck compiled FROM SOURCE during `docker compose build`
+- TSDuck binaries baked INTO the Docker image (~500MB+)
+- Any `--no-cache` or builder prune = 35 min rebuild
+- `docker system prune` = 35 min rebuild
 
-### New Workflow
-- TSDuck compiled once, cached to host filesystem
-- Source code mounted from host
-- Changes visible immediately
-- Auto-recompile only if needed (~5-10 sec)
-- Incremental builds via host-mounted cache
-- Survives `docker system prune` and image rebuilds
-
-## Advanced Tips
-
-### Speed Up Initial TSDuck Build
-
-The TSDuck compilation can be parallelized. If you have a powerful machine:
-
-```dockerfile
-# In docker/Dockerfile.multiplexer, line with make command:
-make -j$(nproc) NOTELETEXT=1 ...
-```
-
-Already using all CPU cores with `$(nproc)`.
-
-### Skip Auto-Compilation
-
-If you want instant startup (no compilation check):
-
-```bash
-# Modify docker-compose.yml temporarily:
-command: ["sh", "-c", "sleep infinity"]
-
-# Then manually run when ready:
-docker compose exec multiplexer /usr/local/bin/entrypoint.sh ts-multiplexer /app/config.yaml
-```
-
-### Development with IDE
-
-Since source is mounted, you can use your local IDE:
-- Edit code with VSCode, vim, etc. on your host
-- Changes are immediately in container
-- Restart container to apply
+### New Host-Mounted System
+- `docker compose build` = seconds (only installs deps)
+- TSDuck compiled at container start (first time only)
+- TSDuck stored on HOST filesystem
+- `docker system prune -a && docker compose build` = seconds
+- TSDuck compiled once, never again (unless you delete `./shared/tsduck/`)
 
 ## Summary
 
-**Never wait 30 minutes again!**
+**Never wait 35 minutes for `docker compose build` again!**
 
-- Initial setup: ~35 minutes (one time)
-- Container recreate: ~2 minutes
-- Code changes: 5-10 seconds
-- After `docker system prune`: ~2 minutes (TSDuck restored from host cache)
+- Image build: **~10 seconds** (always)
+- First container start: ~35 minutes (one time)
+- Subsequent starts: **seconds** (TSDuck cached on host)
+- After `docker system prune -a`: **~10 seconds** to rebuild image
 
-Your source code lives on your host, the container auto-compiles when needed, and TSDuck binaries are cached on your host filesystem in `./shared/tsduck/`. This cache survives Docker image rebuilds, container destruction, and even `docker system prune`.
-
-SSL certificates are also cached in `./shared/ssl/`, so you won't need to click "Accept" in your browser after container restarts.
+Your TSDuck binaries live in `./shared/tsduck/` on your host filesystem. This cache survives Docker image rebuilds, `docker system prune`, and even Docker itself being reinstalled.

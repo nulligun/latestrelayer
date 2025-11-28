@@ -100,6 +100,11 @@ void HttpServer::setPrivacyCallback(PrivacyCallback callback) {
     privacy_callback_ = std::move(callback);
 }
 
+void HttpServer::setHealthCallback(HealthCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    health_callback_ = std::move(callback);
+}
+
 void HttpServer::serverLoop() {
     while (running_.load()) {
         // Use poll to wait for connections with timeout
@@ -224,13 +229,46 @@ std::string HttpServer::handleRequest(const std::string& method, const std::stri
     
     // Handle GET /health
     if (method == "GET" && path == "/health") {
-        std::string response_body = "{\"status\": \"ok\"}";
+        std::ostringstream response_body;
+        std::string http_status = "200 OK";
+        
+        // Query health status from callback
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            if (health_callback_) {
+                HealthStatus status = health_callback_();
+                
+                // Determine overall health
+                // Healthy if connected and wrote packets recently (within 5 seconds)
+                bool is_healthy = status.rtmp_connected &&
+                                  status.ms_since_last_write >= 0 &&
+                                  status.ms_since_last_write < 5000;
+                
+                if (!is_healthy) {
+                    http_status = "503 Service Unavailable";
+                }
+                
+                response_body << "{"
+                              << "\"status\": \"" << (is_healthy ? "healthy" : "unhealthy") << "\", "
+                              << "\"rtmp\": {"
+                              << "\"connected\": " << (status.rtmp_connected ? "true" : "false") << ", "
+                              << "\"packets_written\": " << status.packets_written << ", "
+                              << "\"ms_since_last_write\": " << status.ms_since_last_write
+                              << "}"
+                              << "}";
+            } else {
+                // No callback set - return basic status
+                response_body << "{\"status\": \"ok\", \"rtmp\": null}";
+            }
+        }
+        
+        std::string body = response_body.str();
         std::ostringstream response;
-        response << "HTTP/1.1 200 OK\r\n"
+        response << "HTTP/1.1 " << http_status << "\r\n"
                  << "Content-Type: application/json\r\n"
-                 << "Content-Length: " << response_body.length() << "\r\n"
+                 << "Content-Length: " << body.length() << "\r\n"
                  << "\r\n"
-                 << response_body;
+                 << body;
         return response.str();
     }
     

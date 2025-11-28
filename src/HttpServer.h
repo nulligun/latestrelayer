@@ -7,12 +7,22 @@
 #include <mutex>
 
 /**
+ * Health status structure returned by health callback
+ */
+struct HealthStatus {
+    bool rtmp_connected = false;
+    uint64_t packets_written = 0;
+    int64_t ms_since_last_write = -1;  // -1 means no write yet
+};
+
+/**
  * Simple HTTP server for receiving callbacks from the controller.
  * Listens on a specified port and handles POST /privacy endpoint.
  */
 class HttpServer {
 public:
     using PrivacyCallback = std::function<void(bool enabled)>;
+    using HealthCallback = std::function<HealthStatus()>;
     
     explicit HttpServer(uint16_t port);
     ~HttpServer();
@@ -29,6 +39,9 @@ public:
     
     // Register callback for privacy mode changes
     void setPrivacyCallback(PrivacyCallback callback);
+    
+    // Register callback for health status
+    void setHealthCallback(HealthCallback callback);
     
     // Check if server is running
     bool isRunning() const { return running_.load(); }
@@ -50,4 +63,5 @@ private:
     
     std::mutex callback_mutex_;
     PrivacyCallback privacy_callback_;
+    HealthCallback health_callback_;
 };

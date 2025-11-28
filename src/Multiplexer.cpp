@@ -33,11 +33,13 @@ bool Multiplexer::initialize() {
     
     std::cout << "[Multiplexer] Initializing..." << std::endl;
     
-    // Start HTTP server for receiving callbacks (privacy mode changes)
+    // Start HTTP server for receiving callbacks (privacy mode changes, health status)
     http_server_ = std::make_unique<HttpServer>(HTTP_SERVER_PORT);
     http_server_->setPrivacyCallback([this](bool enabled) {
         onPrivacyModeChange(enabled);
     });
+    
+    // Note: Health callback will be set after rtmp_output_ is created
     
     if (!http_server_->start()) {
         std::cerr << "[Multiplexer] Failed to start HTTP server on port " << HTTP_SERVER_PORT << std::endl;
@@ -121,6 +123,17 @@ bool Multiplexer::initialize() {
         std::cerr << "[Multiplexer] Failed to start RTMP output" << std::endl;
         return false;
     }
+    
+    // Now set health callback (rtmp_output_ is available)
+    http_server_->setHealthCallback([this]() -> HealthStatus {
+        HealthStatus status;
+        if (rtmp_output_) {
+            status.rtmp_connected = rtmp_output_->isConnected();
+            status.packets_written = rtmp_output_->getPacketsWritten();
+            status.ms_since_last_write = rtmp_output_->getMsSinceLastWrite();
+        }
+        return status;
+    });
     
     initialized_ = true;
     start_time_ = std::chrono::steady_clock::now();

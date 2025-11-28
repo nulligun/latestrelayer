@@ -2,7 +2,7 @@
 # Health check script for ts-multiplexer
 # Verifies that:
 # 1. UDP receivers are ready and listening on ports 10000 and 10001
-# 2. TCP connection to nginx-rtmp server on port 1935 is established
+# 2. RTMP output is connected and actively writing data (via internal API)
 
 set -e
 
@@ -17,18 +17,25 @@ check_udp_port() {
     fi
 }
 
-# Check TCP connection to nginx-rtmp
-check_rtmp_connection() {
-    local host="nginx-rtmp"
-    local port=1935
+# Check RTMP output health via internal HTTP API
+# This is isolated within the container - no external connections needed
+check_rtmp_health() {
     local timeout=2
+    local response
     
-    # Use netcat to test TCP connection
-    # -z : scan without sending data
-    # -w : timeout in seconds
-    if nc -z -w ${timeout} ${host} ${port} 2>/dev/null; then
+    # Query the internal health endpoint
+    response=$(curl -sf --max-time ${timeout} "http://localhost:8091/health" 2>/dev/null)
+    
+    if [ $? -ne 0 ]; then
+        echo "Health API not responding"
+        return 1
+    fi
+    
+    # Check if status is "healthy" (connected and writing data)
+    if echo "$response" | grep -q '"status": "healthy"'; then
         return 0
     else
+        echo "RTMP output unhealthy: $response"
         return 1
     fi
 }
@@ -45,12 +52,12 @@ if ! check_udp_port 10001; then
     exit 1
 fi
 
-# Check RTMP connection
-if ! check_rtmp_connection; then
-    echo "Health check failed: Cannot establish TCP connection to nginx-rtmp:1935"
+# Check RTMP output health
+if ! check_rtmp_health; then
+    echo "Health check failed: RTMP output not healthy"
     exit 1
 fi
 
 # All checks passed
-echo "Health check passed: UDP ports (10000, 10001) ready and RTMP connection established"
+echo "Health check passed: UDP ports (10000, 10001) ready and RTMP output healthy"
 exit 0
