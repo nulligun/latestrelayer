@@ -14,7 +14,7 @@ set -e
 
 OUTPUT="${1:-fallback.mp4}"
 
-# Check if running in non-interactive mode (for Docker builds)
+# Skip interactive confirmation when running in container/non-interactive mode
 if [ -t 0 ] && [ -f "$OUTPUT" ]; then
     echo "Warning: $OUTPUT already exists!"
     read -p "Do you want to overwrite it? (y/N) " -n 1 -r
@@ -83,10 +83,6 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "✓ Generation successful!"
     echo "✓ Output file: $OUTPUT"
-    echo ""
-    echo "Next steps:"
-    echo "  1. Run ./convert-fallback.sh to convert to MPEG-TS format"
-    echo "  2. Start the system with: docker-compose up"
 else
     echo ""
     echo "✗ Generation failed!"

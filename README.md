@@ -77,8 +77,7 @@ The multiplexer intelligently switches between live and fallback sources while m
 
 - Docker 20.10+
 - Docker Compose 2.0+
-- A fallback MP4 file (H.264/AAC recommended)
-- FFmpeg installed locally (for converting MP4 to TS)
+- Environment variables configured (SHARED_FOLDER)
 
 ### For Local Development
 
@@ -100,7 +99,10 @@ tsduck-multiplexer/
 ├── ARCHITECTURE.md             # Detailed architecture docs
 ├── README.md                   # This file
 ├── docker/
-│   └── Dockerfile.multiplexer  # Multiplexer container
+│   ├── Dockerfile.multiplexer  # Multiplexer container
+│   ├── Dockerfile.ffmpeg-fallback  # Fallback container
+│   ├── generate-fallback.sh   # Generates default BRB video
+│   └── convert-fallback.sh    # Converts MP4 to MPEG-TS
 ├── src/
 │   ├── main.cpp               # Entry point
 │   ├── Config.{h,cpp}         # Configuration parser
@@ -112,9 +114,8 @@ tsduck-multiplexer/
 │   ├── StreamSwitcher.{h,cpp} # LIVE/FALLBACK logic
 │   ├── RTMPOutput.{h,cpp}     # FFmpeg RTMP output
 │   └── Multiplexer.{h,cpp}    # Main orchestrator
-├── fallback.mp4               # Your source fallback video file
-├── fallback.ts                # Converted MPEG-TS fallback (generated)
-└── convert-fallback.sh        # Conversion script
+└── shared/                     # Shared folder (mounted to containers)
+    └── fallback.ts            # Auto-generated or custom fallback video
 ```
 
 ## Installation
@@ -127,17 +128,11 @@ tsduck-multiplexer/
    cd tsduck-multiplexer
    ```
 
-2. **Add your fallback video:**
+2. **Configure environment:**
    ```bash
-   # Place your fallback MP4 file in the project root
-   cp /path/to/your/fallback.mp4 ./fallback.mp4
-   
-   # Convert to MPEG-TS with proper PSI tables
-   chmod +x convert-fallback.sh
-   ./convert-fallback.sh
+   # Create .env file with your shared folder path
+   echo "SHARED_FOLDER=/path/to/your/shared/folder" >> .env
    ```
-   
-   **Important:** The conversion step is required to generate proper MPEG-TS with PAT/PMT tables. The script converts H.264 from AVCC (MP4) to Annex B format (MPEG-TS) and generates proper PSI tables.
 
 3. **Build and start:**
    ```bash
@@ -146,6 +141,22 @@ tsduck-multiplexer/
    ```
    
    The system includes an integrated nginx-rtmp server, so no external RTMP server is required for testing.
+   
+   **Note:** On first startup, if no `fallback.ts` exists in the shared folder, the ffmpeg-fallback container will automatically generate a default fallback video (black screen with "BRB..." text). This takes ~10-15 seconds.
+
+4. **Optional: Custom fallback video**
+   
+   If you want to use your own fallback video instead of the auto-generated one:
+   ```bash
+   # Convert your video to MPEG-TS format and place in shared folder
+   ffmpeg -i /path/to/your/video.mp4 \
+     -c:v libx264 -preset fast -crf 23 \
+     -g 30 -keyint_min 30 -sc_threshold 0 \
+     -c:a aac -b:a 128k \
+     -bsf:v h264_mp4toannexb \
+     -f mpegts -mpegts_flags +resend_headers \
+     $SHARED_FOLDER/fallback.ts
+   ```
 
 ### Local Build (Development)
 
@@ -190,7 +201,7 @@ live_udp_port: 10000
 fallback_udp_port: 10001
 
 # RTMP output URL (internal Docker network)
-rtmp_url: "rtmp://nginx-rtmp/live/test"
+rtmp_url: "rtmp://nginx-rtmp/live/stream"
 
 # Gap timeout before switching to fallback (milliseconds)
 max_live_gap_ms: 2000
@@ -199,7 +210,7 @@ max_live_gap_ms: 2000
 log_level: "INFO"
 ```
 
-**Default Configuration**: The system uses the integrated nginx-rtmp server at `rtmp://nginx-rtmp/live/test`. For external RTMP servers, update the URL accordingly.
+**Default Configuration**: The system uses the integrated nginx-rtmp server at `rtmp://nginx-rtmp/live/stream`. For external RTMP servers, update the URL accordingly.
 
 ## Usage
 
@@ -236,22 +247,22 @@ ffmpeg -re -i input.mp4 \
 **RTMP Playback** (Low latency, ~2-5 seconds):
 ```bash
 # Using VLC
-vlc rtmp://localhost:1935/live/test
+vlc rtmp://localhost:1935/live/stream
 
 # Using ffplay
-ffplay rtmp://localhost:1935/live/test
+ffplay rtmp://localhost:1935/live/stream
 
 # Using mpv
-mpv rtmp://localhost:1935/live/test
+mpv rtmp://localhost:1935/live/stream
 ```
 
 **HLS Playback** (Browser compatible, ~10-15 seconds latency):
 ```bash
 # Direct URL
-http://localhost:8080/hls/test.m3u8
+http://localhost:8080/hls/stream.m3u8
 
 # Using VLC
-vlc http://localhost:8080/hls/test.m3u8
+vlc http://localhost:8080/hls/stream.m3u8
 
 # In browser (Chrome, Firefox, Safari)
 # Use an HLS player like Video.js or hls.js

@@ -54,7 +54,7 @@ export default {
   props: {
     hlsUrl: {
       type: String,
-      default: '/api/hls/test.m3u8'
+      default: '/api/hls/stream.m3u8'
     }
   },
   setup(props) {

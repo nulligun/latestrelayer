@@ -6,12 +6,13 @@
 #
 # Output:
 #   - Returns the path to the correct fallback .ts file
-#   - BLACK  -> /media/fallback.ts (default BRB screen)
-#   - IMAGE  -> /media/shared/static-image.ts (converted from uploaded image)
-#   - VIDEO  -> /media/shared/video.ts (converted from uploaded video)
+#   - BLACK  -> /media/fallback.ts (default BRB screen, auto-generated if missing)
+#   - IMAGE  -> /media/static-image.ts (converted from uploaded image)
+#   - VIDEO  -> /media/video.ts (converted from uploaded video)
 #
+# Note: The entire shared folder is mounted to /media in the container
 
-CONFIG_FILE="/media/shared/fallback_config.json"
+CONFIG_FILE="/media/fallback_config.json"
 DEFAULT_FALLBACK="/media/fallback.ts"
 
 # If config file doesn't exist, use default fallback
@@ -39,7 +40,7 @@ case "$SOURCE" in
         FALLBACK_FILE="$DEFAULT_FALLBACK"
         ;;
     "IMAGE")
-        FALLBACK_FILE="/media/shared/static-image.ts"
+        FALLBACK_FILE="/media/static-image.ts"
         # Check if the file exists
         if [ ! -f "$FALLBACK_FILE" ]; then
             echo "[selector] WARNING: static-image.ts not found, falling back to default" >&2
@@ -47,7 +48,7 @@ case "$SOURCE" in
         fi
         ;;
     "VIDEO")
-        FALLBACK_FILE="/media/shared/video.ts"
+        FALLBACK_FILE="/media/video.ts"
         # Check if the file exists
         if [ ! -f "$FALLBACK_FILE" ]; then
             echo "[selector] WARNING: video.ts not found, falling back to default" >&2

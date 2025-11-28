@@ -7,8 +7,8 @@ live_udp_port: 10000
 fallback_udp_port: 10001
 
 # RTMP output URL (internal Docker network address)
-# External playback: rtmp://localhost:1935/live/test (RTMP) or http://localhost:8080/hls/test.m3u8 (HLS)
-rtmp_url: "rtmp://nginx-rtmp/live/test"
+# External playback: rtmp://localhost:1935/live/stream (RTMP) or http://localhost:8080/hls/stream.m3u8 (HLS)
+rtmp_url: "rtmp://nginx-rtmp/live/stream"
 
 # Maximum gap allowed before switching to fallback (milliseconds)
 # If live TS stalls for more than this duration, switch to fallback

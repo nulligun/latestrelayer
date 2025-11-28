@@ -20,17 +20,18 @@
                 type="checkbox"
                 id="kick-toggle"
                 class="toggle-checkbox"
-                :checked="isKickLive"
+                :checked="isKickToggleOn"
                 @click="handleKickToggle"
-                :disabled="kickActionPending"
+                :disabled="isKickToggleDisabled"
               />
               <label for="kick-toggle" class="toggle-switch">
                 <span class="toggle-text-off">OFF</span>
                 <span class="toggle-text-on">ON</span>
               </label>
             </div>
-            <div class="toggle-status-text" :class="{ active: isKickLive }">
-              {{ isKickLive ? 'Live on Kick' : 'Not Streaming' }}
+            <div class="toggle-status-text" :class="{ active: isKickLive, pending: kickStartPending }">
+              <span v-if="kickStartPending" class="kick-loading-spinner"></span>
+              {{ kickStartPending ? 'Starting...' : (isKickLive ? 'Live on Kick' : 'Not Streaming') }}
             </div>
           </div>
         </div>
@@ -269,6 +270,8 @@ export default {
       privacyEnabled: false,
       settingPrivacy: false,
       kickActionPending: false,
+      kickStartPending: false,
+      kickStartTimeoutId: null,
       showKickConfirmModal: false,
       pendingKickAction: null,
       kickChannelUrl: null,
@@ -295,6 +298,12 @@ export default {
     isKickLive() {
       return this.switcherHealth?.kick_streaming_enabled || false;
     },
+    isKickToggleOn() {
+      return this.isKickLive || this.kickStartPending;
+    },
+    isKickToggleDisabled() {
+      return this.kickActionPending || this.kickStartPending;
+    },
     kickConfirmTitle() {
       return this.pendingKickAction === 'start' ? 'GO LIVE ON KICK?' : 'END KICK STREAM?';
     },
@@ -310,6 +319,20 @@ export default {
     this.fetchFallbackConfig();
   },
   watch: {
+    // Watch for kick streaming status changes from WebSocket updates
+    'switcherHealth.kick_streaming_enabled': {
+      handler(newKickEnabled) {
+        if (newKickEnabled === true && this.kickStartPending) {
+          console.log('[StreamControls] Kick container started, clearing pending state');
+          this.kickStartPending = false;
+          if (this.kickStartTimeoutId) {
+            clearTimeout(this.kickStartTimeoutId);
+            this.kickStartTimeoutId = null;
+          }
+        }
+      },
+      immediate: false
+    },
     // Watch for privacy mode changes from WebSocket updates
     'switcherHealth.privacy_enabled': {
       handler(newPrivacyEnabled) {
@@ -688,13 +711,14 @@ export default {
     },
     async confirmKickToggle() {
       this.kickActionPending = true;
+      const isStarting = this.pendingKickAction === 'start';
       
       try {
-        const endpoint = this.pendingKickAction === 'start'
+        const endpoint = isStarting
           ? '/api/kick/start'
           : '/api/kick/stop';
         
-        console.log(`[StreamControls] ${this.pendingKickAction === 'start' ? 'Starting' : 'Stopping'} Kick stream...`);
+        console.log(`[StreamControls] ${isStarting ? 'Starting' : 'Stopping'} Kick stream...`);
         
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -707,6 +731,26 @@ export default {
         }
         
         console.log(`[StreamControls] Kick stream ${this.pendingKickAction} successful`);
+        
+        // If starting, set pending state and 10-second timeout
+        if (isStarting) {
+          this.kickStartPending = true;
+          console.log('[StreamControls] Waiting for container to start (10s timeout)...');
+          
+          // Clear any existing timeout
+          if (this.kickStartTimeoutId) {
+            clearTimeout(this.kickStartTimeoutId);
+          }
+          
+          // Set 10-second timeout
+          this.kickStartTimeoutId = setTimeout(() => {
+            if (this.kickStartPending) {
+              console.warn('[StreamControls] Kick container start timeout - reverting toggle');
+              this.kickStartPending = false;
+              this.kickStartTimeoutId = null;
+            }
+          }, 10000);
+        }
       } catch (error) {
         console.error('[StreamControls] Kick toggle error:', error);
         alert(`Failed to ${this.pendingKickAction} Kick stream: ${error.message}`);
@@ -714,6 +758,13 @@ export default {
         this.kickActionPending = false;
         this.showKickConfirmModal = false;
         this.pendingKickAction = null;
+      }
+    },
+    beforeUnmount() {
+      // Clean up timeout on component unmount
+      if (this.kickStartTimeoutId) {
+        clearTimeout(this.kickStartTimeoutId);
+        this.kickStartTimeoutId = null;
       }
     }
   }
@@ -891,6 +942,33 @@ h2 {
 .toggle-status-text.active {
   color: #10b981;
   font-weight: 600;
+}
+
+.toggle-status-text.pending {
+  color: #f59e0b;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kick-loading-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #f59e0b;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: kick-spinner-spin 0.8s linear infinite;
+}
+
+@keyframes kick-spinner-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .fallback-content {

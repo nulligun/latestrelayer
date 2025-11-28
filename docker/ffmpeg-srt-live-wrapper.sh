@@ -25,7 +25,6 @@ sleep 3
 echo "[Wrapper] Starting ffmpeg SRT live stream..."
 ffmpeg -nostdin \
     -loglevel info \
-    -re \
     -i 'srt://0.0.0.0:1937?mode=listener' \
     -c copy \
     -f mpegts 'udp://multiplexer:10000?pkt_size=1316' &

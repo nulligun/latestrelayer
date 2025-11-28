@@ -5,38 +5,31 @@ Get the TSDuck multiplexer running in 5 minutes!
 ## Prerequisites
 
 - Docker and Docker Compose installed
-- A fallback MP4 file (H.264 + AAC)
-- FFmpeg installed locally (for conversion)
+- Environment variables configured (see below)
 
 ## Steps
 
-### 1. Prepare Your Fallback Video
+### 1. Configure Environment
 
-**Step 1a:** Place your fallback video in the project root:
+Create or update your `.env` file with the shared folder path:
 ```bash
-cp /path/to/your/video.mp4 ./fallback.mp4
+SHARED_FOLDER=/path/to/your/shared/folder
 ```
 
-**Video Requirements:**
-- Codec: H.264 video + AAC audio
-- Any resolution/bitrate
-- Similar specs to live stream recommended
+The system will automatically generate a default fallback video (black screen with "BRB..." text) on first startup if one doesn't exist.
 
-**Step 1b:** Convert MP4 to MPEG-TS with proper PSI tables:
+**Optional: Custom Fallback Video**
+If you want to use your own fallback video instead of the auto-generated one, place it in the shared folder as `fallback.ts`:
 ```bash
-# Make the conversion script executable
-chmod +x convert-fallback.sh
-
-# Run the conversion (generates fallback.ts)
-./convert-fallback.sh
+# Convert your video to MPEG-TS format
+ffmpeg -i /path/to/your/video.mp4 \
+  -c:v libx264 -preset fast -crf 23 \
+  -g 30 -keyint_min 30 -sc_threshold 0 \
+  -c:a aac -b:a 128k \
+  -bsf:v h264_mp4toannexb \
+  -f mpegts -mpegts_flags +resend_headers \
+  $SHARED_FOLDER/fallback.ts
 ```
-
-This conversion is **required** because:
-- MP4 uses AVCC H.264 format (length-prefixed NAL units)
-- MPEG-TS requires Annex B format (start-code prefixed)
-- Proper PAT/PMT tables must be generated for the multiplexer
-
-The script will create `fallback.ts` with proper MPEG-TS structure including PSI tables.
 
 ### 2. Start the System
 
@@ -82,19 +75,19 @@ Using OBS Studio:
 **RTMP Playback** (Low latency ~2-5s):
 ```bash
 # Using VLC
-vlc rtmp://localhost:1935/live/test
+vlc rtmp://localhost:1935/live/stream
 
 # Using ffplay
-ffplay rtmp://localhost:1935/live/test
+ffplay rtmp://localhost:1935/live/stream
 ```
 
 **HLS Playback** (Browser compatible ~10-15s):
 ```bash
 # Direct URL in browser
-http://localhost:8080/hls/test.m3u8
+http://localhost:8080/hls/stream.m3u8
 
 # Or use VLC
-vlc http://localhost:8080/hls/test.m3u8
+vlc http://localhost:8080/hls/stream.m3u8
 ```
 
 **Monitor Statistics**:
@@ -147,7 +140,7 @@ docker-compose down -v
 
 ### "No RTMP output"
 - Check nginx-rtmp is running: `docker ps | grep nginx-rtmp`
-- Test playback: `ffplay rtmp://localhost:1935/live/test`
+- Test playback: `ffplay rtmp://localhost:1935/live/stream`
 - Check statistics: Open `http://localhost:8080/stat` in browser
 - Check FFmpeg logs: `docker-compose logs multiplexer`
 - Check nginx logs: `docker-compose logs nginx-rtmp`
@@ -159,21 +152,20 @@ docker-compose down -v
 
 ### "Container won't start"
 - Check Docker daemon is running
-- Verify fallback.ts exists: `ls -lh fallback.ts`
-- If missing, run: `./convert-fallback.sh`
+- Verify SHARED_FOLDER is set in .env file
 - Check logs: `docker-compose logs`
 
 ### "Fallback stream has no video/audio"
-- Ensure you ran the conversion: `./convert-fallback.sh`
-- The .ts file must have proper PSI tables (PAT/PMT)
-- Check conversion output for errors
+- Check the ffmpeg-fallback container logs: `docker-compose logs ffmpeg-fallback`
+- The fallback.ts should be auto-generated on first startup
+- Verify the shared folder is mounted correctly
 
 ## Stream URLs Reference
 
 | Purpose | URL | Protocol | Latency |
 |---------|-----|----------|---------|
-| **Playback (RTMP)** | `rtmp://localhost:1935/live/test` | RTMP | ~2-5s |
-| **Playback (HLS)** | `http://localhost:8080/hls/test.m3u8` | HTTP/HLS | ~10-15s |
+| **Playback (RTMP)** | `rtmp://localhost:1935/live/stream` | RTMP | ~2-5s |
+| **Playback (HLS)** | `http://localhost:8080/hls/stream.m3u8` | HTTP/HLS | ~10-15s |
 | **Statistics HTML** | `http://localhost:8080/stat` | HTTP | Real-time |
 | **Statistics XML** | `http://localhost:8080/stat.xml` | HTTP | Real-time |
 | **Live Input** | `srt://localhost:1937` | SRT | N/A |
@@ -202,7 +194,7 @@ log_level: "INFO"
 ```yaml
 live_udp_port: 10000
 fallback_udp_port: 10001
-rtmp_url: "rtmp://nginx-rtmp/live/test"  # Internal Docker network
+rtmp_url: "rtmp://nginx-rtmp/live/stream"  # Internal Docker network
 max_live_gap_ms: 1000  # Quick failover for testing
 log_level: "DEBUG"
 ```

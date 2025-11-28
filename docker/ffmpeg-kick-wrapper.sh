@@ -19,6 +19,10 @@ trap cleanup SIGTERM SIGINT
 
 # Configuration paths
 CONFIG_FILE="/app/shared/kick_config.json"
+
+# Save environment variables before config file check
+ENV_KICK_URL="${KICK_URL}"
+ENV_KICK_KEY="${KICK_KEY}"
 KICK_URL=""
 KICK_KEY=""
 
@@ -44,8 +48,8 @@ fi
 
 # Fall back to environment variables if not set from config
 if [ -z "$KICK_URL" ] || [ -z "$KICK_KEY" ]; then
-    KICK_URL="${KICK_URL:-$KICK_STREAM_URL}"
-    KICK_KEY="${KICK_KEY:-$KICK_STREAM_KEY}"
+    KICK_URL="${ENV_KICK_URL:-$KICK_STREAM_URL}"
+    KICK_KEY="${ENV_KICK_KEY:-$KICK_STREAM_KEY}"
     echo "[Wrapper] Using configuration from environment variables"
 fi
 

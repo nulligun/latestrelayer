@@ -134,7 +134,7 @@ export default {
     const showKickConfirmModal = ref(false);
     const pendingKickAction = ref(null);
     const kickChannelUrl = ref(null);
-    const hlsUrl = ref('/api/hls/test.m3u8');
+    const hlsUrl = ref('/api/hls/stream.m3u8');
 
     // Fetch HLS URL from config
     const fetchConfig = async () => {

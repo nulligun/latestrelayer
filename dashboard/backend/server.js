@@ -37,7 +37,7 @@ console.log(`[config] Controller API: ${CONTROLLER_API}`);
 console.log(`[config] Nginx Stats: ${NGINX_STATS}`);
 console.log(`[config] Polling Interval: ${POLLING_INTERVAL}ms`);
 console.log(`[config] SRT: srt://${SRT_DOMAIN}:${SRT_PORT}`);
-console.log(`[config] RTMP Preview: rtmp://${SRT_DOMAIN}:${RTMP_PORT}/live/test`);
+console.log(`[config] RTMP Preview: rtmp://${SRT_DOMAIN}:${RTMP_PORT}/live/stream`);
 console.log('='.repeat(60));
 
 const controller = new ControllerService(CONTROLLER_API);
@@ -339,8 +339,8 @@ app.get('/api/config', async (req, res) => {
       srtPort: SRT_PORT,
       srtDomain: SRT_DOMAIN,
       protocol: 'srt',
-      previewUrl: `rtmp://${SRT_DOMAIN}:${RTMP_PORT}/live/test`,
-      hlsUrl: '/api/hls/test.m3u8',
+      previewUrl: `rtmp://${SRT_DOMAIN}:${RTMP_PORT}/live/stream`,
+      hlsUrl: '/api/hls/stream.m3u8',
       rtmpPort: RTMP_PORT,
       kickChannel: KICK_CHANNEL
     });
@@ -503,6 +503,77 @@ app.get('/api/privacy', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// GitHub last commit endpoint with caching
+let cachedCommitData = null;
+let cacheTimestamp = null;
+const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+app.get('/api/github/last-commit', async (req, res) => {
+  try {
+    const now = Date.now();
+    
+    // Check if cache is valid
+    if (cachedCommitData && cacheTimestamp && (now - cacheTimestamp) < CACHE_DURATION_MS) {
+      console.log('[github] Returning cached commit data');
+      return res.json(cachedCommitData);
+    }
+    
+    // Fetch from GitHub API
+    console.log('[github] Fetching latest commit from GitHub API...');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    
+    const response = await fetch('https://api.github.com/repos/nulligun/latestrelayer/commits?per_page=1', {
+      headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'LatestRelayer-Dashboard'
+      },
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      throw new Error(`GitHub API returned ${response.status}`);
+    }
+    
+    const commits = await response.json();
+    
+    if (!commits || commits.length === 0) {
+      throw new Error('No commits found');
+    }
+    
+    const latestCommit = commits[0];
+    const commitData = {
+      sha: latestCommit.sha,
+      message: latestCommit.commit.message.split('\n')[0], // First line only
+      date: latestCommit.commit.committer.date,
+      author: latestCommit.commit.author.name,
+      url: latestCommit.html_url
+    };
+    
+    // Update cache
+    cachedCommitData = commitData;
+    cacheTimestamp = now;
+    
+    console.log(`[github] Latest commit: ${commitData.sha.substring(0, 7)} - ${commitData.message}`);
+    res.json(commitData);
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.error('[github] Request timeout');
+      return res.status(504).json({ error: 'GitHub API timeout' });
+    }
+    console.error('[github] Error fetching commit:', error.message);
+    
+    // Return cached data if available, even if expired
+    if (cachedCommitData) {
+      console.log('[github] Returning stale cached data due to error');
+      return res.json({ ...cachedCommitData, stale: true });
+    }
+    
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Fallback configuration endpoints
 
 // Get fallback configuration
