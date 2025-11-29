@@ -20,7 +20,8 @@ TSDUCK_INSTALL="/opt/tsduck"
 MULTIPLEXER_BUILD="/app/build"
 
 # TSDuck build options (same as original Dockerfile)
-TSDUCK_MAKE_OPTS="NOTELETEXT=1 NOSRT=1 NORIST=1 NODTAPI=1 NOVATEK=1 NOWARNING=1 CXXFLAGS_EXTRA=-Wno-error=attributes"
+# NOPCSC=1 disables smart card support to avoid pcsclite.h include path issues
+TSDUCK_MAKE_OPTS="NOTELETEXT=1 NOSRT=1 NORIST=1 NODTAPI=1 NOVATEK=1 NOPCSC=1 NOWARNING=1 CXXFLAGS_EXTRA=-Wno-error=attributes"
 
 # ============================================================================
 # TSDuck Source Management
@@ -68,120 +69,73 @@ build_tsduck() {
 }
 
 install_tsduck() {
-    echo "[tsduck] Installing TSDuck to host mount..."
+    echo "[tsduck] Installing TSDuck to host mount using make install..."
     
     cd "$TSDUCK_SRC"
     
-    # Create install directories
-    mkdir -p "$TSDUCK_INSTALL/bin"
-    mkdir -p "$TSDUCK_INSTALL/lib/tsduck"
-    mkdir -p "$TSDUCK_INSTALL/include/tsduck"
-    mkdir -p "$TSDUCK_INSTALL/include/tscore"
-    mkdir -p "$TSDUCK_INSTALL/share/tsduck"
-    
-    # Find the release directory (architecture may vary)
-    RELEASE_DIR=$(find bin -maxdepth 1 -name "release-*" -type d | head -1)
-    if [ -z "$RELEASE_DIR" ]; then
-        echo "[tsduck] ERROR: No release directory found in bin/"
-        exit 1
-    fi
-    echo "[tsduck] Using release directory: $RELEASE_DIR"
-    
-    # Copy binaries
-    echo "[tsduck] Copying binaries..."
-    cp -a "$RELEASE_DIR"/ts* "$TSDUCK_INSTALL/bin/" || {
-        echo "[tsduck] ERROR: Failed to copy binaries"
+    # Use TSDuck's native make install with custom prefix
+    # This ensures all headers, libraries, and binaries are properly installed
+    echo "[tsduck] Running make install with SYSPREFIX=$TSDUCK_INSTALL..."
+    make install SYSPREFIX="$TSDUCK_INSTALL" $TSDUCK_MAKE_OPTS NODOC=1 || {
+        echo "[tsduck] ERROR: make install failed"
         exit 1
     }
     
-    # Copy libraries
-    echo "[tsduck] Copying libraries..."
-    cp -a "$RELEASE_DIR"/libtsduck.so "$TSDUCK_INSTALL/lib/" || {
-        echo "[tsduck] ERROR: Failed to copy libtsduck.so"
+    # Verify critical files were installed
+    if [ ! -f "$TSDUCK_INSTALL/bin/tsp" ]; then
+        echo "[tsduck] ERROR: tsp binary not found after install"
         exit 1
-    }
-    cp -a "$RELEASE_DIR"/libtscore.so "$TSDUCK_INSTALL/lib/" || {
-        echo "[tsduck] ERROR: Failed to copy libtscore.so"
-        exit 1
-    }
-    
-    # Copy plugins (optional - may not exist in all builds)
-    if [ -d "$RELEASE_DIR/tsplugins" ]; then
-        echo "[tsduck] Copying plugins..."
-        cp -a "$RELEASE_DIR"/tsplugins/*.so "$TSDUCK_INSTALL/lib/tsduck/" 2>/dev/null || true
     fi
     
-    # Copy headers from the build output directory (tsduck.h is generated during build)
-    # The build creates an include directory with all headers including the generated tsduck.h
-    if [ -d "$RELEASE_DIR/include" ]; then
-        echo "[tsduck] Copying headers from build output: $RELEASE_DIR/include"
-        HEADER_COUNT=$(find "$RELEASE_DIR/include" -name "*.h" | wc -l)
-        echo "[tsduck] Found $HEADER_COUNT headers in build output"
-        
-        # Copy all headers to tsduck include directory
-        find "$RELEASE_DIR/include" -name "*.h" -exec cp {} "$TSDUCK_INSTALL/include/tsduck/" \; || {
-            echo "[tsduck] ERROR: Failed to copy headers from build output"
-            exit 1
-        }
-    else
-        echo "[tsduck] WARNING: No include directory in build output, falling back to source headers"
-        # Fallback: Copy headers from source (without tsduck.h)
-        echo "[tsduck] Copying headers from libtsduck source..."
-        find src/libtsduck -name "*.h" -exec cp {} "$TSDUCK_INSTALL/include/tsduck/" \; || {
-            echo "[tsduck] ERROR: Failed to copy libtsduck headers"
-            exit 1
-        }
-        
-        echo "[tsduck] Copying headers from libtscore source..."
-        find src/libtscore -name "*.h" -exec cp {} "$TSDUCK_INSTALL/include/tscore/" \; || {
-            echo "[tsduck] ERROR: Failed to copy libtscore headers"
-            exit 1
-        }
-    fi
-    
-    # Verify critical header was copied (tsduck.h is the generated umbrella header)
     if [ ! -f "$TSDUCK_INSTALL/include/tsduck/tsduck.h" ]; then
-        echo "[tsduck] ERROR: tsduck.h not found after copy - installation failed"
-        echo "[tsduck] This header is generated during build. Check that the build completed successfully."
+        echo "[tsduck] ERROR: tsduck.h not found after install"
         exit 1
     fi
     
-    INSTALLED_COUNT=$(find "$TSDUCK_INSTALL/include" -name "*.h" | wc -l)
-    echo "[tsduck] Successfully installed $INSTALLED_COUNT header files"
+    # Count installed headers
+    HEADER_COUNT=$(find "$TSDUCK_INSTALL/include" -name "*.h" | wc -l)
+    echo "[tsduck] Successfully installed $HEADER_COUNT header files"
     
-    # Create pkgconfig directory and files
+    # Create pkgconfig files (TSDuck's make install may not create these with the right paths)
     mkdir -p "$TSDUCK_INSTALL/lib/pkgconfig"
     
-    cat > "$TSDUCK_INSTALL/lib/pkgconfig/tsduck.pc" << 'PKGCONFIG'
-prefix=/opt/tsduck
-exec_prefix=${prefix}
-libdir=${exec_prefix}/lib
-includedir=${prefix}/include
+    cat > "$TSDUCK_INSTALL/lib/pkgconfig/tsduck.pc" << PKGCONFIG
+prefix=$TSDUCK_INSTALL
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+includedir=\${prefix}/include
 
 Name: tsduck
 Description: TSDuck MPEG Transport Stream Toolkit
 Version: 3.x
-Libs: -L${libdir} -ltsduck -ltscore
-Cflags: -I${includedir}/tsduck -I${includedir}/tscore
+Libs: -L\${libdir} -ltsduck -ltscore
+Cflags: -I\${includedir}/tsduck -I\${includedir}/tscore
 PKGCONFIG
 
-    cat > "$TSDUCK_INSTALL/lib/pkgconfig/tscore.pc" << 'PKGCONFIG'
-prefix=/opt/tsduck
-exec_prefix=${prefix}
-libdir=${exec_prefix}/lib
-includedir=${prefix}/include
+    cat > "$TSDUCK_INSTALL/lib/pkgconfig/tscore.pc" << PKGCONFIG
+prefix=$TSDUCK_INSTALL
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+includedir=\${prefix}/include
 
 Name: tscore
 Description: TSDuck Core Library
 Version: 3.x
-Libs: -L${libdir} -ltscore
-Cflags: -I${includedir}/tscore
+Libs: -L\${libdir} -ltscore
+Cflags: -I\${includedir}/tscore -I\${includedir}/tsduck
 PKGCONFIG
     
     # Create timestamp marker
     date +%s > "$TSDUCK_INSTALL/.install_timestamp"
     
     echo "[tsduck] TSDuck installed to $TSDUCK_INSTALL"
+    echo "[tsduck] Contents:"
+    ls -la "$TSDUCK_INSTALL/bin/" | head -5
+    echo "..."
+    ls -la "$TSDUCK_INSTALL/lib/" | head -5
+    echo "..."
+    ls -la "$TSDUCK_INSTALL/include/tsduck/" | head -10
+    echo "..."
 }
 
 check_tsduck_installed() {
@@ -198,6 +152,36 @@ setup_tsduck_environment() {
     export LD_LIBRARY_PATH="$TSDUCK_INSTALL/lib:$TSDUCK_INSTALL/lib/tsduck:${LD_LIBRARY_PATH:-}"
     export PKG_CONFIG_PATH="$TSDUCK_INSTALL/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
     export TSDUCK_INSTALL_PREFIX="$TSDUCK_INSTALL"
+    
+    # ALWAYS generate pkgconfig files with correct paths
+    # This ensures the include paths are correct even if TSDuck was installed previously
+    mkdir -p "$TSDUCK_INSTALL/lib/pkgconfig"
+    
+    cat > "$TSDUCK_INSTALL/lib/pkgconfig/tsduck.pc" << PKGCONFIG
+prefix=$TSDUCK_INSTALL
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+includedir=\${prefix}/include
+
+Name: tsduck
+Description: TSDuck MPEG Transport Stream Toolkit
+Version: 3.x
+Libs: -L\${libdir} -ltsduck -ltscore
+Cflags: -I\${includedir}/tsduck -I\${includedir}/tscore
+PKGCONFIG
+
+    cat > "$TSDUCK_INSTALL/lib/pkgconfig/tscore.pc" << PKGCONFIG
+prefix=$TSDUCK_INSTALL
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+includedir=\${prefix}/include
+
+Name: tscore
+Description: TSDuck Core Library
+Version: 3.x
+Libs: -L\${libdir} -ltscore
+Cflags: -I\${includedir}/tscore -I\${includedir}/tsduck
+PKGCONFIG
     
     # Update library cache for this session
     ldconfig "$TSDUCK_INSTALL/lib" 2>/dev/null || true
