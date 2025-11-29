@@ -41,11 +41,13 @@ PROJECT_PATH = os.getenv("PROJECT_PATH", "/app")
 COMPOSE_FILE = os.path.join(PROJECT_PATH, "docker-compose.yml")
 SHARED_DIR = os.getenv("SHARED_DIR", "/app/shared")
 PRIVACY_MODE_FILE = os.path.join(SHARED_DIR, "privacy_mode.json")
+INPUT_SOURCE_FILE = os.path.join(SHARED_DIR, "input_source.json")
 MULTIPLEXER_URL = os.getenv("MULTIPLEXER_URL", "http://multiplexer:8091")
 print(f"[startup] Project path: {PROJECT_PATH}", flush=True)
 print(f"[startup] Compose file: {COMPOSE_FILE}", flush=True)
 print(f"[startup] Shared directory: {SHARED_DIR}", flush=True)
 print(f"[startup] Privacy mode file: {PRIVACY_MODE_FILE}", flush=True)
+print(f"[startup] Input source file: {INPUT_SOURCE_FILE}", flush=True)
 print(f"[startup] Multiplexer URL: {MULTIPLEXER_URL}", flush=True)
 
 
@@ -218,6 +220,146 @@ class ScenePrivacyManager:
                 'current_scene': self._current_scene,
                 'scene_timestamp': self._scene_timestamp.isoformat() + 'Z',
                 'privacy_enabled': self._privacy_enabled
+            }
+
+
+class InputSourceManager:
+    """Manages input source state (CAMERA or DRONE)."""
+    
+    VALID_SOURCES = ['camera', 'drone']
+    
+    def __init__(self, input_source_file_path, multiplexer_url):
+        self.input_source_file_path = input_source_file_path
+        self.multiplexer_url = multiplexer_url
+        self._current_source = 'camera'  # Default to camera
+        self._source_timestamp = datetime.utcnow()
+        self._lock = threading.Lock()
+        self._change_callbacks = []
+        
+        # Load input source state from file
+        self._load_input_source_state()
+        
+        print(f"[input-source] Initialized: source={self._current_source}", flush=True)
+    
+    def _load_input_source_state(self):
+        """Load input source state from persistent file."""
+        try:
+            if os.path.exists(self.input_source_file_path):
+                with open(self.input_source_file_path, 'r') as f:
+                    data = json.load(f)
+                    source = data.get('source', 'camera').lower()
+                    if source in self.VALID_SOURCES:
+                        self._current_source = source
+                        print(f"[input-source] Loaded input source from file: {self._current_source}", flush=True)
+                    else:
+                        print(f"[input-source] Invalid source in file: {source}, defaulting to camera", flush=True)
+            else:
+                print(f"[input-source] No input source file found, defaulting to camera", flush=True)
+        except Exception as e:
+            print(f"[input-source] Error loading input source state: {e}", file=sys.stderr)
+            self._current_source = 'camera'
+    
+    def _save_input_source_state(self):
+        """Save input source state to persistent file."""
+        try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(self.input_source_file_path), exist_ok=True)
+            
+            data = {
+                'source': self._current_source,
+                'updated_at': datetime.utcnow().isoformat() + 'Z'
+            }
+            with open(self.input_source_file_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            print(f"[input-source] Saved input source state to file: {self._current_source}", flush=True)
+        except Exception as e:
+            print(f"[input-source] Error saving input source state: {e}", file=sys.stderr)
+    
+    def _notify_multiplexer(self, source):
+        """Notify the multiplexer about input source change via HTTP callback."""
+        def do_notify():
+            try:
+                url = f"{self.multiplexer_url}/input"
+                data = json.dumps({'source': source}).encode('utf-8')
+                req = urllib.request.Request(
+                    url,
+                    data=data,
+                    headers={'Content-Type': 'application/json'},
+                    method='POST'
+                )
+                
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    result = response.read().decode('utf-8')
+                    print(f"[input-source] Notified multiplexer of input source change: {result}", flush=True)
+                    
+            except urllib.error.URLError as e:
+                print(f"[input-source] Failed to notify multiplexer (may not be running): {e}", file=sys.stderr)
+            except Exception as e:
+                print(f"[input-source] Error notifying multiplexer: {e}", file=sys.stderr)
+        
+        # Run in background thread to not block
+        thread = threading.Thread(target=do_notify, daemon=True)
+        thread.start()
+    
+    def register_change_callback(self, callback):
+        """Register a callback to be called when input source changes."""
+        self._change_callbacks.append(callback)
+    
+    def _trigger_change_callbacks(self, data):
+        """Trigger all registered callbacks."""
+        print(f"[input_source_debug] _trigger_change_callbacks: callbacks={len(self._change_callbacks)}", flush=True)
+        for i, callback in enumerate(self._change_callbacks):
+            try:
+                print(f"[input_source_debug] Calling callback {i+1}/{len(self._change_callbacks)}", flush=True)
+                callback('input_source_change', data)
+            except Exception as e:
+                print(f"[input-source] Error in change callback: {e}", file=sys.stderr)
+    
+    @property
+    def current_source(self):
+        with self._lock:
+            return self._current_source
+    
+    @property
+    def source_timestamp(self):
+        with self._lock:
+            return self._source_timestamp
+    
+    def set_source(self, source):
+        """Set the input source (camera or drone)."""
+        source = source.lower()
+        if source not in self.VALID_SOURCES:
+            print(f"[input-source] Invalid source: {source}", file=sys.stderr)
+            return False
+        
+        with self._lock:
+            old_source = self._current_source
+            if old_source != source:
+                self._current_source = source
+                self._source_timestamp = datetime.utcnow()
+                print(f"[input-source] Input source changed: {old_source} -> {source}", flush=True)
+                
+                # Save state
+                self._save_input_source_state()
+                
+                # Notify multiplexer in background
+                self._notify_multiplexer(source)
+                
+                # Trigger callbacks
+                self._trigger_change_callbacks({
+                    'previous_source': old_source,
+                    'current_source': source,
+                    'timestamp': self._source_timestamp.isoformat() + 'Z'
+                })
+                return True
+            return False
+    
+    def get_state(self):
+        """Get the current state as a dictionary."""
+        with self._lock:
+            return {
+                'current_source': self._current_source,
+                'source_timestamp': self._source_timestamp.isoformat() + 'Z'
             }
 
 
@@ -1017,13 +1159,18 @@ controller = ContainerController(PROJECT_NAME, compose_parser)
 print("[startup] Initializing scene and privacy manager...", flush=True)
 scene_privacy_manager = ScenePrivacyManager(PRIVACY_MODE_FILE, MULTIPLEXER_URL)
 
+# Initialize input source manager
+print("[startup] Initializing input source manager...", flush=True)
+input_source_manager = InputSourceManager(INPUT_SOURCE_FILE, MULTIPLEXER_URL)
+
 
 class WebSocketServer:
     """WebSocket server for real-time container status and log streaming."""
     
-    def __init__(self, controller, scene_privacy_manager):
+    def __init__(self, controller, scene_privacy_manager, input_source_manager):
         self.controller = controller
         self.scene_privacy_manager = scene_privacy_manager
+        self.input_source_manager = input_source_manager
         self.clients = set()
         self.log_subscribers = {}  # {container_name: {client: last_timestamp}}
         self.last_container_state = {}
@@ -1033,6 +1180,9 @@ class WebSocketServer:
         
         # Register for scene/privacy change notifications
         self.scene_privacy_manager.register_change_callback(self._on_scene_privacy_change)
+        
+        # Register for input source change notifications
+        self.input_source_manager.register_change_callback(self._on_input_source_change)
     
     def _on_scene_privacy_change(self, change_type, data):
         """Handle scene or privacy change events."""
@@ -1050,6 +1200,23 @@ class WebSocketServer:
         except Exception as e:
             print(f"[ws] Error scheduling scene/privacy broadcast: {e}", file=sys.stderr)
             print(f"[scene_change_debug] Exception in _on_scene_privacy_change: {e}", flush=True)
+    
+    def _on_input_source_change(self, change_type, data):
+        """Handle input source change events."""
+        print(f"[input_source_debug] _on_input_source_change: type={change_type}, data={data}", flush=True)
+        # Schedule broadcast in the event loop using stored reference
+        try:
+            if self.loop is not None:
+                print(f"[input_source_debug] Scheduling WebSocket broadcast for type={change_type} using stored loop", flush=True)
+                asyncio.run_coroutine_threadsafe(
+                    self._broadcast_input_source_change(change_type, data),
+                    self.loop
+                )
+            else:
+                print(f"[input_source_debug] WARNING: Event loop not stored yet!", flush=True)
+        except Exception as e:
+            print(f"[ws] Error scheduling input source broadcast: {e}", file=sys.stderr)
+            print(f"[input_source_debug] Exception in _on_input_source_change: {e}", flush=True)
     
     async def _broadcast_scene_privacy_change(self, change_type, data):
         """Broadcast scene or privacy change to all clients."""
@@ -1085,6 +1252,40 @@ class WebSocketServer:
         
         print(f"[ws] Broadcasted {change_type} to {len(self.clients) - len(disconnected)} client(s)", flush=True)
         print(f"[scene_change_debug] Broadcast complete", flush=True)
+    
+    async def _broadcast_input_source_change(self, change_type, data):
+        """Broadcast input source change to all clients."""
+        print(f"[input_source_debug] _broadcast_input_source_change: type={change_type}, clients={len(self.clients)}", flush=True)
+        if not self.clients:
+            print(f"[input_source_debug] No clients connected, skipping broadcast", flush=True)
+            return
+        
+        state = self.input_source_manager.get_state()
+        message = {
+            'type': change_type,
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'current_source': state['current_source'],
+            'change_data': data
+        }
+        
+        message_json = json.dumps(message)
+        print(f"[input_source_debug] Broadcasting message: {message_json}", flush=True)
+        disconnected = set()
+        
+        for client in self.clients:
+            try:
+                await client.send(message_json)
+                print(f"[input_source_debug] Sent to client {id(client)}", flush=True)
+            except Exception as e:
+                print(f"[ws] Error broadcasting input source change to client: {e}", file=sys.stderr)
+                disconnected.add(client)
+        
+        # Clean up disconnected clients
+        for client in disconnected:
+            await self.unregister_client(client)
+        
+        print(f"[ws] Broadcasted {change_type} to {len(self.clients) - len(disconnected)} client(s)", flush=True)
+        print(f"[input_source_debug] Broadcast complete", flush=True)
         
     async def register_client(self, websocket):
         """Register a new WebSocket client."""
@@ -1125,18 +1326,23 @@ class WebSocketServer:
             # Get scene and privacy state
             scene_privacy_state = self.scene_privacy_manager.get_state()
             
+            # Get input source state
+            input_source_state = self.input_source_manager.get_state()
+            
             message = {
                 'type': 'initial_state',
                 'timestamp': datetime.utcnow().isoformat() + 'Z',
                 'containers': containers,
                 'current_scene': scene_privacy_state['current_scene'],
                 'privacy_enabled': scene_privacy_state['privacy_enabled'],
-                'scene_timestamp': scene_privacy_state['scene_timestamp']
+                'scene_timestamp': scene_privacy_state['scene_timestamp'],
+                'current_source': input_source_state['current_source'],
+                'source_timestamp': input_source_state['source_timestamp']
             }
             
             print(f"[ws] Sending initial_state message to client {client_id}", flush=True)
             await websocket.send(json.dumps(message))
-            print(f"[ws] Successfully sent initial state with {len(containers)} containers, scene={scene_privacy_state['current_scene']}, privacy={scene_privacy_state['privacy_enabled']} to client {client_id}", flush=True)
+            print(f"[ws] Successfully sent initial state with {len(containers)} containers, scene={scene_privacy_state['current_scene']}, privacy={scene_privacy_state['privacy_enabled']}, source={input_source_state['current_source']} to client {client_id}", flush=True)
             
         except Exception as e:
             print(f"[ws] Error in send_initial_state for client {client_id}: {e}", file=sys.stderr)
@@ -1148,15 +1354,17 @@ class WebSocketServer:
         if not changes or not self.clients:
             return
         
-        # Include current scene/privacy state in every status_change as fallback
+        # Include current scene/privacy/input source state in every status_change as fallback
         state = self.scene_privacy_manager.get_state()
+        input_state = self.input_source_manager.get_state()
         
         message = {
             'type': 'status_change',
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'changes': changes,
             'current_scene': state['current_scene'],
-            'privacy_enabled': state['privacy_enabled']
+            'privacy_enabled': state['privacy_enabled'],
+            'current_source': input_state['current_source']
         }
         
         message_json = json.dumps(message)
@@ -1420,7 +1628,7 @@ class WebSocketServer:
 
 
 # Global WebSocket server instance
-ws_server = WebSocketServer(controller, scene_privacy_manager)
+ws_server = WebSocketServer(controller, scene_privacy_manager, input_source_manager)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1509,6 +1717,24 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"Invalid privacy action: {action}"}, 400)
             return
         
+        # Input source control: POST /input
+        if parsed.path == "/input":
+            body = self._read_request_body()
+            source = body.get('source', '').lower()
+            print(f"[http] Input source change request: {source}")
+            
+            if source not in InputSourceManager.VALID_SOURCES:
+                self.send_json({"error": f"Invalid source: {source}. Must be 'camera' or 'drone'"}, 400)
+                return
+            
+            changed = input_source_manager.set_source(source)
+            self.send_json({
+                "status": "ok",
+                "source": source,
+                "changed": changed
+            })
+            return
+        
         # Expected format: /container/<name>/<action>
         if len(path_parts) == 3 and path_parts[0] == "container":
             short_name = path_parts[1]
@@ -1586,7 +1812,15 @@ class Handler(BaseHTTPRequestHandler):
         # Combined state endpoint: GET /state
         if parsed.path == "/state":
             print("[http] Full state request")
-            self.send_json(scene_privacy_manager.get_state())
+            combined_state = scene_privacy_manager.get_state()
+            combined_state.update(input_source_manager.get_state())
+            self.send_json(combined_state)
+            return
+        
+        # Input source state endpoint: GET /input
+        if parsed.path == "/input":
+            print("[http] Input source state request")
+            self.send_json(input_source_manager.get_state())
             return
         
         # List all containers endpoint
@@ -1676,7 +1910,9 @@ def run_http():
     print("[http]   POST /privacy/enable                   - Enable privacy mode")
     print("[http]   POST /privacy/disable                  - Disable privacy mode")
     print("[http]   GET  /privacy                          - Get privacy mode state")
-    print("[http]   GET  /state                            - Get full state (scene + privacy)")
+    print("[http]   GET  /state                            - Get full state (scene + privacy + input source)")
+    print("[http]   POST /input                            - Set input source (camera or drone)")
+    print("[http]   GET  /input                            - Get current input source")
     print("[http] Ready to accept requests")
     srv.serve_forever()
 

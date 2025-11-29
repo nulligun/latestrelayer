@@ -1,10 +1,13 @@
 # TSDuck MPEG-TS Multiplexer Configuration
 
-# UDP port for live TS input from FFmpeg SRT container
+# UDP port for live TS input from FFmpeg SRT container (CAMERA input)
 live_udp_port: 10000
 
 # UDP port for fallback TS input from FFmpeg fallback container
 fallback_udp_port: 10001
+
+# UDP port for drone TS input from FFmpeg RTMP container (DRONE input)
+drone_udp_port: 10002
 
 # RTMP output URL (internal Docker network address)
 # External playback: rtmp://localhost:1935/live/stream (RTMP) or http://localhost:8080/hls/stream.m3u8 (HLS)

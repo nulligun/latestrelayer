@@ -127,16 +127,17 @@ const wss = new WebSocket.Server({ server });
 wss.on('connection', (ws) => {
   console.log('[ws] Frontend client connected');
   
-  // Send latest container state to newly connected client with current scene/privacy
+  // Send latest container state to newly connected client with current scene/privacy/input source
   if (latestContainerState.containers.length > 0) {
     const sceneState = controllerWs.getSceneState();
-    console.log(`[ws] Sending initial state to new client: scene=${sceneState.currentScene}, privacy=${sceneState.privacyEnabled}`);
+    console.log(`[ws] Sending initial state to new client: scene=${sceneState.currentScene}, privacy=${sceneState.privacyEnabled}, source=${sceneState.currentSource}`);
     ws.send(JSON.stringify({
       type: 'container_update',
       containers: latestContainerState.containers,
       timestamp: latestContainerState.timestamp,
       currentScene: sceneState.currentScene,
-      privacyEnabled: sceneState.privacyEnabled
+      privacyEnabled: sceneState.privacyEnabled,
+      currentSource: sceneState.currentSource
     }));
   }
   
@@ -200,7 +201,7 @@ controllerWs.on('disconnected', () => {
 
 controllerWs.on('initial_state', (message) => {
   console.log(`[main] Received initial state from controller`);
-  console.log(`[main] Initial scene: ${message.current_scene}, privacy: ${message.privacy_enabled}`);
+  console.log(`[main] Initial scene: ${message.current_scene}, privacy: ${message.privacy_enabled}, source: ${message.current_source}`);
   latestContainerState = {
     containers: message.containers,
     timestamp: message.timestamp
@@ -212,14 +213,15 @@ controllerWs.on('initial_state', (message) => {
     containers: message.containers,
     timestamp: message.timestamp,
     currentScene: message.current_scene,
-    privacyEnabled: message.privacy_enabled
+    privacyEnabled: message.privacy_enabled,
+    currentSource: message.current_source
   });
 });
 
 controllerWs.on('status_change', (message) => {
   console.log(`[main] Container status changed: ${message.changes.length} change(s)`);
   if (message.current_scene !== undefined) {
-    console.log(`[main] Status includes scene: ${message.current_scene}, privacy: ${message.privacy_enabled}`);
+    console.log(`[main] Status includes scene: ${message.current_scene}, privacy: ${message.privacy_enabled}, source: ${message.current_source}`);
   }
   
   // Update our state with the changes
@@ -245,7 +247,8 @@ controllerWs.on('status_change', (message) => {
     timestamp: message.timestamp,
     changes: message.changes,
     currentScene: message.current_scene,
-    privacyEnabled: message.privacy_enabled
+    privacyEnabled: message.privacy_enabled,
+    currentSource: message.current_source
   });
 });
 
@@ -310,6 +313,16 @@ controllerWs.on('privacy_change', (data) => {
   console.log(`[scene_change_debug] Broadcast complete for privacy_change`);
 });
 
+controllerWs.on('input_source_change', (data) => {
+  console.log(`[main] Input source changed to: ${data.currentSource}`);
+  broadcast({
+    type: 'input_source_change',
+    currentSource: data.currentSource,
+    changeData: data.changeData,
+    timestamp: data.timestamp
+  });
+});
+
 controllerWs.on('error', (error) => {
   console.error('[main] Controller WebSocket error:', error.message);
 });
@@ -343,7 +356,8 @@ app.get('/api/config', async (req, res) => {
       previewUrl: `rtmp://${SRT_DOMAIN}:${RTMP_PORT}/live/stream`,
       hlsUrl: '/api/hls/stream.m3u8',
       rtmpPort: RTMP_PORT,
-      kickChannel: KICK_CHANNEL
+      kickChannel: KICK_CHANNEL,
+      droneUrl: `rtmp://${SRT_DOMAIN}:1938/live/drone`
     });
   } catch (error) {
     console.error('[api] Error getting config:', error.message);
@@ -504,6 +518,34 @@ app.get('/api/privacy', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// Input source endpoints - proxy to controller REST API
+app.get('/api/input/source', async (req, res) => {
+  try {
+    const result = await controller.getInputSource();
+    res.json(result);
+  } catch (error) {
+    console.error('[api] Error getting input source:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/input/source', async (req, res) => {
+  try {
+    const { source } = req.body;
+    
+    if (!source || !['camera', 'drone'].includes(source.toLowerCase())) {
+      return res.status(400).json({ error: "Invalid source. Must be 'camera' or 'drone'" });
+    }
+    
+    const result = await controller.setInputSource(source.toLowerCase());
+    res.json(result);
+  } catch (error) {
+    console.error('[api] Error setting input source:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GitHub last commit endpoint with caching
 let cachedCommitData = null;
 let cacheTimestamp = null;

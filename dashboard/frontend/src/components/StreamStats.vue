@@ -53,7 +53,31 @@
         </div>
       </div>
       
-      <!-- Row 2: Status and Scene -->
+      <!-- Drone URL -->
+      <div class="info-item url-item">
+        <div class="info-label">DRONE URL</div>
+        <div class="url-with-copy">
+          <button
+            class="copy-button"
+            :class="{ copied: copyDroneSuccess }"
+            @click="copyDroneToClipboard"
+            :disabled="!droneUrl"
+          >
+            {{ copyDroneSuccess ? 'Copied!' : 'Copy' }}
+          </button>
+          <div class="url-display">{{ displayDroneUrl }}</div>
+          <button
+            class="toggle-visibility-btn"
+            @click="toggleDroneUrlVisibility"
+            type="button"
+            :title="showDroneUrl ? 'Hide URL' : 'Show URL'"
+          >
+            {{ showDroneUrl ? '🔓' : '🔒' }}
+          </button>
+        </div>
+      </div>
+      
+      <!-- Row 2: Status, Scene, and Camera Source -->
       <!-- Stream Status -->
       <div class="info-item">
         <div class="info-label">Stream Status</div>
@@ -79,6 +103,25 @@
         </div>
         <div class="duration-text">
           {{ formatDuration(sceneDurationSeconds) }}
+        </div>
+      </div>
+      
+      <!-- Camera Source -->
+      <div class="info-item">
+        <div class="info-label">Camera Source</div>
+        <div class="source-select-container">
+          <select
+            v-model="selectedSource"
+            @change="onSourceChange"
+            :disabled="sourceChangePending"
+            class="source-select"
+          >
+            <option value="camera">CAMERA</option>
+            <option value="drone">DRONE</option>
+          </select>
+        </div>
+        <div v-if="sourceChangePending" class="duration-text">
+          Switching...
         </div>
       </div>
     </div>
@@ -127,16 +170,25 @@ export default {
         videoPath: '/app/shared/offline.mp4',
         browserUrl: 'https://example.com'
       })
+    },
+    currentSource: {
+      type: String,
+      default: 'camera'
     }
   },
   data() {
     return {
       localSrtUrl: '',
       localPreviewUrl: '',
+      localDroneUrl: '',
       copySuccess: false,
       copyPreviewSuccess: false,
+      copyDroneSuccess: false,
       showPreviewUrl: false,
-      showCameraUrl: false
+      showCameraUrl: false,
+      showDroneUrl: false,
+      selectedSource: 'camera',
+      sourceChangePending: false
     };
   },
   computed: {
@@ -149,6 +201,9 @@ export default {
     previewUrl() {
       return this.cameraConfig?.previewUrl || this.localPreviewUrl || 'Loading...';
     },
+    droneUrl() {
+      return this.cameraConfig?.droneUrl || this.localDroneUrl || 'Loading...';
+    },
     displayPreviewUrl() {
       if (this.showPreviewUrl) {
         return this.previewUrl;
@@ -159,6 +214,13 @@ export default {
     displayCameraUrl() {
       if (this.showCameraUrl) {
         return this.srtUrl;
+      }
+      // Return masked text when hidden
+      return '••••••••••••••••••••••••••••••';
+    },
+    displayDroneUrl() {
+      if (this.showDroneUrl) {
+        return this.droneUrl;
       }
       // Return masked text when hidden
       return '••••••••••••••••••••••••••••••';
@@ -214,10 +276,22 @@ export default {
       return scene;
     }
   },
+  watch: {
+    currentSource: {
+      immediate: true,
+      handler(newSource) {
+        if (newSource) {
+          this.selectedSource = newSource.toLowerCase();
+        }
+      }
+    }
+  },
   mounted() {
     if (!this.cameraConfig) {
       this.fetchSrtConfig();
     }
+    // Fetch initial input source
+    this.fetchInputSource();
   },
   methods: {
     async fetchSrtConfig() {
@@ -226,10 +300,46 @@ export default {
         const config = await response.json();
         this.localSrtUrl = config.srtUrl;
         this.localPreviewUrl = config.previewUrl;
+        this.localDroneUrl = config.droneUrl;
       } catch (error) {
         console.error('[StreamStats] Error fetching SRT config:', error);
         this.localSrtUrl = 'Error loading URL';
         this.localPreviewUrl = 'Error loading URL';
+        this.localDroneUrl = 'Error loading URL';
+      }
+    },
+    async fetchInputSource() {
+      try {
+        const response = await fetch('/api/input/source');
+        const data = await response.json();
+        if (data.current_source) {
+          this.selectedSource = data.current_source.toLowerCase();
+        }
+      } catch (error) {
+        console.error('[StreamStats] Error fetching input source:', error);
+      }
+    },
+    async onSourceChange() {
+      this.sourceChangePending = true;
+      try {
+        const response = await fetch('/api/input/source', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source: this.selectedSource })
+        });
+        
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || 'Failed to change input source');
+        }
+        
+        console.log(`[StreamStats] Input source changed to: ${this.selectedSource}`);
+      } catch (error) {
+        console.error('[StreamStats] Error changing input source:', error);
+        // Revert selection on error
+        this.fetchInputSource();
+      } finally {
+        this.sourceChangePending = false;
       }
     },
     async copyToClipboard() {
@@ -292,6 +402,36 @@ export default {
         document.body.removeChild(textArea);
       }
     },
+    async copyDroneToClipboard() {
+      if (!this.droneUrl || this.droneUrl === 'Error loading URL') return;
+      
+      try {
+        await navigator.clipboard.writeText(this.droneUrl);
+        this.copyDroneSuccess = true;
+        setTimeout(() => {
+          this.copyDroneSuccess = false;
+        }, 2000);
+      } catch (error) {
+        console.error('Failed to copy drone URL to clipboard:', error);
+        const textArea = document.createElement('textarea');
+        textArea.value = this.droneUrl;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {
+          document.execCommand('copy');
+          this.copyDroneSuccess = true;
+          setTimeout(() => {
+            this.copyDroneSuccess = false;
+          }, 2000);
+        } catch (err) {
+          console.error('Fallback copy failed:', err);
+        }
+        document.body.removeChild(textArea);
+      }
+    },
     formatDuration(seconds) {
       if (seconds < 60) {
         return `${seconds}s`;
@@ -311,6 +451,9 @@ export default {
     },
     toggleCameraUrlVisibility() {
       this.showCameraUrl = !this.showCameraUrl;
+    },
+    toggleDroneUrlVisibility() {
+      this.showDroneUrl = !this.showDroneUrl;
     }
   }
 };
@@ -332,8 +475,14 @@ h2 {
 
 .camera-details-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 20px;
+}
+
+@media (max-width: 1024px) {
+  .camera-details-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 @media (max-width: 768px) {
@@ -486,5 +635,48 @@ h2 {
 .scene-value {
   color: #10b981;
   font-weight: bold;
+}
+
+.source-select-container {
+  margin-top: 8px;
+}
+
+.source-select {
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 1rem;
+  font-weight: 600;
+  background: #1e293b;
+  color: #f1f5f9;
+  border: 2px solid #334155;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2394a3b8' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+}
+
+.source-select:hover:not(:disabled) {
+  border-color: #3b82f6;
+}
+
+.source-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+}
+
+.source-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.source-select option {
+  background: #1e293b;
+  color: #f1f5f9;
+  padding: 12px;
 }
 </style>

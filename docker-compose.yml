@@ -225,6 +225,29 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  ffmpeg-rtmp-live:
+    stop_grace_period: 2s
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ffmpeg-rtmp-live
+    container_name: ffmpeg-rtmp-live
+    ports:
+      - "1938:1938"
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # ============================================================================
   # Manual/Optional Services
   # ============================================================================
