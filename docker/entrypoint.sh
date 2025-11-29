@@ -79,24 +79,63 @@ install_tsduck() {
     mkdir -p "$TSDUCK_INSTALL/include/tscore"
     mkdir -p "$TSDUCK_INSTALL/share/tsduck"
     
+    # Find the release directory (architecture may vary)
+    RELEASE_DIR=$(find bin -maxdepth 1 -name "release-*" -type d | head -1)
+    if [ -z "$RELEASE_DIR" ]; then
+        echo "[tsduck] ERROR: No release directory found in bin/"
+        exit 1
+    fi
+    echo "[tsduck] Using release directory: $RELEASE_DIR"
+    
     # Copy binaries
-    cp -a bin/release-x86_64-linux-gnu/ts* "$TSDUCK_INSTALL/bin/" 2>/dev/null || \
-    cp -a bin/release-*/ts* "$TSDUCK_INSTALL/bin/" 2>/dev/null || true
+    echo "[tsduck] Copying binaries..."
+    cp -a "$RELEASE_DIR"/ts* "$TSDUCK_INSTALL/bin/" || {
+        echo "[tsduck] ERROR: Failed to copy binaries"
+        exit 1
+    }
     
     # Copy libraries
-    cp -a bin/release-x86_64-linux-gnu/libtsduck.so "$TSDUCK_INSTALL/lib/" 2>/dev/null || \
-    cp -a bin/release-*/libtsduck.so "$TSDUCK_INSTALL/lib/" 2>/dev/null || true
-    cp -a bin/release-x86_64-linux-gnu/libtscore.so "$TSDUCK_INSTALL/lib/" 2>/dev/null || \
-    cp -a bin/release-*/libtscore.so "$TSDUCK_INSTALL/lib/" 2>/dev/null || true
+    echo "[tsduck] Copying libraries..."
+    cp -a "$RELEASE_DIR"/libtsduck.so "$TSDUCK_INSTALL/lib/" || {
+        echo "[tsduck] ERROR: Failed to copy libtsduck.so"
+        exit 1
+    }
+    cp -a "$RELEASE_DIR"/libtscore.so "$TSDUCK_INSTALL/lib/" || {
+        echo "[tsduck] ERROR: Failed to copy libtscore.so"
+        exit 1
+    }
     
-    # Copy plugins
-    cp -a bin/release-x86_64-linux-gnu/tsplugins/*.so "$TSDUCK_INSTALL/lib/tsduck/" 2>/dev/null || \
-    cp -a bin/release-*/tsplugins/*.so "$TSDUCK_INSTALL/lib/tsduck/" 2>/dev/null || true
+    # Copy plugins (optional - may not exist in all builds)
+    if [ -d "$RELEASE_DIR/tsplugins" ]; then
+        echo "[tsduck] Copying plugins..."
+        cp -a "$RELEASE_DIR"/tsplugins/*.so "$TSDUCK_INSTALL/lib/tsduck/" 2>/dev/null || true
+    fi
     
-    # Copy headers
-    cp -a src/libtsduck/*.h "$TSDUCK_INSTALL/include/tsduck/" 2>/dev/null || true
-    cp -a src/libtsduck/**/*.h "$TSDUCK_INSTALL/include/tsduck/" 2>/dev/null || true
-    cp -a src/libtscore/*.h "$TSDUCK_INSTALL/include/tscore/" 2>/dev/null || true
+    # Copy headers recursively using find (fixes the broken glob pattern)
+    echo "[tsduck] Copying headers from libtsduck..."
+    HEADER_COUNT=$(find src/libtsduck -name "*.h" | wc -l)
+    echo "[tsduck] Found $HEADER_COUNT headers in libtsduck"
+    find src/libtsduck -name "*.h" -exec cp {} "$TSDUCK_INSTALL/include/tsduck/" \; || {
+        echo "[tsduck] ERROR: Failed to copy libtsduck headers"
+        exit 1
+    }
+    
+    echo "[tsduck] Copying headers from libtscore..."
+    TSCORE_HEADER_COUNT=$(find src/libtscore -name "*.h" | wc -l)
+    echo "[tsduck] Found $TSCORE_HEADER_COUNT headers in libtscore"
+    find src/libtscore -name "*.h" -exec cp {} "$TSDUCK_INSTALL/include/tscore/" \; || {
+        echo "[tsduck] ERROR: Failed to copy libtscore headers"
+        exit 1
+    }
+    
+    # Verify critical header was copied
+    if [ ! -f "$TSDUCK_INSTALL/include/tsduck/tsduck.h" ]; then
+        echo "[tsduck] ERROR: tsduck.h not found after copy - installation failed"
+        exit 1
+    fi
+    
+    INSTALLED_COUNT=$(find "$TSDUCK_INSTALL/include" -name "*.h" | wc -l)
+    echo "[tsduck] Successfully installed $INSTALLED_COUNT header files"
     
     # Create pkgconfig directory and files
     mkdir -p "$TSDUCK_INSTALL/lib/pkgconfig"
@@ -135,7 +174,10 @@ PKGCONFIG
 
 check_tsduck_installed() {
     # Check if TSDuck is properly installed on host mount
-    [ -f "$TSDUCK_INSTALL/bin/tsp" ] && [ -f "$TSDUCK_INSTALL/lib/libtsduck.so" ]
+    # Must have binaries, libraries, AND headers (tsduck.h is the main umbrella header)
+    [ -f "$TSDUCK_INSTALL/bin/tsp" ] && \
+    [ -f "$TSDUCK_INSTALL/lib/libtsduck.so" ] && \
+    [ -f "$TSDUCK_INSTALL/include/tsduck/tsduck.h" ]
 }
 
 setup_tsduck_environment() {
