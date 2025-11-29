@@ -16,13 +16,22 @@ struct HealthStatus {
 };
 
 /**
+ * Input source status structure returned by input source callback
+ */
+struct InputSourceStatus {
+    std::string current_source;  // "camera" or "drone"
+};
+
+/**
  * Simple HTTP server for receiving callbacks from the controller.
- * Listens on a specified port and handles POST /privacy endpoint.
+ * Listens on a specified port and handles POST /privacy and POST /input endpoints.
  */
 class HttpServer {
 public:
     using PrivacyCallback = std::function<void(bool enabled)>;
     using HealthCallback = std::function<HealthStatus()>;
+    using InputSourceCallback = std::function<void(const std::string& source)>;
+    using InputSourceGetCallback = std::function<InputSourceStatus()>;
     
     explicit HttpServer(uint16_t port);
     ~HttpServer();
@@ -42,6 +51,12 @@ public:
     
     // Register callback for health status
     void setHealthCallback(HealthCallback callback);
+    
+    // Register callback for input source changes (POST /input)
+    void setInputSourceCallback(InputSourceCallback callback);
+    
+    // Register callback to get current input source (GET /input)
+    void setInputSourceGetCallback(InputSourceGetCallback callback);
     
     // Check if server is running
     bool isRunning() const { return running_.load(); }
@@ -64,4 +79,6 @@ private:
     std::mutex callback_mutex_;
     PrivacyCallback privacy_callback_;
     HealthCallback health_callback_;
+    InputSourceCallback input_source_callback_;
+    InputSourceGetCallback input_source_get_callback_;
 };

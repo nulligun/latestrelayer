@@ -296,7 +296,7 @@ export default {
       updatingFallback: false,
       uploadingFile: false,
       isProcessing: false,
-      uploadProgress: 0,
+      localUploadProgress: 0,
       processingProgress: 0,
       processingMessage: '',
       uploadSuccess: false,
@@ -319,13 +319,13 @@ export default {
       if (this.isProcessing) {
         return this.processingProgress;
       }
-      return this.uploadProgress;
+      return this.localUploadProgress;
     },
     progressStatusText() {
       if (this.isProcessing) {
         return this.processingMessage || `Processing... ${this.processingProgress}%`;
       }
-      return `Uploading... ${this.uploadProgress}%`;
+      return `Uploading... ${this.localUploadProgress}%`;
     },
     isKickLive() {
       return this.switcherHealth?.kick_streaming_enabled || false;
@@ -557,7 +557,7 @@ export default {
       this.selectedImageFile = file.name;
       this.uploadingFile = true;
       this.isProcessing = false;
-      this.uploadProgress = 0;
+      this.localUploadProgress = 0;
       this.processingProgress = 0;
       this.uploadSuccess = false;
       this.uploadError = null;
@@ -578,7 +578,7 @@ export default {
       xhr.upload.addEventListener('progress', (e) => {
         if (e.lengthComputable) {
           const percentComplete = Math.round((e.loaded / e.total) * 100);
-          this.uploadProgress = percentComplete;
+          this.localUploadProgress = percentComplete;
           console.log(`[StreamControls] Image upload progress: ${percentComplete}%`);
         }
       });
@@ -594,7 +594,7 @@ export default {
             
             // Upload complete, now waiting for processing via WebSocket
             this.uploadingFile = false;
-            this.uploadProgress = 100;
+            this.localUploadProgress = 100;
             this.isProcessing = true;
             this.processingProgress = 0;
             this.processingMessage = 'Starting processing...';
@@ -625,7 +625,7 @@ export default {
         this.imagePreviewUrl = null;
         this.uploadingFile = false;
         this.isProcessing = false;
-        this.uploadProgress = 0;
+        this.localUploadProgress = 0;
         event.target.value = '';
         this.selectedImageFile = null;
       });
@@ -644,7 +644,7 @@ export default {
       this.selectedVideoFile = file.name;
       this.uploadingFile = true;
       this.isProcessing = false;
-      this.uploadProgress = 0;
+      this.localUploadProgress = 0;
       this.processingProgress = 0;
       this.uploadSuccess = false;
       this.uploadError = null;
@@ -658,7 +658,7 @@ export default {
       xhr.upload.addEventListener('progress', (e) => {
         if (e.lengthComputable) {
           const percentComplete = Math.round((e.loaded / e.total) * 100);
-          this.uploadProgress = percentComplete;
+          this.localUploadProgress = percentComplete;
           console.log(`[StreamControls] Video upload progress: ${percentComplete}%`);
         }
       });
@@ -674,7 +674,7 @@ export default {
             
             // Upload complete, now waiting for processing via WebSocket
             this.uploadingFile = false;
-            this.uploadProgress = 100;
+            this.localUploadProgress = 100;
             this.isProcessing = true;
             this.processingProgress = 0;
             this.processingMessage = 'Starting processing...';
@@ -705,7 +705,7 @@ export default {
         this.videoThumbnailUrl = null;
         this.uploadingFile = false;
         this.isProcessing = false;
-        this.uploadProgress = 0;
+        this.localUploadProgress = 0;
         event.target.value = '';
         this.selectedVideoFile = null;
       });

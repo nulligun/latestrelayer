@@ -23,10 +23,10 @@
           <button
             @click="toggleUrlVisibility"
             class="toggle-visibility-btn"
-            :class="{ active: showUrl }"
             type="button"
+            :title="showUrl ? 'Hide URL' : 'Show URL'"
           >
-            {{ showUrl ? '👁️' : '👁️‍🗨️' }}
+            {{ showUrl ? '🔓' : '🔒' }}
           </button>
         </div>
       </div>
@@ -46,10 +46,10 @@
           <button
             @click="toggleKeyVisibility"
             class="toggle-visibility-btn"
-            :class="{ active: showKey }"
             type="button"
+            :title="showKey ? 'Hide Key' : 'Show Key'"
           >
-            {{ showKey ? '👁️' : '👁️‍🗨️' }}
+            {{ showKey ? '🔓' : '🔒' }}
           </button>
         </div>
       </div>
@@ -387,28 +387,23 @@ h2 {
 }
 
 .toggle-visibility-btn {
-  padding: 10px 12px;
-  background: #334155;
-  border: 1px solid #475569;
-  border-radius: 6px;
-  color: #e2e8f0;
-  font-size: 1.2rem;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 1.1rem;
   cursor: pointer;
-  transition: all 0.2s ease;
-  min-width: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  padding: 8px;
+  transition: color 0.2s ease, transform 0.1s ease;
+  flex-shrink: 0;
 }
 
 .toggle-visibility-btn:hover {
-  background: #475569;
-  border-color: #64748b;
+  color: #e2e8f0;
+  transform: scale(1.1);
 }
 
-.toggle-visibility-btn.active {
-  background: #3b82f6;
-  border-color: #3b82f6;
+.toggle-visibility-btn:active {
+  transform: scale(0.95);
 }
 
 .button-row {
