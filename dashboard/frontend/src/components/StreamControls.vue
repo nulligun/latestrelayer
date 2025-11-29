@@ -102,22 +102,28 @@
               <div v-if="selectedImageFile && !uploadSuccess" class="selected-file">
                 Selected: {{ selectedImageFile }}
               </div>
-              <div v-if="uploadingFile && !isProcessing" class="upload-status uploading">
-                <span class="upload-icon">
-                  <svg class="upload-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 19V5M5 12l7-7 7 7"/>
-                  </svg>
-                </span>
-                <span>Uploading...</span>
-              </div>
-              <div v-if="isProcessing" class="upload-status processing">
-                <span class="processing-icon">
-                  <svg class="processing-gear" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/>
-                    <path fill-rule="evenodd" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
-                  </svg>
-                </span>
-                <span>Processing...</span>
+              <div v-if="uploadingFile || isProcessing" class="upload-progress-container">
+                <div class="progress-bar-wrapper">
+                  <div
+                    class="progress-bar"
+                    :class="{ uploading: uploadingFile && !isProcessing, processing: isProcessing }"
+                    :style="{ width: progressPercentage + '%' }"
+                  ></div>
+                </div>
+                <div class="progress-status" :class="{ uploading: uploadingFile && !isProcessing, processing: isProcessing }">
+                  <span v-if="uploadingFile && !isProcessing" class="upload-icon">
+                    <svg class="upload-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 19V5M5 12l7-7 7 7"/>
+                    </svg>
+                  </span>
+                  <span v-if="isProcessing" class="processing-icon">
+                    <svg class="processing-gear" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/>
+                      <path fill-rule="evenodd" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+                    </svg>
+                  </span>
+                  <span>{{ progressStatusText }}</span>
+                </div>
               </div>
               <div v-if="uploadSuccess" class="upload-status success">✓ Upload successful</div>
               <div v-if="uploadError" class="upload-status error">{{ uploadError }}</div>
@@ -144,22 +150,28 @@
             <div v-if="selectedVideoFile && !uploadSuccess" class="selected-file">
               Selected: {{ selectedVideoFile }}
             </div>
-            <div v-if="uploadingFile && !isProcessing" class="upload-status uploading">
-              <span class="upload-icon">
-                <svg class="upload-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 19V5M5 12l7-7 7 7"/>
-                </svg>
-              </span>
-              <span>Uploading...</span>
-            </div>
-            <div v-if="isProcessing" class="upload-status processing">
-              <span class="processing-icon">
-                <svg class="processing-gear" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/>
-                  <path fill-rule="evenodd" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
-                </svg>
-              </span>
-              <span>Processing...</span>
+            <div v-if="uploadingFile || isProcessing" class="upload-progress-container">
+              <div class="progress-bar-wrapper">
+                <div
+                  class="progress-bar"
+                  :class="{ uploading: uploadingFile && !isProcessing, processing: isProcessing }"
+                  :style="{ width: progressPercentage + '%' }"
+                ></div>
+              </div>
+              <div class="progress-status" :class="{ uploading: uploadingFile && !isProcessing, processing: isProcessing }">
+                <span v-if="uploadingFile && !isProcessing" class="upload-icon">
+                  <svg class="upload-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 19V5M5 12l7-7 7 7"/>
+                  </svg>
+                </span>
+                <span v-if="isProcessing" class="processing-icon">
+                  <svg class="processing-gear" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/>
+                    <path fill-rule="evenodd" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+                  </svg>
+                </span>
+                <span>{{ progressStatusText }}</span>
+              </div>
             </div>
             <div v-if="uploadSuccess" class="upload-status success">✓ Upload successful</div>
             <div v-if="uploadError" class="upload-status error">{{ uploadError }}</div>
@@ -263,6 +275,10 @@ export default {
         browserUrl: '',
         activeContainer: null
       })
+    },
+    uploadProgress: {
+      type: Object,
+      default: null
     }
   },
   data() {
@@ -280,8 +296,12 @@ export default {
       updatingFallback: false,
       uploadingFile: false,
       isProcessing: false,
+      uploadProgress: 0,
+      processingProgress: 0,
+      processingMessage: '',
       uploadSuccess: false,
       uploadError: null,
+      currentUploadId: null,
       selectedImageFile: null,
       selectedVideoFile: null,
       imagePreviewUrl: null,
@@ -295,6 +315,18 @@ export default {
     };
   },
   computed: {
+    progressPercentage() {
+      if (this.isProcessing) {
+        return this.processingProgress;
+      }
+      return this.uploadProgress;
+    },
+    progressStatusText() {
+      if (this.isProcessing) {
+        return this.processingMessage || `Processing... ${this.processingProgress}%`;
+      }
+      return `Uploading... ${this.uploadProgress}%`;
+    },
     isKickLive() {
       return this.switcherHealth?.kick_streaming_enabled || false;
     },
@@ -372,6 +404,48 @@ export default {
         }
       },
       immediate: false
+    },
+    // Watch for upload progress from WebSocket
+    uploadProgress: {
+      handler(newProgress) {
+        if (!newProgress) return;
+        
+        // Only handle progress for our current upload
+        if (this.currentUploadId && newProgress.uploadId !== this.currentUploadId) {
+          return;
+        }
+        
+        console.log(`[StreamControls] WebSocket progress: ${newProgress.status} - ${newProgress.progress}%`);
+        
+        if (newProgress.status === 'processing') {
+          this.isProcessing = true;
+          this.processingProgress = newProgress.progress;
+          this.processingMessage = newProgress.message;
+        } else if (newProgress.status === 'completed') {
+          this.isProcessing = false;
+          this.processingProgress = 100;
+          this.processingMessage = '';
+          this.uploadSuccess = true;
+          this.currentUploadId = null;
+          
+          // Load thumbnail for videos
+          if (newProgress.fileType === 'video') {
+            this.videoThumbnailUrl = `/api/fallback/video-thumbnail?t=${Date.now()}`;
+          }
+          
+          setTimeout(() => {
+            this.uploadSuccess = false;
+          }, 3000);
+        } else if (newProgress.status === 'error') {
+          this.isProcessing = false;
+          this.processingProgress = 0;
+          this.processingMessage = '';
+          this.uploadError = newProgress.error || 'Processing failed';
+          this.currentUploadId = null;
+        }
+      },
+      immediate: true,
+      deep: true
     }
   },
   methods: {
@@ -483,6 +557,8 @@ export default {
       this.selectedImageFile = file.name;
       this.uploadingFile = true;
       this.isProcessing = false;
+      this.uploadProgress = 0;
+      this.processingProgress = 0;
       this.uploadSuccess = false;
       this.uploadError = null;
       
@@ -501,13 +577,9 @@ export default {
       
       xhr.upload.addEventListener('progress', (e) => {
         if (e.lengthComputable) {
-          const percentComplete = (e.loaded / e.total) * 100;
-          console.log(`[StreamControls] Image upload progress: ${percentComplete.toFixed(1)}%`);
-          // When upload is complete but response not yet received, switch to processing
-          if (percentComplete >= 100 && !this.isProcessing) {
-            this.isProcessing = true;
-            console.log('[StreamControls] Upload complete, now processing...');
-          }
+          const percentComplete = Math.round((e.loaded / e.total) * 100);
+          this.uploadProgress = percentComplete;
+          console.log(`[StreamControls] Image upload progress: ${percentComplete}%`);
         }
       });
       
@@ -515,14 +587,22 @@ export default {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const result = JSON.parse(xhr.responseText);
-            console.log('[StreamControls] Image uploaded:', result);
-            this.uploadSuccess = true;
+            console.log('[StreamControls] Image uploaded, processing started:', result);
             
-            setTimeout(() => {
-              this.uploadSuccess = false;
-            }, 3000);
+            // Store upload ID to match with WebSocket progress
+            this.currentUploadId = result.uploadId;
+            
+            // Upload complete, now waiting for processing via WebSocket
+            this.uploadingFile = false;
+            this.uploadProgress = 100;
+            this.isProcessing = true;
+            this.processingProgress = 0;
+            this.processingMessage = 'Starting processing...';
+            
           } catch (error) {
             this.uploadError = 'Invalid response from server';
+            this.uploadingFile = false;
+            this.isProcessing = false;
           }
         } else {
           try {
@@ -532,9 +612,9 @@ export default {
             this.uploadError = `Upload failed with status ${xhr.status}`;
           }
           this.imagePreviewUrl = null;
+          this.uploadingFile = false;
+          this.isProcessing = false;
         }
-        this.uploadingFile = false;
-        this.isProcessing = false;
         event.target.value = '';
         this.selectedImageFile = null;
       });
@@ -545,6 +625,7 @@ export default {
         this.imagePreviewUrl = null;
         this.uploadingFile = false;
         this.isProcessing = false;
+        this.uploadProgress = 0;
         event.target.value = '';
         this.selectedImageFile = null;
       });
@@ -563,6 +644,8 @@ export default {
       this.selectedVideoFile = file.name;
       this.uploadingFile = true;
       this.isProcessing = false;
+      this.uploadProgress = 0;
+      this.processingProgress = 0;
       this.uploadSuccess = false;
       this.uploadError = null;
       
@@ -574,13 +657,9 @@ export default {
       
       xhr.upload.addEventListener('progress', (e) => {
         if (e.lengthComputable) {
-          const percentComplete = (e.loaded / e.total) * 100;
-          console.log(`[StreamControls] Video upload progress: ${percentComplete.toFixed(1)}%`);
-          // When upload is complete but response not yet received, switch to processing
-          if (percentComplete >= 100 && !this.isProcessing) {
-            this.isProcessing = true;
-            console.log('[StreamControls] Upload complete, now processing...');
-          }
+          const percentComplete = Math.round((e.loaded / e.total) * 100);
+          this.uploadProgress = percentComplete;
+          console.log(`[StreamControls] Video upload progress: ${percentComplete}%`);
         }
       });
       
@@ -588,19 +667,22 @@ export default {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const result = JSON.parse(xhr.responseText);
-            console.log('[StreamControls] Video uploaded:', result);
-            this.uploadSuccess = true;
+            console.log('[StreamControls] Video uploaded, processing started:', result);
             
-            // Load the generated thumbnail
-            if (result.thumbnailGenerated) {
-              this.videoThumbnailUrl = `/api/fallback/video-thumbnail?t=${Date.now()}`;
-            }
+            // Store upload ID to match with WebSocket progress
+            this.currentUploadId = result.uploadId;
             
-            setTimeout(() => {
-              this.uploadSuccess = false;
-            }, 3000);
+            // Upload complete, now waiting for processing via WebSocket
+            this.uploadingFile = false;
+            this.uploadProgress = 100;
+            this.isProcessing = true;
+            this.processingProgress = 0;
+            this.processingMessage = 'Starting processing...';
+            
           } catch (error) {
             this.uploadError = 'Invalid response from server';
+            this.uploadingFile = false;
+            this.isProcessing = false;
           }
         } else {
           try {
@@ -610,9 +692,9 @@ export default {
             this.uploadError = `Upload failed with status ${xhr.status}`;
           }
           this.videoThumbnailUrl = null;
+          this.uploadingFile = false;
+          this.isProcessing = false;
         }
-        this.uploadingFile = false;
-        this.isProcessing = false;
         event.target.value = '';
         this.selectedVideoFile = null;
       });
@@ -623,6 +705,7 @@ export default {
         this.videoThumbnailUrl = null;
         this.uploadingFile = false;
         this.isProcessing = false;
+        this.uploadProgress = 0;
         event.target.value = '';
         this.selectedVideoFile = null;
       });
@@ -1266,23 +1349,64 @@ h2 {
   border: 1px solid #ef4444;
 }
 
-/* Upload status with animation */
-.upload-status.uploading {
+/* Upload progress container with progress bar */
+.upload-progress-container {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
-  border: 1px solid #3b82f6;
+  padding: 12px;
+  background: rgba(30, 41, 59, 0.8);
+  border-radius: 8px;
+  border: 1px solid #334155;
 }
 
-.upload-status.processing {
+.progress-bar-wrapper {
+  width: 100%;
+  height: 8px;
+  background: #1e293b;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease-out;
+}
+
+.progress-bar.uploading {
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+  animation: progress-pulse 1.5s ease-in-out infinite;
+}
+
+.progress-bar.processing {
+  background: linear-gradient(90deg, #f97316, #fb923c);
+  animation: progress-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes progress-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.progress-status {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(249, 115, 22, 0.1);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.progress-status.uploading {
+  color: #3b82f6;
+}
+
+.progress-status.processing {
   color: #f97316;
-  border: 1px solid #f97316;
 }
 
 .upload-icon,

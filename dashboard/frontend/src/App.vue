@@ -91,6 +91,7 @@
           <StreamControls
             :switcherHealth="data.switcherHealth"
             :fallbackConfig="data.fallbackConfig"
+            :uploadProgress="uploadProgress"
           />
         </div>
 
@@ -209,6 +210,9 @@ export default {
     
     // Reconnection counter to notify ContainerLogs to resubscribe
     const wsReconnectCount = ref(0);
+    
+    // Upload progress tracking for StreamControls
+    const uploadProgress = ref(null);
     
     const data = ref({
       timestamp: null,
@@ -371,6 +375,17 @@ export default {
         // Forward log messages to ContainerLogs component
         console.log(`[app] Forwarding ${message.type} message for ${message.container}`);
         logMessages.value = [...logMessages.value, message];
+      } else if (message.type === 'upload_progress') {
+        // Forward upload progress to StreamControls
+        console.log(`[app] Upload progress: ${message.status} - ${message.progress}%`);
+        uploadProgress.value = message;
+        
+        // Clear progress after completion or error
+        if (message.status === 'completed' || message.status === 'error') {
+          setTimeout(() => {
+            uploadProgress.value = null;
+          }, 3000);
+        }
       }
       
       // Mark connection as active
@@ -538,6 +553,7 @@ export default {
       statusSuccess,
       logMessages,
       wsReconnectCount,
+      uploadProgress,
       lastCommitTime,
       lastCommitUrl,
       formattedTimeAgo,
