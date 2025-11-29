@@ -957,6 +957,11 @@ class ContainerController:
                     short_name = full_name_to_short[container.name]
                     detailed_status = self._format_detailed_status(container)
                     health_status = self._get_health_status(container)
+                    # Extract timestamps for frontend to calculate live uptime
+                    state = container.attrs.get('State', {})
+                    started_at = state.get('StartedAt')
+                    finished_at = state.get('FinishedAt')
+                    
                     containers_by_name[short_name] = {
                         "name": short_name,
                         "full_name": container.name,
@@ -965,7 +970,9 @@ class ContainerController:
                         "running": container.status == "running",
                         "health": health_status,
                         "id": container.short_id,
-                        "created": True
+                        "created": True,
+                        "started_at": started_at,
+                        "finished_at": finished_at
                     }
             
             # Get all services from compose file
@@ -1400,7 +1407,9 @@ class WebSocketServer:
                         'status': container['status'],
                         'health': container.get('health'),
                         'status_detail': container.get('status_detail'),
-                        'running': container.get('running', False)
+                        'running': container.get('running', False),
+                        'started_at': container.get('started_at'),
+                        'finished_at': container.get('finished_at')
                     }
                     
                     # Check if this container state changed
@@ -1418,7 +1427,9 @@ class WebSocketServer:
                                 'currentStatus': curr['status'],
                                 'currentHealth': curr.get('health'),
                                 'running': curr['running'],
-                                'statusDetail': curr['status_detail']
+                                'statusDetail': curr['status_detail'],
+                                'startedAt': curr.get('started_at'),
+                                'finishedAt': curr.get('finished_at')
                             })
                             print(f"[ws] Status change detected for {name}: {prev['status']}→{curr['status']}", flush=True)
                     else:
@@ -1431,7 +1442,9 @@ class WebSocketServer:
                                 'currentStatus': current_state[name]['status'],
                                 'currentHealth': current_state[name]['health'],
                                 'running': current_state[name]['running'],
-                                'statusDetail': current_state[name]['status_detail']
+                                'statusDetail': current_state[name]['status_detail'],
+                                'startedAt': current_state[name].get('started_at'),
+                                'finishedAt': current_state[name].get('finished_at')
                             })
                             print(f"[ws] New container detected: {name}", flush=True)
                 

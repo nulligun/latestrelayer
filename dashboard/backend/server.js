@@ -234,7 +234,9 @@ controllerWs.on('status_change', (message) => {
         status: change.currentStatus,
         health: change.currentHealth,
         running: change.running,
-        statusDetail: change.statusDetail
+        statusDetail: change.statusDetail,
+        startedAt: change.startedAt,
+        finishedAt: change.finishedAt
       };
     }
   });
