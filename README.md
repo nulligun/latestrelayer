@@ -468,7 +468,3 @@ gdb /usr/local/bin/ts-multiplexer
 For issues and questions:
 - GitHub Issues: [Link to your repository]
 - Documentation: See `ARCHITECTURE.md` for technical details# latestrelayer
-- Test commit
-- Another test
-- Yet another
-- Once again
