@@ -2,9 +2,10 @@
   <div class="stream-card">
     <h2>Camera Details</h2>
     
-    <!-- Camera Details - 4 Column Grid -->
+    <!-- Camera Details - 2 Row Grid -->
     <div class="camera-details-grid">
-      <!-- Column 1: Preview URL -->
+      <!-- Row 1: URLs -->
+      <!-- Preview URL -->
       <div class="info-item url-item">
         <div class="info-label">PREVIEW URL</div>
         <div class="url-with-copy">
@@ -16,11 +17,19 @@
           >
             {{ copyPreviewSuccess ? 'Copied!' : 'Copy' }}
           </button>
-          <div class="url-display">{{ previewUrl }}</div>
+          <div class="url-display">{{ displayPreviewUrl }}</div>
+          <button
+            class="toggle-visibility-btn"
+            @click="togglePreviewUrlVisibility"
+            type="button"
+            :title="showPreviewUrl ? 'Hide URL' : 'Show URL'"
+          >
+            {{ showPreviewUrl ? '🔓' : '🔒' }}
+          </button>
         </div>
       </div>
       
-      <!-- Column 2: Camera URL -->
+      <!-- Camera URL -->
       <div class="info-item url-item">
         <div class="info-label">CAMERA URL</div>
         <div class="url-with-copy">
@@ -32,11 +41,20 @@
           >
             {{ copySuccess ? 'Copied!' : 'Copy' }}
           </button>
-          <div class="url-display">{{ srtUrl }}</div>
+          <div class="url-display">{{ displayCameraUrl }}</div>
+          <button
+            class="toggle-visibility-btn"
+            @click="toggleCameraUrlVisibility"
+            type="button"
+            :title="showCameraUrl ? 'Hide URL' : 'Show URL'"
+          >
+            {{ showCameraUrl ? '🔓' : '🔒' }}
+          </button>
         </div>
       </div>
       
-      <!-- Column 3: Stream Status -->
+      <!-- Row 2: Status and Scene -->
+      <!-- Stream Status -->
       <div class="info-item">
         <div class="info-label">Stream Status</div>
         <div class="info-value status-badge" :class="isKickLive ? 'status-kick-live' : 'status-kick-offline'">
@@ -53,7 +71,7 @@
         </div>
       </div>
       
-      <!-- Column 4: Current Scene -->
+      <!-- Current Scene -->
       <div class="info-item">
         <div class="info-label">Current Scene</div>
         <div class="info-value scene-value">
@@ -116,7 +134,9 @@ export default {
       localSrtUrl: '',
       localPreviewUrl: '',
       copySuccess: false,
-      copyPreviewSuccess: false
+      copyPreviewSuccess: false,
+      showPreviewUrl: false,
+      showCameraUrl: false
     };
   },
   computed: {
@@ -128,6 +148,20 @@ export default {
     },
     previewUrl() {
       return this.cameraConfig?.previewUrl || this.localPreviewUrl || 'Loading...';
+    },
+    displayPreviewUrl() {
+      if (this.showPreviewUrl) {
+        return this.previewUrl;
+      }
+      // Return masked text when hidden
+      return '••••••••••••••••••••••••••••••';
+    },
+    displayCameraUrl() {
+      if (this.showCameraUrl) {
+        return this.srtUrl;
+      }
+      // Return masked text when hidden
+      return '••••••••••••••••••••••••••••••';
     },
     displayScene() {
       if (!this.currentScene) return 'Unknown';
@@ -271,6 +305,12 @@ export default {
         const secs = seconds % 60;
         return `${hours}h ${minutes}m ${secs}s`;
       }
+    },
+    togglePreviewUrlVisibility() {
+      this.showPreviewUrl = !this.showPreviewUrl;
+    },
+    toggleCameraUrlVisibility() {
+      this.showCameraUrl = !this.showCameraUrl;
     }
   }
 };
@@ -292,14 +332,8 @@ h2 {
 
 .camera-details-grid {
   display: grid;
-  grid-template-columns: 10fr 10fr 5fr 6fr;
+  grid-template-columns: repeat(2, 1fr);
   gap: 20px;
-}
-
-@media (max-width: 1400px) {
-  .camera-details-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
 }
 
 @media (max-width: 768px) {
@@ -387,6 +421,26 @@ h2 {
   display: flex;
   align-items: center;
   min-width: 0;
+}
+
+.toggle-visibility-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 8px;
+  transition: color 0.2s ease, transform 0.1s ease;
+  flex-shrink: 0;
+}
+
+.toggle-visibility-btn:hover {
+  color: #e2e8f0;
+  transform: scale(1.1);
+}
+
+.toggle-visibility-btn:active {
+  transform: scale(0.95);
 }
 
 .info-value {

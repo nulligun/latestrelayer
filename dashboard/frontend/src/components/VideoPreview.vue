@@ -61,6 +61,7 @@ export default {
     const videoElement = ref(null);
     const isPlaying = ref(false);
     const isLoading = ref(false);
+    const isPlayPending = ref(false);
     const isMuted = ref(true);
     const error = ref(null);
     let hls = null;
@@ -85,11 +86,19 @@ export default {
           console.log('[VideoPreview] HLS manifest parsed, starting playback');
           isLoading.value = false;
           error.value = null;
+          isPlayPending.value = true;
           videoElement.value.play()
             .then(() => {
+              isPlayPending.value = false;
               isPlaying.value = true;
             })
             .catch(err => {
+              isPlayPending.value = false;
+              // AbortError is expected when playback is interrupted intentionally
+              if (err.name === 'AbortError') {
+                console.log('[VideoPreview] Play request was interrupted (expected during stop)');
+                return;
+              }
               console.error('[VideoPreview] Autoplay failed:', err);
               error.value = 'Tap to play';
               isLoading.value = false;
@@ -121,11 +130,19 @@ export default {
         videoElement.value.addEventListener('loadedmetadata', () => {
           isLoading.value = false;
           error.value = null;
+          isPlayPending.value = true;
           videoElement.value.play()
             .then(() => {
+              isPlayPending.value = false;
               isPlaying.value = true;
             })
             .catch(err => {
+              isPlayPending.value = false;
+              // AbortError is expected when playback is interrupted intentionally
+              if (err.name === 'AbortError') {
+                console.log('[VideoPreview] Safari play request was interrupted (expected during stop)');
+                return;
+              }
               console.error('[VideoPreview] Safari autoplay failed:', err);
               error.value = 'Tap to play';
               isLoading.value = false;
@@ -145,7 +162,8 @@ export default {
     };
 
     const togglePlayback = () => {
-      if (isLoading.value) return;
+      // Prevent re-entry while loading or while a play operation is pending
+      if (isLoading.value || isPlayPending.value) return;
 
       if (isPlaying.value) {
         // Pause playback
@@ -179,6 +197,11 @@ export default {
 
     const handleVideoError = (e) => {
       console.error('[VideoPreview] Video error:', e);
+      // Don't reset state if a play operation is pending - the AbortError handler will manage cleanup
+      if (isPlayPending.value) {
+        console.log('[VideoPreview] Video error during pending play operation - deferring to play Promise handler');
+        return;
+      }
       if (!error.value) {
         error.value = 'Video playback error';
       }
@@ -194,6 +217,7 @@ export default {
       videoElement,
       isPlaying,
       isLoading,
+      isPlayPending,
       isMuted,
       error,
       togglePlayback,
