@@ -12,6 +12,7 @@ const ControllerService = require('./services/controller');
 const ControllerWebSocketClient = require('./services/controllerWebSocket');
 const SceneService = require('./services/scene');
 const metricsService = require('./services/metrics');
+const uploadProcessor = require('./services/uploadProcessor');
 
 const execPromise = promisify(exec);
 
@@ -736,54 +737,39 @@ app.post('/api/fallback/upload-image', upload.single('image'), async (req, res) 
       return res.status(400).json({ error: 'No image file uploaded' });
     }
     
-    console.log(`[fallback] Image uploaded: ${req.file.filename} (${req.file.size} bytes)`);
-    
-    // Convert image to MPEG-TS format for streaming
-    const imagePath = req.file.path;
-    const tsOutputPath = path.join(SHARED_DIR, 'static-image.ts');
-    const thumbnailPath = path.join(SHARED_DIR, 'offline-thumbnail.png');
-    
-    try {
-      // Copy the image as the thumbnail (for static images, the image IS the thumbnail)
-      await fs.copyFile(imagePath, thumbnailPath);
-      console.log(`[fallback] Created thumbnail from static image: ${thumbnailPath}`);
-      
-      // Convert image to a 30-second MPEG-TS video with audio
-      // Uses same format as convert-fallback.sh for compatibility
-      // Scale to 1280x720 with letterboxing to maintain aspect ratio
-      const ffmpegCommand = `ffmpeg -y -loop 1 -i "${imagePath}" \
-        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
-        -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black" \
-        -c:v libx264 -preset fast -crf 23 \
-        -g 30 -keyint_min 30 -sc_threshold 0 \
-        -r 30 -pix_fmt yuv420p \
-        -c:a aac -b:a 128k \
-        -bsf:v h264_mp4toannexb \
-        -f mpegts \
-        -mpegts_flags +resend_headers \
-        -mpegts_service_id 1 \
-        -mpegts_pmt_start_pid 256 \
-        -mpegts_start_pid 257 \
-        -muxrate 10000000 \
-        -t 30 \
-        "${tsOutputPath}"`;
-      
-      console.log(`[fallback] Converting image to MPEG-TS format...`);
-      await execPromise(ffmpegCommand);
-      console.log(`[fallback] Successfully converted image to: ${tsOutputPath}`);
-      
-    } catch (conversionError) {
-      console.error('[fallback] Error converting image to MPEG-TS:', conversionError.message);
-      // Continue anyway - the image is uploaded, conversion can be retried
+    // Check if already processing
+    const currentStatus = uploadProcessor.getStatus();
+    if (currentStatus.status === 'processing') {
+      return res.status(409).json({
+        error: 'Another file is currently being processed',
+        currentJob: currentStatus.job
+      });
     }
     
+    console.log(`[fallback] Image uploaded: ${req.file.filename} (${req.file.size} bytes)`);
+    
+    // Generate unique upload ID
+    const uploadId = `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const imagePath = req.file.path;
+    
+    // Return OK immediately - processing will happen in background
     res.json({
       success: true,
+      uploadId: uploadId,
       filename: req.file.filename,
       size: req.file.size,
-      path: req.file.path,
-      tsConverted: true
+      message: 'Upload complete, processing started in background'
     });
+    
+    // Start background processing (don't await)
+    uploadProcessor.processImage(uploadId, imagePath)
+      .then(() => {
+        console.log(`[fallback] Background image processing completed for ${uploadId}`);
+      })
+      .catch((error) => {
+        console.error(`[fallback] Background image processing failed for ${uploadId}:`, error.message);
+      });
+    
   } catch (error) {
     console.error('[api] Error uploading image:', error.message);
     res.status(500).json({ error: error.message });
@@ -797,71 +783,39 @@ app.post('/api/fallback/upload-video', uploadVideo.single('video'), async (req, 
       return res.status(400).json({ error: 'No video file uploaded' });
     }
     
+    // Check if already processing
+    const currentStatus = uploadProcessor.getStatus();
+    if (currentStatus.status === 'processing') {
+      return res.status(409).json({
+        error: 'Another file is currently being processed',
+        currentJob: currentStatus.job
+      });
+    }
+    
     console.log(`[fallback] Video uploaded: ${req.file.filename} (${req.file.size} bytes)`);
     
-    // Extract thumbnail from the middle of the video
+    // Generate unique upload ID
+    const uploadId = `vid_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const videoPath = req.file.path;
-    const thumbnailPath = path.join(SHARED_DIR, 'offline-thumbnail.png');
-    const tsOutputPath = path.join(SHARED_DIR, 'video.ts');
     
-    try {
-      // First, get video duration
-      const probeCommand = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`;
-      const { stdout: durationOutput } = await execPromise(probeCommand);
-      const duration = parseFloat(durationOutput.trim());
-      
-      if (isNaN(duration) || duration <= 0) {
-        throw new Error('Could not determine video duration');
-      }
-      
-      // Extract frame at 50% of video duration
-      const seekTime = duration / 2;
-      const thumbnailCommand = `ffmpeg -ss ${seekTime} -i "${videoPath}" -vframes 1 -y "${thumbnailPath}"`;
-      
-      console.log(`[fallback] Extracting thumbnail at ${seekTime.toFixed(2)}s (50% of ${duration.toFixed(2)}s)`);
-      await execPromise(thumbnailCommand);
-      
-      console.log(`[fallback] Thumbnail generated successfully: ${thumbnailPath}`);
-    } catch (thumbnailError) {
-      console.error('[fallback] Error generating thumbnail:', thumbnailError.message);
-      // Continue even if thumbnail generation fails - video is still uploaded
-    }
-    
-    // Convert video to MPEG-TS format for streaming
-    try {
-      // Uses same format as convert-fallback.sh for compatibility
-      // Scale to 1280x720 with letterboxing to maintain aspect ratio
-      const tsCommand = `ffmpeg -y -i "${videoPath}" \
-        -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black" \
-        -c:v libx264 -preset fast -crf 23 \
-        -g 30 -keyint_min 30 -sc_threshold 0 \
-        -c:a aac -b:a 128k \
-        -bsf:v h264_mp4toannexb \
-        -f mpegts \
-        -mpegts_flags +resend_headers \
-        -mpegts_service_id 1 \
-        -mpegts_pmt_start_pid 256 \
-        -mpegts_start_pid 257 \
-        -muxrate 10000000 \
-        "${tsOutputPath}"`;
-      
-      console.log(`[fallback] Converting video to MPEG-TS format...`);
-      await execPromise(tsCommand);
-      console.log(`[fallback] Successfully converted video to: ${tsOutputPath}`);
-      
-    } catch (conversionError) {
-      console.error('[fallback] Error converting video to MPEG-TS:', conversionError.message);
-      // Continue anyway - the video is uploaded, conversion can be retried
-    }
-    
+    // Return OK immediately - processing will happen in background
     res.json({
       success: true,
+      uploadId: uploadId,
       filename: req.file.filename,
       size: req.file.size,
-      path: req.file.path,
-      thumbnailGenerated: true,
-      tsConverted: true
+      message: 'Upload complete, processing started in background'
     });
+    
+    // Start background processing (don't await)
+    uploadProcessor.processVideo(uploadId, videoPath)
+      .then(() => {
+        console.log(`[fallback] Background video processing completed for ${uploadId}`);
+      })
+      .catch((error) => {
+        console.error(`[fallback] Background video processing failed for ${uploadId}:`, error.message);
+      });
+    
   } catch (error) {
     console.error('[api] Error uploading video:', error.message);
     res.status(500).json({ error: error.message });
@@ -1117,6 +1071,12 @@ function startMetricsPolling() {
   // Set up interval
   metricsIntervalId = setInterval(pollMetrics, POLLING_INTERVAL);
 }
+
+// Setup upload processor progress events
+uploadProcessor.on('progress', (progressData) => {
+  console.log(`[upload] Progress: ${progressData.fileType} - ${progressData.status} - ${progressData.progress}%`);
+  broadcast(progressData);
+});
 
 // Start server
 server.listen(PORT, '0.0.0.0', () => {

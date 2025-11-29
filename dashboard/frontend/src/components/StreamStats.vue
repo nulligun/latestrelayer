@@ -292,7 +292,7 @@ h2 {
 
 .camera-details-grid {
   display: grid;
-  grid-template-columns: 10fr 10fr 6fr 7fr;
+  grid-template-columns: 10fr 10fr 5fr 6fr;
   gap: 20px;
 }
 
