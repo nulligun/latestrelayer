@@ -111,26 +111,38 @@ install_tsduck() {
         cp -a "$RELEASE_DIR"/tsplugins/*.so "$TSDUCK_INSTALL/lib/tsduck/" 2>/dev/null || true
     fi
     
-    # Copy headers recursively using find (fixes the broken glob pattern)
-    echo "[tsduck] Copying headers from libtsduck..."
-    HEADER_COUNT=$(find src/libtsduck -name "*.h" | wc -l)
-    echo "[tsduck] Found $HEADER_COUNT headers in libtsduck"
-    find src/libtsduck -name "*.h" -exec cp {} "$TSDUCK_INSTALL/include/tsduck/" \; || {
-        echo "[tsduck] ERROR: Failed to copy libtsduck headers"
-        exit 1
-    }
+    # Copy headers from the build output directory (tsduck.h is generated during build)
+    # The build creates an include directory with all headers including the generated tsduck.h
+    if [ -d "$RELEASE_DIR/include" ]; then
+        echo "[tsduck] Copying headers from build output: $RELEASE_DIR/include"
+        HEADER_COUNT=$(find "$RELEASE_DIR/include" -name "*.h" | wc -l)
+        echo "[tsduck] Found $HEADER_COUNT headers in build output"
+        
+        # Copy all headers to tsduck include directory
+        find "$RELEASE_DIR/include" -name "*.h" -exec cp {} "$TSDUCK_INSTALL/include/tsduck/" \; || {
+            echo "[tsduck] ERROR: Failed to copy headers from build output"
+            exit 1
+        }
+    else
+        echo "[tsduck] WARNING: No include directory in build output, falling back to source headers"
+        # Fallback: Copy headers from source (without tsduck.h)
+        echo "[tsduck] Copying headers from libtsduck source..."
+        find src/libtsduck -name "*.h" -exec cp {} "$TSDUCK_INSTALL/include/tsduck/" \; || {
+            echo "[tsduck] ERROR: Failed to copy libtsduck headers"
+            exit 1
+        }
+        
+        echo "[tsduck] Copying headers from libtscore source..."
+        find src/libtscore -name "*.h" -exec cp {} "$TSDUCK_INSTALL/include/tscore/" \; || {
+            echo "[tsduck] ERROR: Failed to copy libtscore headers"
+            exit 1
+        }
+    fi
     
-    echo "[tsduck] Copying headers from libtscore..."
-    TSCORE_HEADER_COUNT=$(find src/libtscore -name "*.h" | wc -l)
-    echo "[tsduck] Found $TSCORE_HEADER_COUNT headers in libtscore"
-    find src/libtscore -name "*.h" -exec cp {} "$TSDUCK_INSTALL/include/tscore/" \; || {
-        echo "[tsduck] ERROR: Failed to copy libtscore headers"
-        exit 1
-    }
-    
-    # Verify critical header was copied
+    # Verify critical header was copied (tsduck.h is the generated umbrella header)
     if [ ! -f "$TSDUCK_INSTALL/include/tsduck/tsduck.h" ]; then
         echo "[tsduck] ERROR: tsduck.h not found after copy - installation failed"
+        echo "[tsduck] This header is generated during build. Check that the build completed successfully."
         exit 1
     fi
     
