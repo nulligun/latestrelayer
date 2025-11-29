@@ -279,7 +279,17 @@ class AggregatorService {
         },
         sceneDurationSeconds,
         cameraConfig: {
-          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
+          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`,
+          encodingSettings: {
+            videoEncoder: process.env.VIDEO_ENCODER || 'libx264',
+            videoWidth: parseInt(process.env.VIDEO_WIDTH || '1280', 10),
+            videoHeight: parseInt(process.env.VIDEO_HEIGHT || '720', 10),
+            videoFps: parseInt(process.env.VIDEO_FPS || '30', 10),
+            videoBitrate: parseInt(process.env.VIDEO_BITRATE || '1500', 10),
+            audioEncoder: process.env.AUDIO_ENCODER || 'aac',
+            audioBitrate: parseInt(process.env.AUDIO_BITRATE || '128', 10),
+            audioSampleRate: parseInt(process.env.AUDIO_SAMPLE_RATE || '48000', 10)
+          }
         },
         fallbackConfig: reconciledFallbackConfig
       };
@@ -311,7 +321,17 @@ class AggregatorService {
         },
         sceneDurationSeconds: durationSeconds,
         cameraConfig: {
-          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
+          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`,
+          encodingSettings: {
+            videoEncoder: process.env.VIDEO_ENCODER || 'libx264',
+            videoWidth: parseInt(process.env.VIDEO_WIDTH || '1280', 10),
+            videoHeight: parseInt(process.env.VIDEO_HEIGHT || '720', 10),
+            videoFps: parseInt(process.env.VIDEO_FPS || '30', 10),
+            videoBitrate: parseInt(process.env.VIDEO_BITRATE || '1500', 10),
+            audioEncoder: process.env.AUDIO_ENCODER || 'aac',
+            audioBitrate: parseInt(process.env.AUDIO_BITRATE || '128', 10),
+            audioSampleRate: parseInt(process.env.AUDIO_SAMPLE_RATE || '48000', 10)
+          }
         },
         fallbackConfig: {
           source: 'BLACK',

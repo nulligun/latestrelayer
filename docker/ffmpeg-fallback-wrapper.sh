@@ -1,7 +1,39 @@
 #!/bin/bash
+#
+# FFmpeg Fallback Wrapper
+# Streams fallback content to the multiplexer via UDP.
+#
+# This script checks for encoding settings changes on startup and
+# regenerates fallback.ts if settings have changed since last run.
+#
+# Settings are read from environment variables with defaults:
+#   - VIDEO_BITRATE (default: 1500) in kbps
+#   - VIDEO_WIDTH (default: 1280)
+#   - VIDEO_HEIGHT (default: 720)
+#   - VIDEO_FPS (default: 30)
+#   - VIDEO_ENCODER (default: libx264)
+#   - AUDIO_ENCODER (default: aac)
+#   - AUDIO_BITRATE (default: 128) in kbps
+#   - AUDIO_SAMPLE_RATE (default: 48000) in Hz
+#
 set -e
 
+# Read encoding settings from environment with defaults
+VIDEO_BITRATE="${VIDEO_BITRATE:-1500}"
+VIDEO_WIDTH="${VIDEO_WIDTH:-1280}"
+VIDEO_HEIGHT="${VIDEO_HEIGHT:-720}"
+VIDEO_FPS="${VIDEO_FPS:-30}"
+VIDEO_ENCODER="${VIDEO_ENCODER:-libx264}"
+AUDIO_ENCODER="${AUDIO_ENCODER:-aac}"
+AUDIO_BITRATE="${AUDIO_BITRATE:-128}"
+AUDIO_SAMPLE_RATE="${AUDIO_SAMPLE_RATE:-48000}"
+
+ENCODING_SETTINGS_FILE="/media/encoding_settings.json"
+
 echo "=== FFmpeg Fallback Wrapper ==="
+echo "[Wrapper] Encoding settings:"
+echo "  Video: ${VIDEO_WIDTH}x${VIDEO_HEIGHT} @ ${VIDEO_FPS}fps, ${VIDEO_BITRATE}kbps (${VIDEO_ENCODER})"
+echo "  Audio: ${AUDIO_ENCODER} @ ${AUDIO_BITRATE}kbps, ${AUDIO_SAMPLE_RATE}Hz stereo"
 
 # Signal handler for graceful shutdown
 cleanup() {
@@ -21,10 +53,61 @@ trap cleanup SIGTERM SIGINT
 echo "[Wrapper] Waiting for multiplexer to be ready..."
 sleep 5
 
-# Check if default fallback.ts exists, if not generate it
-DEFAULT_FALLBACK="/media/fallback.ts"
-if [ ! -f "$DEFAULT_FALLBACK" ]; then
-    echo "[Wrapper] Default fallback.ts not found, generating..."
+# Function to generate current settings JSON
+generate_settings_json() {
+    cat << EOF
+{
+  "video_bitrate": ${VIDEO_BITRATE},
+  "video_width": ${VIDEO_WIDTH},
+  "video_height": ${VIDEO_HEIGHT},
+  "video_fps": ${VIDEO_FPS},
+  "video_encoder": "${VIDEO_ENCODER}",
+  "audio_encoder": "${AUDIO_ENCODER}",
+  "audio_bitrate": ${AUDIO_BITRATE},
+  "audio_sample_rate": ${AUDIO_SAMPLE_RATE}
+}
+EOF
+}
+
+# Function to check if settings have changed
+settings_changed() {
+    if [ ! -f "$ENCODING_SETTINGS_FILE" ]; then
+        echo "[Wrapper] No previous settings file found"
+        return 0  # Settings changed (no previous settings)
+    fi
+    
+    # Generate current settings and compare
+    CURRENT_SETTINGS=$(generate_settings_json)
+    STORED_SETTINGS=$(cat "$ENCODING_SETTINGS_FILE")
+    
+    if [ "$CURRENT_SETTINGS" != "$STORED_SETTINGS" ]; then
+        echo "[Wrapper] Encoding settings have changed since last run"
+        echo "[Wrapper] Previous: $STORED_SETTINGS"
+        echo "[Wrapper] Current: $CURRENT_SETTINGS"
+        return 0  # Settings changed
+    fi
+    
+    echo "[Wrapper] Encoding settings unchanged"
+    return 1  # Settings not changed
+}
+
+# Function to save current settings
+save_settings() {
+    echo "[Wrapper] Saving current encoding settings..."
+    generate_settings_json > "$ENCODING_SETTINGS_FILE"
+}
+
+# Function to regenerate fallback video
+regenerate_fallback() {
+    local DEFAULT_FALLBACK="$1"
+    
+    echo "[Wrapper] Regenerating fallback video with current settings..."
+    
+    # Delete existing fallback.ts if it exists
+    if [ -f "$DEFAULT_FALLBACK" ]; then
+        echo "[Wrapper] Deleting existing fallback.ts..."
+        rm -f "$DEFAULT_FALLBACK"
+    fi
     
     # Generate fallback.mp4 first
     TEMP_MP4="/tmp/fallback.mp4"
@@ -34,17 +117,35 @@ if [ ! -f "$DEFAULT_FALLBACK" ]; then
         if /usr/local/bin/convert-fallback.sh "$TEMP_MP4" "$DEFAULT_FALLBACK"; then
             echo "[Wrapper] Fallback.ts generated successfully"
             rm -f "$TEMP_MP4"
+            # Save the settings used for this generation
+            save_settings
+            return 0
         else
             echo "[Wrapper] ERROR: Failed to convert fallback to TS"
             rm -f "$TEMP_MP4"
-            exit 1
+            return 1
         fi
     else
         echo "[Wrapper] ERROR: Failed to generate fallback video"
+        return 1
+    fi
+}
+
+# Check if default fallback.ts needs to be generated or regenerated
+DEFAULT_FALLBACK="/media/fallback.ts"
+
+if [ ! -f "$DEFAULT_FALLBACK" ]; then
+    echo "[Wrapper] Default fallback.ts not found, generating..."
+    if ! regenerate_fallback "$DEFAULT_FALLBACK"; then
+        exit 1
+    fi
+elif settings_changed; then
+    echo "[Wrapper] Settings changed, regenerating fallback.ts..."
+    if ! regenerate_fallback "$DEFAULT_FALLBACK"; then
         exit 1
     fi
 else
-    echo "[Wrapper] Default fallback.ts exists at $DEFAULT_FALLBACK"
+    echo "[Wrapper] Default fallback.ts exists at $DEFAULT_FALLBACK with current settings"
 fi
 
 # Select the appropriate fallback source based on configuration

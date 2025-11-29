@@ -1,8 +1,19 @@
 /**
  * Upload Processor Service
- * 
+ *
  * Handles background processing of uploaded files (images and videos)
  * with progress reporting via WebSocket.
+ *
+ * Encoding settings are read from environment variables:
+ *   - VIDEO_WIDTH (default: 1280)
+ *   - VIDEO_HEIGHT (default: 720)
+ *   - VIDEO_FPS (default: 30)
+ *   - VIDEO_ENCODER (default: libx264)
+ *   - AUDIO_ENCODER (default: aac)
+ *   - AUDIO_BITRATE (default: 128) in kbps
+ *   - AUDIO_SAMPLE_RATE (default: 48000) in Hz
+ *
+ * Audio is always stereo (2 channels).
  */
 
 const { spawn } = require('child_process');
@@ -16,6 +27,35 @@ class UploadProcessor extends EventEmitter {
     this.currentJob = null;
     this.processingQueue = [];
     this.SHARED_DIR = '/app/shared';
+    
+    // Read encoding settings from environment with defaults
+    this.videoWidth = parseInt(process.env.VIDEO_WIDTH, 10) || 1280;
+    this.videoHeight = parseInt(process.env.VIDEO_HEIGHT, 10) || 720;
+    this.videoFps = parseInt(process.env.VIDEO_FPS, 10) || 30;
+    this.videoEncoder = process.env.VIDEO_ENCODER || 'libx264';
+    this.audioEncoder = process.env.AUDIO_ENCODER || 'aac';
+    this.audioBitrate = parseInt(process.env.AUDIO_BITRATE, 10) || 128;
+    this.audioSampleRate = parseInt(process.env.AUDIO_SAMPLE_RATE, 10) || 48000;
+    
+    console.log(`[uploadProcessor] Encoding settings:`);
+    console.log(`[uploadProcessor]   Video: ${this.videoWidth}x${this.videoHeight} @ ${this.videoFps}fps (${this.videoEncoder})`);
+    console.log(`[uploadProcessor]   Audio: ${this.audioEncoder} @ ${this.audioBitrate}kbps, ${this.audioSampleRate}Hz stereo`);
+  }
+
+  /**
+   * Get current encoding settings
+   * @returns {Object} Current encoding settings
+   */
+  getEncodingSettings() {
+    return {
+      videoWidth: this.videoWidth,
+      videoHeight: this.videoHeight,
+      videoFps: this.videoFps,
+      videoEncoder: this.videoEncoder,
+      audioEncoder: this.audioEncoder,
+      audioBitrate: this.audioBitrate,
+      audioSampleRate: this.audioSampleRate
+    };
   }
 
   /**
@@ -70,23 +110,24 @@ class UploadProcessor extends EventEmitter {
       this._emitProgress();
 
       // Step 2: Convert image to MPEG-TS using ffmpeg with progress
+      // Using encoding settings from environment variables
       await this._runFfmpegWithProgress([
         '-y',
         '-loop', '1',
         '-i', sourcePath,
         '-f', 'lavfi',
-        '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
-        '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black',
-        '-c:v', 'libx264',
+        '-i', `anullsrc=channel_layout=stereo:sample_rate=${this.audioSampleRate}`,
+        '-vf', `scale=${this.videoWidth}:${this.videoHeight}:force_original_aspect_ratio=decrease,pad=${this.videoWidth}:${this.videoHeight}:(ow-iw)/2:(oh-ih)/2:black`,
+        '-c:v', this.videoEncoder,
         '-preset', 'fast',
         '-crf', '23',
-        '-g', '30',
-        '-keyint_min', '30',
+        '-g', String(this.videoFps),
+        '-keyint_min', String(this.videoFps),
         '-sc_threshold', '0',
-        '-r', '30',
+        '-r', String(this.videoFps),
         '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac',
-        '-b:a', '128k',
+        '-c:a', this.audioEncoder,
+        '-b:a', `${this.audioBitrate}k`,
         '-bsf:v', 'h264_mp4toannexb',
         '-f', 'mpegts',
         '-mpegts_flags', '+resend_headers',
@@ -154,6 +195,7 @@ class UploadProcessor extends EventEmitter {
       console.log(`[uploadProcessor] Extracted thumbnail at ${seekTime.toFixed(2)}s`);
 
       // Step 3: Convert video to MPEG-TS with progress
+      // Using encoding settings from environment variables
       this.currentJob.progress = 10;
       this.currentJob.message = 'Converting to MPEG-TS format...';
       this._emitProgress();
@@ -161,15 +203,15 @@ class UploadProcessor extends EventEmitter {
       await this._runFfmpegWithProgress([
         '-y',
         '-i', sourcePath,
-        '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black',
-        '-c:v', 'libx264',
+        '-vf', `scale=${this.videoWidth}:${this.videoHeight}:force_original_aspect_ratio=decrease,pad=${this.videoWidth}:${this.videoHeight}:(ow-iw)/2:(oh-ih)/2:black`,
+        '-c:v', this.videoEncoder,
         '-preset', 'fast',
         '-crf', '23',
-        '-g', '30',
-        '-keyint_min', '30',
+        '-g', String(this.videoFps),
+        '-keyint_min', String(this.videoFps),
         '-sc_threshold', '0',
-        '-c:a', 'aac',
-        '-b:a', '128k',
+        '-c:a', this.audioEncoder,
+        '-b:a', `${this.audioBitrate}k`,
         '-bsf:v', 'h264_mp4toannexb',
         '-f', 'mpegts',
         '-mpegts_flags', '+resend_headers',
