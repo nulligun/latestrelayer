@@ -257,7 +257,9 @@ class AggregatorService {
           statusDetail: c.status_detail,
           running: c.running,
           health: c.health,
-          id: c.id
+          id: c.id,
+          startedAt: c.started_at,
+          finishedAt: c.finished_at
         })),
         containersFetchError,
         systemMetrics,
