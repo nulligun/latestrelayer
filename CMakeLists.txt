@@ -46,6 +46,11 @@ target_include_directories(ts-multiplexer PRIVATE
     ${CURL_INCLUDE_DIRS}
 )
 
+# Library directories (needed for TSDuck libraries from pkg-config)
+target_link_directories(ts-multiplexer PRIVATE
+    ${TSDUCK_LIBRARY_DIRS}
+)
+
 # Link libraries
 target_link_libraries(ts-multiplexer PRIVATE
     ${TSDUCK_LIBRARIES}
