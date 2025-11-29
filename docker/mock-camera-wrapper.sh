@@ -1,7 +1,34 @@
 #!/bin/bash
+#
+# Mock Camera Wrapper
+# Generates a test video stream with configurable encoding settings.
+#
+# Settings are read from environment variables with defaults:
+#   - VIDEO_WIDTH (default: 1280)
+#   - VIDEO_HEIGHT (default: 720)
+#   - VIDEO_FPS (default: 30)
+#   - VIDEO_ENCODER (default: libx264)
+#   - AUDIO_ENCODER (default: aac)
+#   - AUDIO_BITRATE (default: 128) in kbps
+#   - AUDIO_SAMPLE_RATE (default: 48000) in Hz
+#
+# Audio is always stereo.
+#
 set -e
 
+# Read encoding settings from environment with defaults
+VIDEO_WIDTH="${VIDEO_WIDTH:-1280}"
+VIDEO_HEIGHT="${VIDEO_HEIGHT:-720}"
+VIDEO_FPS="${VIDEO_FPS:-30}"
+VIDEO_ENCODER="${VIDEO_ENCODER:-libx264}"
+AUDIO_ENCODER="${AUDIO_ENCODER:-aac}"
+AUDIO_BITRATE="${AUDIO_BITRATE:-128}"
+AUDIO_SAMPLE_RATE="${AUDIO_SAMPLE_RATE:-48000}"
+
 echo "=== Mock Camera Wrapper ==="
+echo "[Wrapper] Encoding settings:"
+echo "  Video: ${VIDEO_WIDTH}x${VIDEO_HEIGHT} @ ${VIDEO_FPS}fps (${VIDEO_ENCODER})"
+echo "  Audio: ${AUDIO_ENCODER} @ ${AUDIO_BITRATE}kbps, ${AUDIO_SAMPLE_RATE}Hz stereo"
 
 # Signal handler for graceful shutdown
 cleanup() {
@@ -25,12 +52,12 @@ sleep 5
 echo "[Wrapper] Starting mock camera stream..."
 
 ffmpeg -re \
-  -f lavfi -i "testsrc2=size=1280x720:rate=30" \
-  -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+  -f lavfi -i "testsrc2=size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=${VIDEO_FPS}" \
+  -f lavfi -i "sine=frequency=440:sample_rate=${AUDIO_SAMPLE_RATE}" \
   -filter_complex "[1:a]aformat=channel_layouts=stereo[aout]" \
   -map 0:v -map "[aout]" \
-  -c:v libx264 -tune zerolatency -preset veryfast -pix_fmt yuv420p \
-  -c:a aac -b:a 128k \
+  -c:v "${VIDEO_ENCODER}" -tune zerolatency -preset veryfast -pix_fmt yuv420p \
+  -c:a "${AUDIO_ENCODER}" -b:a "${AUDIO_BITRATE}k" \
   -f mpegts "srt://ffmpeg-srt-live:1937?mode=caller" &
 
 FFMPEG_PID=$!
