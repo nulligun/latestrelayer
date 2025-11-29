@@ -205,6 +205,17 @@ setup_tsduck_environment() {
     echo "[tsduck] Environment configured:"
     echo "  PATH includes: $TSDUCK_INSTALL/bin"
     echo "  LD_LIBRARY_PATH includes: $TSDUCK_INSTALL/lib"
+    echo "  PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
+    
+    # Verify pkg-config can find tsduck
+    if pkg-config --exists tsduck 2>/dev/null; then
+        echo "[tsduck] pkg-config found tsduck:"
+        echo "  CFLAGS: $(pkg-config --cflags tsduck)"
+        echo "  LIBS: $(pkg-config --libs tsduck)"
+    else
+        echo "[tsduck] WARNING: pkg-config cannot find tsduck package"
+        echo "[tsduck] Check that $TSDUCK_INSTALL/lib/pkgconfig/tsduck.pc exists"
+    fi
 }
 
 # ============================================================================
@@ -267,6 +278,19 @@ compile_multiplexer() {
     # Create build directory if it doesn't exist
     mkdir -p "$MULTIPLEXER_BUILD"
     cd "$MULTIPLEXER_BUILD"
+    
+    # Check if CMake cache needs to be invalidated due to TSDuck changes
+    # This ensures we pick up new header paths after TSDuck installation
+    CMAKE_CACHE="$MULTIPLEXER_BUILD/CMakeCache.txt"
+    TSDUCK_TIMESTAMP="$TSDUCK_INSTALL/.install_timestamp"
+    
+    if [ -f "$CMAKE_CACHE" ] && [ -f "$TSDUCK_TIMESTAMP" ]; then
+        if [ "$TSDUCK_TIMESTAMP" -nt "$CMAKE_CACHE" ]; then
+            echo "[multiplexer] TSDuck installation changed - clearing CMake cache"
+            rm -f "$CMAKE_CACHE"
+            rm -rf CMakeFiles/
+        fi
+    fi
 
     # Check if we need to compile
     NEED_COMPILE=0
@@ -287,9 +311,15 @@ compile_multiplexer() {
             echo "[multiplexer] Binary is up to date - skipping compilation"
         fi
     fi
+    
+    # Also need to compile if CMake cache was cleared
+    if [ ! -f "$CMAKE_CACHE" ]; then
+        NEED_COMPILE=1
+    fi
 
     # Compile if needed
     if [ "$NEED_COMPILE" -eq 1 ]; then
+        echo "[multiplexer] PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
         echo "[multiplexer] Running CMake..."
         cmake -DTSDUCK_INSTALL_PREFIX="$TSDUCK_INSTALL" .. || { echo "CMake failed!"; exit 1; }
         

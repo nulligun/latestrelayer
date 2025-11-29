@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y \
     libedit-dev \
     libpcap-dev \
     libdvbcsa-dev \
+    libpcsclite-dev \
     wget \
     ca-certificates \
     # Multiplexer dependencies
