@@ -19,6 +19,7 @@ RTMPOutput::RTMPOutput(const std::string& rtmp_url)
       connection_state_(ConnectionState::DISCONNECTED),
       packets_written_(0),
       packets_dropped_(0),
+      stream_incompatible_(false),
       reconnection_attempts_(0),
       total_disconnections_(0),
       successful_reconnections_(0),
@@ -398,6 +399,13 @@ void RTMPOutput::parseFFmpegOutput(const std::string& line) {
         std::cout << "[RTMPOutput] FFmpeg: " << line << std::endl;
     }
     
+    // Check for stream incompatibility errors FIRST (before general error handling)
+    // These indicate camera stream codec parameters don't match fallback
+    if (isStreamIncompatibilityError(line)) {
+        handleStreamIncompatibility();
+        return;  // Don't process as regular error
+    }
+    
     // Convert to lowercase for easier matching
     std::string lower_line = line;
     std::transform(lower_line.begin(), lower_line.end(), lower_line.begin(), ::tolower);
@@ -425,7 +433,7 @@ void RTMPOutput::parseFFmpegOutput(const std::string& line) {
         reconnection_attempts_ = 0;
     }
     
-    // Check for errors
+    // Check for errors (skip incompatibility errors which are handled above)
     if (lower_line.find("error") != std::string::npos ||
         lower_line.find("failed") != std::string::npos ||
         lower_line.find("refused") != std::string::npos ||
@@ -529,6 +537,71 @@ int64_t RTMPOutput::getMsSinceLastWrite() const {
         now - last_write_time_
     );
     return elapsed.count();
+}
+
+void RTMPOutput::setIncompatibilityCallback(IncompatibilityCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    incompatibility_callback_ = std::move(callback);
+}
+
+bool RTMPOutput::isStreamIncompatibilityError(const std::string& line) {
+    // Check for specific error patterns that indicate stream incompatibility
+    // These occur when the camera stream has different codec parameters than the fallback
+    
+    // AAC audio codec incompatibility
+    if (line.find("Error parsing ADTS frame header") != std::string::npos) {
+        return true;
+    }
+    
+    // Bitstream filter errors (codec mismatch)
+    if (line.find("Error applying bitstream filters") != std::string::npos) {
+        return true;
+    }
+    
+    // Invalid data during processing (corrupted due to codec switch)
+    if (line.find("Invalid data found when processing input") != std::string::npos) {
+        return true;
+    }
+    
+    // PES packet corruption (often accompanies codec issues)
+    if (line.find("PES packet size mismatch") != std::string::npos) {
+        return true;
+    }
+    
+    // Packet corruption
+    if (line.find("Packet corrupt") != std::string::npos) {
+        return true;
+    }
+    
+    return false;
+}
+
+void RTMPOutput::handleStreamIncompatibility() {
+    // Only handle if not already flagged
+    if (stream_incompatible_.load()) {
+        return;
+    }
+    
+    std::cerr << "[RTMPOutput] ========================================" << std::endl;
+    std::cerr << "[RTMPOutput] ✗ STREAM INCOMPATIBILITY DETECTED" << std::endl;
+    std::cerr << "[RTMPOutput] ========================================" << std::endl;
+    std::cerr << "[RTMPOutput] Camera stream codec parameters may not match fallback" << std::endl;
+    std::cerr << "[RTMPOutput] Restarting FFmpeg and switching to fallback..." << std::endl;
+    std::cerr << "[RTMPOutput] ========================================" << std::endl;
+    
+    // Set the incompatibility flag
+    stream_incompatible_ = true;
+    
+    // Force disconnection to trigger FFmpeg restart
+    handleDisconnection();
+    
+    // Call the incompatibility callback to notify Multiplexer
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        if (incompatibility_callback_) {
+            incompatibility_callback_();
+        }
+    }
 }
 
 void RTMPOutput::attemptReconnection() {

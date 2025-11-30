@@ -13,6 +13,7 @@ Multiplexer::Multiplexer(const Config& config)
       drone_stream_ready_(false),
       initial_privacy_mode_(false),
       current_input_source_(InputSource::CAMERA),
+      incompatibility_recovery_pending_(false),
       packets_processed_(0) {
 }
 
@@ -109,6 +110,11 @@ bool Multiplexer::initialize() {
     // Create RTMP output
     rtmp_output_ = std::make_unique<RTMPOutput>(config_.getRtmpUrl());
     
+    // Set up stream incompatibility callback
+    rtmp_output_->setIncompatibilityCallback([this]() {
+        onStreamIncompatible();
+    });
+    
     // Start UDP receivers
     if (!live_receiver_->start()) {
         std::cerr << "[Multiplexer] Failed to start live receiver" << std::endl;
@@ -157,6 +163,7 @@ bool Multiplexer::initialize() {
             status.rtmp_connected = rtmp_output_->isConnected();
             status.packets_written = rtmp_output_->getPacketsWritten();
             status.ms_since_last_write = rtmp_output_->getMsSinceLastWrite();
+            status.stream_incompatible = rtmp_output_->isStreamIncompatible();
         }
         return status;
     });
@@ -477,8 +484,26 @@ void Multiplexer::processLoop() {
         TSAnalyzer* active_live_analyzer = getActiveLiveAnalyzer();
         bool active_stream_ready = isActiveLiveStreamReady();
         
-        // Periodically check for active live stream if not yet detected
-        if (!active_stream_ready && packets_processed_ % live_check_interval == 0) {
+        // Check if incompatibility recovery timer has elapsed
+        if (incompatibility_recovery_pending_.load()) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - incompatibility_retry_time_
+            );
+            
+            if (elapsed.count() >= INCOMPATIBILITY_RETRY_DELAY_MS) {
+                std::cout << "[Multiplexer] Incompatibility recovery timer elapsed, re-enabling live stream detection" << std::endl;
+                incompatibility_recovery_pending_ = false;
+                
+                // Clear the incompatibility flag in RTMPOutput
+                if (rtmp_output_) {
+                    rtmp_output_->clearIncompatibilityFlag();
+                }
+            }
+        }
+        
+        // Periodically check for active live stream if not yet detected (and not in recovery)
+        if (!active_stream_ready && !incompatibility_recovery_pending_.load() && packets_processed_ % live_check_interval == 0) {
             if (!active_live_queue->empty()) {
                 bool detected = false;
                 
@@ -494,6 +519,12 @@ void Multiplexer::processLoop() {
                     std::cout << "[Multiplexer] " << (input_source == InputSource::CAMERA ? "Camera" : "Drone")
                               << " stream successfully initialized!" << std::endl;
                     std::cout << "[Multiplexer] Switching to LIVE mode" << std::endl;
+                    
+                    // Clear incompatibility flag on successful camera connection
+                    if (rtmp_output_ && rtmp_output_->isStreamIncompatible()) {
+                        std::cout << "[Multiplexer] Clearing stream incompatibility flag (successful connection)" << std::endl;
+                        rtmp_output_->clearIncompatibilityFlag();
+                    }
                     
                     // Switch to live mode
                     switcher_->setMode(Mode::LIVE);
@@ -561,6 +592,12 @@ void Multiplexer::processLoop() {
                         drone_stream_ready_ = false;
                         std::cout << "[Multiplexer] Drone stream marked as not ready - will re-analyze when packets arrive" << std::endl;
                     }
+                    
+                    // Clear incompatibility flag on camera disconnect (timeout)
+                    if (rtmp_output_ && rtmp_output_->isStreamIncompatible()) {
+                        std::cout << "[Multiplexer] Clearing stream incompatibility flag (camera disconnected)" << std::endl;
+                        rtmp_output_->clearIncompatibilityFlag();
+                    }
                 }
             } else {
                 // In FALLBACK mode, check if live packets are arriving
@@ -569,11 +606,18 @@ void Multiplexer::processLoop() {
                     switcher_->updateLiveTimestamp();
                 }
                 
-                // Try to return to live if packets are available and stream is ready
-                if (isActiveLiveStreamReady() && !active_live_queue->empty() && switcher_->tryReturnToLive()) {
+                // Try to return to live if packets are available and stream is ready (and not in recovery)
+                if (isActiveLiveStreamReady() && !incompatibility_recovery_pending_.load() &&
+                    !active_live_queue->empty() && switcher_->tryReturnToLive()) {
                     std::cout << "[Multiplexer] Switched to LIVE mode ("
                               << (input_source == InputSource::CAMERA ? "camera" : "drone")
                               << " stream restored)" << std::endl;
+                    
+                    // Clear incompatibility flag on successful return to live
+                    if (rtmp_output_ && rtmp_output_->isStreamIncompatible()) {
+                        std::cout << "[Multiplexer] Clearing stream incompatibility flag (successful return to live)" << std::endl;
+                        rtmp_output_->clearIncompatibilityFlag();
+                    }
                     
                     // Calculate new timestamp offset for live stream
                     ts::TSPacket first_live_packet;
@@ -648,6 +692,34 @@ void Multiplexer::onPrivacyModeChange(bool enabled) {
             switcher_->setMode(Mode::FALLBACK);
         }
     }
+}
+
+void Multiplexer::onStreamIncompatible() {
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    std::cout << "[Multiplexer] Stream incompatibility detected!" << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    std::cout << "[Multiplexer] Camera stream codec may not match fallback settings" << std::endl;
+    std::cout << "[Multiplexer] Switching to FALLBACK mode and waiting "
+              << (INCOMPATIBILITY_RETRY_DELAY_MS / 1000) << " seconds before retry" << std::endl;
+    
+    // Reset live stream ready flag
+    InputSource input_source = current_input_source_.load();
+    if (input_source == InputSource::CAMERA) {
+        live_stream_ready_ = false;
+    } else {
+        drone_stream_ready_ = false;
+    }
+    
+    // Switch to fallback mode
+    if (switcher_) {
+        switcher_->setMode(Mode::FALLBACK);
+    }
+    
+    // Set up recovery timer
+    incompatibility_recovery_pending_ = true;
+    incompatibility_retry_time_ = std::chrono::steady_clock::now();
+    
+    std::cout << "[Multiplexer] ========================================" << std::endl;
 }
 
 void Multiplexer::onInputSourceChange(const std::string& source) {
