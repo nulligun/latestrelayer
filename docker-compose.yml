@@ -56,6 +56,9 @@ services:
       - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
       - SRT_PORT=${SRT_PORT:-1937}
       - SRT_DOMAIN=${SRT_DOMAIN:-localhost}
+      # Kick streaming credentials (for placeholder display)
+      - KICK_URL=${KICK_URL:-}
+      - KICK_KEY=${KICK_KEY:-}
       # Video encoding settings
       - VIDEO_BITRATE=${VIDEO_BITRATE:-1500}
       - VIDEO_WIDTH=${VIDEO_WIDTH:-1280}
