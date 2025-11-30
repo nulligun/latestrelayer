@@ -926,40 +926,45 @@ app.get('/api/kick/config', async (req, res) => {
     // Ensure shared directory exists
     await fs.mkdir(SHARED_DIR, { recursive: true });
     
-    let config;
+    // Always include env values for placeholder display
+    const envKickUrl = process.env.KICK_URL || '';
+    const envKickKey = process.env.KICK_KEY || '';
+    
+    let kickUrl = '';
+    let kickKey = '';
     let source = 'env'; // Default to environment variables
+    let lastUpdated = new Date().toISOString();
     
     try {
       const data = await fs.readFile(KICK_CONFIG_PATH, 'utf8');
-      config = JSON.parse(data);
+      const config = JSON.parse(data);
       
       // Check if config has valid (non-empty) values
       if (config.kickUrl && config.kickUrl.trim() !== '' &&
           config.kickKey && config.kickKey.trim() !== '') {
         source = 'config';
+        kickUrl = config.kickUrl;
+        kickKey = config.kickKey;
+        lastUpdated = config.lastUpdated || lastUpdated;
       } else {
         // Config exists but has empty values, fall back to env
         console.log('[kick] Config file has empty values, using environment variables');
-        config = {
-          kickUrl: process.env.KICK_URL || '',
-          kickKey: process.env.KICK_KEY || '',
-          lastUpdated: new Date().toISOString()
-        };
+        // When source is 'env', kickUrl/kickKey stay empty - env values shown as placeholders
       }
     } catch (error) {
       // Config doesn't exist, use environment variables
       console.log('[kick] Config file not found, using environment variables');
-      config = {
-        kickUrl: process.env.KICK_URL || '',
-        kickKey: process.env.KICK_KEY || '',
-        lastUpdated: new Date().toISOString()
-      };
+      // When source is 'env', kickUrl/kickKey stay empty - env values shown as placeholders
     }
     
-    // Add source metadata to response
+    // Return config with separate env placeholder values
     res.json({
-      ...config,
-      source: source
+      kickUrl: kickUrl,
+      kickKey: kickKey,
+      envKickUrl: envKickUrl,
+      envKickKey: envKickKey,
+      source: source,
+      lastUpdated: lastUpdated
     });
   } catch (error) {
     console.error('[api] Error getting Kick config:', error.message);
