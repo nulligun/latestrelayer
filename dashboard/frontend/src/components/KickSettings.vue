@@ -131,10 +131,16 @@ export default {
       return this.kickUrl.trim().length > 0 && this.kickKey.trim().length > 0;
     },
     urlPlaceholder() {
-      return this.envKickUrl || 'rtmps://...';
+      if (this.showUrl) {
+        return this.envKickUrl || 'rtmps://...';
+      }
+      return '••••••••';
     },
     keyPlaceholder() {
-      return this.envKickKey || 'sk_...';
+      if (this.showKey) {
+        return this.envKickKey || 'sk_...';
+      }
+      return '••••••••';
     },
     confirmModalMessage() {
       return `This will:\n\n• Delete saved configuration\n• Reload defaults from environment variables\n• Restart ffmpeg-kick container if running\n\nYou can save new settings anytime.`;
