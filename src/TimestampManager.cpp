@@ -19,37 +19,81 @@ TimestampManager::TimestampManager()
 TimestampManager::~TimestampManager() {
 }
 
-void TimestampManager::trackLiveTimestamps(const TimestampInfo& ts_info) {
-    // Track timestamps from live packets without modifying them
-    // This is used for gap-aware fallback transitions
+void TimestampManager::trackLiveTimestamps(const TimestampInfo& ts_info, uint64_t adjusted_pts, uint64_t adjusted_dts, uint64_t adjusted_pcr) {
+    // Track timestamps from live packets
+    // When live_offset_ is non-zero (FALLBACK→LIVE transition), we store the ADJUSTED values
+    // to maintain continuous output timeline tracking
     
     auto now = std::chrono::steady_clock::now();
     
     if (ts_info.pts.has_value()) {
-        last_live_pts_ = ts_info.pts.value();
+        last_live_pts_ = ts_info.pts.value();  // Store original for reference
         last_live_packet_wall_time_ = now;
         has_live_reference_ = true;
         
-        // Also update output tracking since live is passthrough
-        // (the live PTS becomes the output PTS)
-        last_output_pts_ = ts_info.pts.value();
+        // Store the adjusted PTS as output (maintains timeline continuity)
+        last_output_pts_ = adjusted_pts;
     }
     
     if (ts_info.dts.has_value()) {
-        last_output_dts_ = ts_info.dts.value();
+        last_output_dts_ = adjusted_dts;
     }
     
     if (ts_info.pcr.has_value()) {
-        last_output_pcr_ = ts_info.pcr.value();
+        last_output_pcr_ = adjusted_pcr;
     }
 }
 
 bool TimestampManager::adjustPacket(ts::TSPacket& packet, Source source, const TimestampInfo& input_ts) {
-    // LIVE packets pass through unmodified - the camera is the canonical time source
-    // Only track timestamps for fallback offset calculation
+    // LIVE packets: Apply live_offset_ if non-zero (for FALLBACK→LIVE continuity)
+    // When live_offset_ is 0, live packets pass through unmodified
     if (source == Source::LIVE) {
-        trackLiveTimestamps(input_ts);
-        return true;  // No modification to packet
+        if (live_offset_ == 0) {
+            // Pure passthrough mode - no offset needed
+            // Track with original timestamps
+            uint64_t pts = input_ts.pts.value_or(last_output_pts_);
+            uint64_t dts = input_ts.dts.value_or(last_output_dts_);
+            uint64_t pcr = input_ts.pcr.value_or(last_output_pcr_);
+            trackLiveTimestamps(input_ts, pts, dts, pcr);
+            return true;
+        }
+        
+        // FALLBACK→LIVE transition: Apply offset to maintain timeline continuity
+        // This ensures smooth playback when returning from fallback to live
+        
+        std::optional<uint64_t> adjusted_pts;
+        std::optional<uint64_t> adjusted_dts;
+        
+        if (input_ts.pts.has_value()) {
+            uint64_t raw_pts = input_ts.pts.value();
+            adjusted_pts = (raw_pts + live_offset_) & MAX_TIMESTAMP;
+        }
+        
+        if (input_ts.dts.has_value()) {
+            uint64_t raw_dts = input_ts.dts.value();
+            adjusted_dts = (raw_dts + live_offset_) & MAX_TIMESTAMP;
+        }
+        
+        // Apply PES timestamp adjustments to the packet
+        if (adjusted_pts.has_value() || adjusted_dts.has_value()) {
+            adjustPESTimestamps(packet, adjusted_pts, adjusted_dts);
+        }
+        
+        // Adjust PCR if present
+        std::optional<uint64_t> adjusted_pcr;
+        if (input_ts.pcr.has_value()) {
+            uint64_t raw_pcr = input_ts.pcr.value();
+            adjusted_pcr = (raw_pcr + live_offset_) & MAX_TIMESTAMP;
+            adjustPCR(packet, adjusted_pcr.value());
+        }
+        
+        // Track with adjusted timestamps
+        uint64_t final_pts = adjusted_pts.value_or(last_output_pts_);
+        uint64_t final_dts = adjusted_dts.value_or(last_output_dts_);
+        uint64_t final_pcr = adjusted_pcr.value_or(last_output_pcr_);
+        trackLiveTimestamps(input_ts, final_pts, final_dts, final_pcr);
+        
+        return true;
     }
     
     // FALLBACK processing below
@@ -120,10 +164,28 @@ bool TimestampManager::adjustPacket(ts::TSPacket& packet, Source source, const T
 
 void TimestampManager::onSourceSwitch(Source new_source, const TimestampInfo& first_packet_ts) {
     if (new_source == Source::LIVE) {
-        // LIVE is passthrough - no offset needed
-        // The live stream's timestamps become the canonical output timestamps
-        live_offset_ = 0;
-        std::cout << "[TimestampManager] Switched to LIVE (passthrough mode, offset=0)" << std::endl;
+        // FALLBACK→LIVE: Calculate offset to maintain timeline continuity
+        // The output timeline should continue smoothly from where fallback left off
+        
+        if (!first_packet_ts.pts.has_value()) {
+            std::cout << "[TimestampManager] WARNING: Cannot calculate live offset without PTS - using passthrough" << std::endl;
+            live_offset_ = 0;
+            return;
+        }
+        
+        uint64_t first_live_pts = first_packet_ts.pts.value();
+        
+        // Target PTS = last output PTS + one frame duration (for smooth continuity)
+        uint64_t target_pts = (last_output_pts_ + DEFAULT_FRAME_DURATION) & MAX_TIMESTAMP;
+        
+        // Calculate offset: live_pts + offset = target_pts
+        live_offset_ = static_cast<int64_t>(target_pts) - static_cast<int64_t>(first_live_pts);
+        
+        std::cout << "[TimestampManager] Switched to LIVE with timeline continuity offset" << std::endl;
+        std::cout << "  Last output PTS: " << last_output_pts_ << std::endl;
+        std::cout << "  Target PTS: " << target_pts << std::endl;
+        std::cout << "  First live PTS: " << first_live_pts << std::endl;
+        std::cout << "  Calculated live_offset: " << live_offset_ << std::endl;
         return;
     }
     
