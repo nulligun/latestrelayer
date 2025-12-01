@@ -36,7 +36,19 @@ void StreamSwitcher::updateLiveTimestamp() {
     last_live_packet_time_ = std::chrono::steady_clock::now();
     
     // Increment consecutive packet counter
+    uint32_t prev_count = consecutive_live_packets_.load();
     consecutive_live_packets_++;
+    
+    // DEBUG: Log when we reach important thresholds
+    uint32_t new_count = consecutive_live_packets_.load();
+    if (new_count == 1) {
+        std::cout << "[StreamSwitcher] DEBUG: First consecutive live packet detected" << std::endl;
+    } else if (new_count == MIN_CONSECUTIVE_FOR_SWITCH) {
+        std::cout << "[StreamSwitcher] DEBUG: Reached MIN_CONSECUTIVE_FOR_SWITCH ("
+                  << MIN_CONSECUTIVE_FOR_SWITCH << ")" << std::endl;
+    } else if (new_count % 100 == 0) {
+        std::cout << "[StreamSwitcher] DEBUG: consecutive_live_packets_ = " << new_count << std::endl;
+    }
 }
 
 bool StreamSwitcher::checkLiveTimeout() {
@@ -47,7 +59,9 @@ bool StreamSwitcher::checkLiveTimeout() {
         time_since_live.count() > max_live_gap_ms_) {
         
         std::cout << "[StreamSwitcher] LIVE → FALLBACK (gap="
-                  << time_since_live.count() << "ms)" << std::endl;
+                  << time_since_live.count() << "ms, max=" << max_live_gap_ms_ << "ms)" << std::endl;
+        std::cout << "[StreamSwitcher] DEBUG: Resetting consecutive_live_packets_ from "
+                  << consecutive_live_packets_.load() << " to 0" << std::endl;
         
         switchToMode(Mode::FALLBACK);
         consecutive_live_packets_ = 0;
@@ -60,15 +74,28 @@ bool StreamSwitcher::checkLiveTimeout() {
 bool StreamSwitcher::tryReturnToLive() {
     // Don't allow returning to live if privacy mode is enabled
     if (privacy_mode_.load()) {
+        std::cout << "[StreamSwitcher] DEBUG: tryReturnToLive() blocked by privacy mode" << std::endl;
         return false;
     }
     
+    Mode mode = current_mode_.load();
+    uint32_t consec = consecutive_live_packets_.load();
+    
+    // DEBUG: Log the check
+    static uint64_t try_return_count = 0;
+    try_return_count++;
+    if (try_return_count % 500 == 0) {
+        std::cout << "[StreamSwitcher] DEBUG: tryReturnToLive() check #" << try_return_count
+                  << " - mode=" << (mode == Mode::LIVE ? "LIVE" : "FALLBACK")
+                  << ", consecutive_live_packets=" << consec
+                  << ", MIN_CONSECUTIVE=" << MIN_CONSECUTIVE_FOR_SWITCH << std::endl;
+    }
+    
     // Only switch back if we're in FALLBACK mode and have enough consecutive packets
-    if (current_mode_.load() == Mode::FALLBACK &&
-        consecutive_live_packets_.load() >= MIN_CONSECUTIVE_FOR_SWITCH) {
+    if (mode == Mode::FALLBACK && consec >= MIN_CONSECUTIVE_FOR_SWITCH) {
         
         std::cout << "[StreamSwitcher] FALLBACK → LIVE (consecutive packets="
-                  << consecutive_live_packets_.load() << ")" << std::endl;
+                  << consec << ")" << std::endl;
         
         switchToMode(Mode::LIVE);
         consecutive_live_packets_ = 0;

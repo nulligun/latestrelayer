@@ -94,7 +94,9 @@ void TSAnalyzer::handleTable(ts::SectionDemux&, const ts::BinaryTable& table) {
 }
 
 void TSAnalyzer::handlePAT(const ts::PAT& pat) {
-    std::cout << "[TSAnalyzer] ✓ PAT received and parsed by SectionDemux" << std::endl;
+    static int pat_count = 0;
+    pat_count++;
+    std::cout << "[TSAnalyzer] ✓ PAT received and parsed by SectionDemux (PAT #" << pat_count << ")" << std::endl;
     
     if (pat.pmts.empty()) {
         std::cout << "[TSAnalyzer] ✗ PAT contains no PMTs" << std::endl;
@@ -102,15 +104,30 @@ void TSAnalyzer::handlePAT(const ts::PAT& pat) {
     }
     
     // Get first PMT PID
-    stream_info_.pmt_pid = pat.pmts.begin()->second;
-    std::cout << "[TSAnalyzer] ✓ PAT parsed - PMT PID: " << stream_info_.pmt_pid << std::endl;
+    uint16_t new_pmt_pid = pat.pmts.begin()->second;
+    std::cout << "[TSAnalyzer] ✓ PAT parsed - PMT PID: " << new_pmt_pid
+              << " (current pmt_pid=" << stream_info_.pmt_pid << ")" << std::endl;
+    
+    // Check if PMT PID changed (reconnection scenario)
+    if (stream_info_.pmt_pid != ts::PID_NULL && stream_info_.pmt_pid != new_pmt_pid) {
+        std::cout << "[TSAnalyzer] DEBUG: PMT PID changed from " << stream_info_.pmt_pid
+                  << " to " << new_pmt_pid << std::endl;
+    }
+    
+    stream_info_.pmt_pid = new_pmt_pid;
     
     // Now register to receive PMT on this PID
+    std::cout << "[TSAnalyzer] DEBUG: Adding PMT PID " << stream_info_.pmt_pid << " to demux" << std::endl;
     demux_.addPID(stream_info_.pmt_pid);
 }
 
 void TSAnalyzer::handlePMT(const ts::PMT& pmt) {
-    std::cout << "[TSAnalyzer] ✓ PMT received and parsed by SectionDemux" << std::endl;
+    static int pmt_count = 0;
+    pmt_count++;
+    std::cout << "[TSAnalyzer] ✓ PMT received and parsed by SectionDemux (PMT #" << pmt_count << ")" << std::endl;
+    std::cout << "[TSAnalyzer] DEBUG: PMT details - service_id=" << pmt.service_id
+              << ", pcr_pid=" << pmt.pcr_pid
+              << ", stream count=" << pmt.streams.size() << std::endl;
     
     stream_info_.pcr_pid = pmt.pcr_pid;
     
@@ -226,12 +243,26 @@ std::optional<uint64_t> TSAnalyzer::extractDTS(const uint8_t* pes_header) {
 }
 
 void TSAnalyzer::reset() {
+    std::cout << "[TSAnalyzer] DEBUG: reset() called" << std::endl;
+    std::cout << "[TSAnalyzer] DEBUG: Pre-reset state: initialized=" << stream_info_.initialized
+              << ", video_pid=" << stream_info_.video_pid
+              << ", audio_pid=" << stream_info_.audio_pid
+              << ", valid_video=" << stream_info_.valid_video_packets
+              << ", valid_audio=" << stream_info_.valid_audio_packets << std::endl;
+    
     stream_info_ = StreamInfo();
     pid_packet_count_.clear();
+    
+    std::cout << "[TSAnalyzer] DEBUG: Calling demux_.reset()..." << std::endl;
     demux_.reset();
     
     // Re-register PID 0 (PAT) after reset to continue parsing PSI tables
+    std::cout << "[TSAnalyzer] DEBUG: Re-adding PID_PAT to demux..." << std::endl;
     demux_.addPID(ts::PID_PAT);
+    
+    std::cout << "[TSAnalyzer] DEBUG: Post-reset state: initialized=" << stream_info_.initialized
+              << ", video_pid=" << stream_info_.video_pid
+              << ", audio_pid=" << stream_info_.audio_pid << std::endl;
     
     std::cout << "[TSAnalyzer] Reset complete - re-monitoring PAT on PID 0" << std::endl;
 }
