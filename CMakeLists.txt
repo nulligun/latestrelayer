@@ -27,6 +27,7 @@ set(SOURCES
     src/TSPacketQueue.cpp
     src/UDPReceiver.cpp
     src/TSAnalyzer.cpp
+    src/NALParser.cpp
     src/TimestampManager.cpp
     src/PIDMapper.cpp
     src/StreamSwitcher.cpp
@@ -34,6 +35,7 @@ set(SOURCES
     src/Multiplexer.cpp
     src/HttpClient.cpp
     src/HttpServer.cpp
+    src/SPSPPSInjector.cpp
 )
 
 # Create executable
