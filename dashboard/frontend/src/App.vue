@@ -194,11 +194,6 @@ export default {
         warnings.push('CAMERA NOT CONNECTED');
       }
       
-      // Check for stream incompatibility (camera codec doesn't match fallback settings)
-      if (data.value.switcherHealth?.stream_incompatible) {
-        warnings.push('CAMERA STREAM INCOMPATIBLE - Settings may not match expected format');
-      }
-      
       return warnings;
     });
 
@@ -249,8 +244,7 @@ export default {
         current_scene: 'unknown',
         srt_connected: false,
         privacy_enabled: false,
-        kick_streaming_enabled: false,
-        stream_incompatible: false
+        kick_streaming_enabled: false
       },
       fallbackConfig: {
         source: 'BLACK',

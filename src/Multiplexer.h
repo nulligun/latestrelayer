@@ -60,9 +60,6 @@ private:
     // Handle input source change callback from HTTP endpoint
     void onInputSourceChange(const std::string& source);
     
-    // Handle stream incompatibility callback from RTMPOutput
-    void onStreamIncompatible();
-    
     // Notify controller of initial scene with retry logic
     void notifyInitialScene();
     
@@ -119,11 +116,6 @@ private:
     std::atomic<bool> drone_stream_ready_;           // Drone stream ready
     std::atomic<bool> initial_privacy_mode_;         // Privacy mode queried on startup
     std::atomic<InputSource> current_input_source_;  // Currently selected input source
-    
-    // Stream incompatibility recovery
-    std::atomic<bool> incompatibility_recovery_pending_;  // True when waiting to retry after incompatibility
-    std::chrono::steady_clock::time_point incompatibility_retry_time_;  // When to retry live stream
-    static constexpr uint32_t INCOMPATIBILITY_RETRY_DELAY_MS = 10000;   // 10 seconds
     
     // Statistics
     std::atomic<uint64_t> packets_processed_;

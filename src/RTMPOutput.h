@@ -7,7 +7,6 @@
 #include <optional>
 #include <thread>
 #include <mutex>
-#include <functional>
 
 class RTMPOutput {
 public:
@@ -18,9 +17,6 @@ public:
         CONNECTED,
         RECONNECTING
     };
-    
-    // Callback type for stream incompatibility events
-    using IncompatibilityCallback = std::function<void()>;
     
     explicit RTMPOutput(const std::string& rtmp_url);
     ~RTMPOutput();
@@ -49,11 +45,6 @@ public:
     // Get milliseconds since last write (-1 if no write yet)
     int64_t getMsSinceLastWrite() const;
     
-    // Stream incompatibility detection
-    bool isStreamIncompatible() const { return stream_incompatible_.load(); }
-    void clearIncompatibilityFlag() { stream_incompatible_ = false; }
-    void setIncompatibilityCallback(IncompatibilityCallback callback);
-    
 private:
     // Spawn FFmpeg process with pipes for stdin and stderr
     bool spawnFFmpeg();
@@ -69,12 +60,6 @@ private:
     
     // Parse FFmpeg output line for RTMP events
     void parseFFmpegOutput(const std::string& line);
-    
-    // Check for stream incompatibility errors in FFmpeg output
-    bool isStreamIncompatibilityError(const std::string& line);
-    
-    // Handle stream incompatibility (restart FFmpeg and notify)
-    void handleStreamIncompatibility();
     
     // Reconnection logic
     void reconnectionLoop();
@@ -97,11 +82,6 @@ private:
     std::thread monitor_thread_;
     std::thread reconnection_thread_;
     std::mutex reconnection_mutex_;
-    
-    // Stream incompatibility state
-    std::atomic<bool> stream_incompatible_;
-    IncompatibilityCallback incompatibility_callback_;
-    std::mutex callback_mutex_;
     
     // Reconnection state
     std::atomic<uint32_t> reconnection_attempts_;

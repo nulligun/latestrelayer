@@ -13,7 +13,6 @@ struct HealthStatus {
     bool rtmp_connected = false;
     uint64_t packets_written = 0;
     int64_t ms_since_last_write = -1;  // -1 means no write yet
-    bool stream_incompatible = false;  // True if camera stream codec is incompatible
 };
 
 /**

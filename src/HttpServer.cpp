@@ -340,8 +340,7 @@ std::string HttpServer::handleRequest(const std::string& method, const std::stri
                               << "\"connected\": " << (status.rtmp_connected ? "true" : "false") << ", "
                               << "\"packets_written\": " << status.packets_written << ", "
                               << "\"ms_since_last_write\": " << status.ms_since_last_write
-                              << "}, "
-                              << "\"stream_incompatible\": " << (status.stream_incompatible ? "true" : "false")
+                              << "}"
                               << "}";
             } else {
                 // No callback set - return basic status
