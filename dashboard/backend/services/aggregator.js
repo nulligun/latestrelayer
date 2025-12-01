@@ -90,42 +90,6 @@ class AggregatorService {
   }
 
   /**
-   * Fetch multiplexer health status including stream_incompatible flag
-   */
-  async fetchMultiplexerHealth() {
-    try {
-      const response = await new Promise((resolve, reject) => {
-        const url = 'http://multiplexer:8091/health';
-        const req = http.get(url, { agent: this.httpAgent, timeout: 2000 }, (res) => {
-          let data = '';
-          res.on('data', chunk => data += chunk);
-          res.on('end', () => {
-            try {
-              resolve(JSON.parse(data));
-            } catch (e) {
-              reject(new Error('Invalid JSON response'));
-            }
-          });
-        });
-        req.on('error', reject);
-        req.on('timeout', () => {
-          req.destroy();
-          reject(new Error('Request timeout'));
-        });
-      });
-      
-      return {
-        stream_incompatible: response.stream_incompatible || false
-      };
-    } catch (error) {
-      // Silently fail - multiplexer may not be available
-      return {
-        stream_incompatible: false
-      };
-    }
-  }
-
-  /**
    * Get fallback configuration
    */
   async getFallbackConfig() {
@@ -219,11 +183,10 @@ class AggregatorService {
     const timestamp = new Date().toISOString();
 
     try {
-      const [containersResult, systemMetrics, fallbackConfig, multiplexerHealth] = await Promise.all([
+      const [containersResult, systemMetrics, fallbackConfig] = await Promise.all([
         this.controllerService.listContainers(),
         metricsService.getSystemMetrics(),
-        this.getFallbackConfig(),
-        this.fetchMultiplexerHealth()
+        this.getFallbackConfig()
       ]);
       
       // Get scene and privacy state from controller WebSocket
@@ -306,8 +269,7 @@ class AggregatorService {
           srt_connected: currentScene === 'LIVE',  // Infer SRT connection from scene
           srt_bitrate_kbps: 0,  // Not available without compositor
           privacy_enabled: privacyEnabled,
-          kick_streaming_enabled: kickStreamingEnabled,
-          stream_incompatible: multiplexerHealth.stream_incompatible
+          kick_streaming_enabled: kickStreamingEnabled
         },
         currentScene: currentScene,
         streamStatus: {
@@ -349,8 +311,7 @@ class AggregatorService {
           srt_connected: false,
           srt_bitrate_kbps: 0,
           privacy_enabled: false,
-          kick_streaming_enabled: false,
-          stream_incompatible: false
+          kick_streaming_enabled: false
         },
         currentScene: 'unknown',
         streamStatus: {
