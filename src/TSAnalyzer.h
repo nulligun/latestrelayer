@@ -4,6 +4,8 @@
 #include <map>
 #include <optional>
 #include <cstdint>
+#include <memory>
+#include "NALParser.h"
 
 struct StreamInfo {
     uint16_t video_pid = ts::PID_NULL;
@@ -51,6 +53,20 @@ public:
     // Extract timestamps from a packet
     TimestampInfo extractTimestamps(const ts::TSPacket& packet);
     
+    // Extract frame information (IDR detection, SPS/PPS) from a video packet
+    // Returns FrameInfo with is_idr, has_sps, has_pps flags
+    // Only meaningful for video PID packets with PUSI set
+    FrameInfo extractFrameInfo(const ts::TSPacket& packet);
+    
+    // Check if this is a video packet
+    bool isVideoPacket(const ts::TSPacket& packet) const {
+        return packet.getPID() == stream_info_.video_pid;
+    }
+    
+    // Get the NAL parser (for accessing stored SPS/PPS)
+    NALParser& getNALParser() { return nal_parser_; }
+    const NALParser& getNALParser() const { return nal_parser_; }
+    
     // Reset analyzer state
     void reset();
     
@@ -78,4 +94,7 @@ private:
     
     // Track which PIDs we've seen
     std::map<uint16_t, uint64_t> pid_packet_count_;
+    
+    // NAL unit parser for IDR detection
+    NALParser nal_parser_;
 };

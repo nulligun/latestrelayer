@@ -10,9 +10,13 @@
 #include "RTMPOutput.h"
 #include "HttpClient.h"
 #include "HttpServer.h"
+#include "NALParser.h"
+#include "SPSPPSInjector.h"
 #include <memory>
 #include <atomic>
 #include <thread>
+#include <vector>
+#include <chrono>
 
 class Multiplexer {
 public:
@@ -40,6 +44,24 @@ private:
     
     // Process a single packet
     void processPacket(ts::TSPacket& packet, Source source);
+    
+    // IDR-aware switch to live - buffers packets until IDR found
+    // Returns true if switch was successful, false if timeout
+    bool switchToLiveAtIDR();
+    
+    // IDR-aware switch to fallback - buffers packets until IDR found
+    // Returns true if switch was successful, false if timeout
+    bool switchToFallbackAtIDR();
+    
+    // Drain buffered packets to output starting from IDR
+    // If needs_sps_pps_injection is true, injects stored SPS/PPS before IDR
+    void drainBufferFromIDR(std::vector<ts::TSPacket>& buffer, size_t idr_index,
+                            Source source, bool needs_sps_pps_injection = false);
+    
+    // Inject SPS/PPS packets before IDR frame
+    // Returns number of packets injected
+    size_t injectSPSPPS(Source source, uint16_t video_pid,
+                        std::optional<uint64_t> pts, std::optional<uint64_t> dts);
     
     // Query initial privacy mode from controller
     void queryInitialPrivacyMode();
@@ -78,6 +100,9 @@ private:
     // Output
     std::unique_ptr<RTMPOutput> rtmp_output_;
     
+    // SPS/PPS injector for splice points
+    std::unique_ptr<SPSPPSInjector> sps_pps_injector_;
+    
     // Control
     std::atomic<bool> running_;
     std::atomic<bool> initialized_;
@@ -88,7 +113,21 @@ private:
     std::atomic<uint64_t> packets_processed_;
     std::chrono::steady_clock::time_point start_time_;
     
+    // IDR switch state
+    enum class SwitchState {
+        NONE,               // No switch pending
+        WAITING_LIVE_IDR,   // Waiting for IDR on live stream to switch to live
+        WAITING_FB_IDR      // Waiting for IDR on fallback stream to switch to fallback
+    };
+    std::atomic<SwitchState> switch_state_{SwitchState::NONE};
+    std::chrono::steady_clock::time_point switch_wait_start_;
+    std::vector<ts::TSPacket> switch_buffer_;  // Buffer packets while waiting for IDR
+    
     // Controller URL
     static constexpr const char* CONTROLLER_URL = "http://controller:8089";
     static constexpr uint16_t HTTP_SERVER_PORT = 8091;
+    
+    // IDR wait timeouts
+    static constexpr uint32_t LIVE_IDR_TIMEOUT_MS = 10000;    // 10 seconds for live
+    static constexpr uint32_t FALLBACK_IDR_TIMEOUT_MS = 2000; // 2 seconds for fallback (has 1s GOP)
 };

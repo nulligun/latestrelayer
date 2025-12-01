@@ -1,4 +1,5 @@
 #include "Multiplexer.h"
+#include "SPSPPSInjector.h"
 #include <iostream>
 #include <thread>
 #include <csignal>
@@ -87,6 +88,9 @@ bool Multiplexer::initialize() {
     
     // Create RTMP output
     rtmp_output_ = std::make_unique<RTMPOutput>(config_.getRtmpUrl());
+    
+    // Create SPS/PPS injector for splice points
+    sps_pps_injector_ = std::make_unique<SPSPPSInjector>();
     
     // Start UDP receivers
     if (!live_receiver_->start()) {
@@ -514,19 +518,14 @@ void Multiplexer::processLoop() {
                 std::cout << "[Multiplexer] Live packets detected in queue, attempting analysis..." << std::endl;
                 if (analyzeLiveStreamDynamically()) {
                     std::cout << "[Multiplexer] Live stream successfully initialized!" << std::endl;
-                    std::cout << "[Multiplexer] Switching to LIVE mode" << std::endl;
+                    std::cout << "[Multiplexer] Attempting IDR-aware switch to LIVE mode..." << std::endl;
                     
-                    // Switch to live mode
-                    switcher_->setMode(Mode::LIVE);
-                    switcher_->updateLiveTimestamp();
-                    
-                    // Calculate timestamp offset for live stream
-                    ts::TSPacket first_live_packet;
-                    if (live_queue_->pop(first_live_packet, std::chrono::milliseconds(10))) {
-                        TimestampInfo ts_info = live_analyzer_->extractTimestamps(first_live_packet);
-                        timestamp_mgr_->onSourceSwitch(Source::LIVE, ts_info);
-                        processPacket(first_live_packet, Source::LIVE);
-                        packets_processed_++;
+                    // Use IDR-aware switch to live
+                    if (switchToLiveAtIDR()) {
+                        std::cout << "[Multiplexer] Successfully switched to LIVE at IDR!" << std::endl;
+                    } else {
+                        std::cout << "[Multiplexer] Failed to find IDR in live stream - staying on FALLBACK" << std::endl;
+                        live_stream_ready_ = false;  // Reset so we can try again
                     }
                     continue;
                 }
@@ -561,20 +560,16 @@ void Multiplexer::processLoop() {
             if (current_mode == Mode::LIVE) {
                 // Check if we need to switch to fallback
                 if (switcher_->checkLiveTimeout()) {
-                    std::cout << "[Multiplexer] Switched to FALLBACK mode (live timeout)" << std::endl;
+                    std::cout << "[Multiplexer] Live timeout detected - initiating IDR-aware switch to FALLBACK" << std::endl;
                     
-                    // Reset live_stream_ready_ so we can re-detect the live stream
-                    // This allows proper re-analysis when SRT reconnects
-                    std::cout << "[Multiplexer] DEBUG: Setting live_stream_ready_ = false (was "
-                              << live_stream_ready_.load() << ")" << std::endl;
-                    live_stream_ready_ = false;
-                    std::cout << "[Multiplexer] Live stream marked as not ready - will re-analyze when packets arrive" << std::endl;
+                    // Use IDR-aware switch to fallback
+                    switchToFallbackAtIDR();
                     
                     // DEBUG: Log switcher state
-                    std::cout << "[Multiplexer] DEBUG: Switcher state after timeout:" << std::endl;
+                    std::cout << "[Multiplexer] DEBUG: Switcher state after fallback switch:" << std::endl;
                     std::cout << "[Multiplexer]   mode: " << (switcher_->getMode() == Mode::LIVE ? "LIVE" : "FALLBACK") << std::endl;
                     std::cout << "[Multiplexer]   privacy_mode: " << switcher_->isPrivacyMode() << std::endl;
-                    std::cout << "[Multiplexer]   time_since_last_live: " << switcher_->getTimeSinceLastLive().count() << "ms" << std::endl;
+                    std::cout << "[Multiplexer]   live_stream_ready_: " << live_stream_ready_.load() << std::endl;
                 }
             } else {
                 // In FALLBACK mode, check if live packets are arriving
@@ -595,16 +590,19 @@ void Multiplexer::processLoop() {
                 }
                 
                 // Try to return to live if packets are available and live is ready
+                // Use IDR-aware switching for clean splice
                 if (live_stream_ready_.load() && !live_queue_->empty() && switcher_->tryReturnToLive()) {
-                    std::cout << "[Multiplexer] Switched to LIVE mode via tryReturnToLive() (live stream restored)" << std::endl;
+                    std::cout << "[Multiplexer] tryReturnToLive() triggered - initiating IDR-aware switch to LIVE" << std::endl;
                     
-                    // Calculate new timestamp offset for live stream
-                    ts::TSPacket first_live_packet;
-                    if (live_queue_->pop(first_live_packet, std::chrono::milliseconds(10))) {
-                        TimestampInfo ts_info = live_analyzer_->extractTimestamps(first_live_packet);
-                        timestamp_mgr_->onSourceSwitch(Source::LIVE, ts_info);
-                        processPacket(first_live_packet, Source::LIVE);
-                        packets_processed_++;
+                    // Reset the mode back to fallback temporarily - switchToLiveAtIDR will set it to LIVE
+                    switcher_->setMode(Mode::FALLBACK);
+                    
+                    // Use IDR-aware switch to live
+                    if (switchToLiveAtIDR()) {
+                        std::cout << "[Multiplexer] Successfully switched to LIVE at IDR!" << std::endl;
+                    } else {
+                        std::cout << "[Multiplexer] Failed to find IDR in live stream - staying on FALLBACK" << std::endl;
+                        live_stream_ready_ = false;  // Reset so we can re-detect
                     }
                 }
             }
@@ -666,9 +664,285 @@ void Multiplexer::onPrivacyModeChange(bool enabled) {
         switcher_->setPrivacyMode(enabled);
         
         if (enabled && switcher_->getMode() == Mode::LIVE) {
-            // Force switch to fallback immediately
+            // Force switch to fallback immediately - use IDR-aware switching
             std::cout << "[Multiplexer] Forcing switch to FALLBACK mode due to privacy mode" << std::endl;
-            switcher_->setMode(Mode::FALLBACK);
+            switchToFallbackAtIDR();
         }
     }
+}
+
+bool Multiplexer::switchToLiveAtIDR() {
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    std::cout << "[Multiplexer] IDR-AWARE SWITCH: Waiting for live IDR frame..." << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    
+    switch_buffer_.clear();
+    switch_wait_start_ = std::chrono::steady_clock::now();
+    
+    ts::TSPacket packet;
+    size_t idr_packet_index = 0;
+    bool found_idr = false;
+    bool needs_sps_pps_injection = false;  // Track if we need to inject SPS/PPS
+    
+    while (running_.load()) {
+        // Check timeout
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - switch_wait_start_
+        );
+        
+        if (elapsed.count() >= LIVE_IDR_TIMEOUT_MS) {
+            std::cout << "[Multiplexer] IDR TIMEOUT: No IDR found in live stream after "
+                      << elapsed.count() << "ms - staying on FALLBACK" << std::endl;
+            switch_buffer_.clear();
+            return false;
+        }
+        
+        // Try to get a live packet
+        if (!live_queue_->pop(packet, std::chrono::milliseconds(10))) {
+            continue;
+        }
+        
+        // Store packet in buffer
+        switch_buffer_.push_back(packet);
+        
+        // Check if this is a video packet with PUSI (potential IDR)
+        if (live_analyzer_->isVideoPacket(packet) && packet.getPUSI()) {
+            FrameInfo frame_info = live_analyzer_->extractFrameInfo(packet);
+            
+            if (frame_info.isCleanSwitchPoint()) {
+                found_idr = true;
+                needs_sps_pps_injection = false;  // IDR has inline SPS/PPS
+                idr_packet_index = switch_buffer_.size() - 1;
+                
+                std::cout << "[Multiplexer] IDR FOUND! Clean switch point at buffer index "
+                          << idr_packet_index << " (after " << elapsed.count() << "ms)"
+                          << " - has_sps=" << frame_info.has_sps
+                          << ", has_pps=" << frame_info.has_pps
+                          << " (no injection needed)" << std::endl;
+                break;
+            } else if (frame_info.is_idr) {
+                // IDR found but missing SPS/PPS - check if we have them stored
+                if (live_analyzer_->getNALParser().hasParameterSets()) {
+                    found_idr = true;
+                    needs_sps_pps_injection = true;  // Need to inject stored SPS/PPS
+                    idr_packet_index = switch_buffer_.size() - 1;
+                    
+                    std::cout << "[Multiplexer] IDR FOUND (will inject stored SPS/PPS) at buffer index "
+                              << idr_packet_index << " (after " << elapsed.count() << "ms)" << std::endl;
+                    break;
+                } else {
+                    std::cout << "[Multiplexer] IDR found but no SPS/PPS available - continuing to search..." << std::endl;
+                }
+            }
+        }
+        
+        // Log progress periodically
+        if (switch_buffer_.size() % 100 == 0) {
+            std::cout << "[Multiplexer] IDR search: buffered " << switch_buffer_.size()
+                      << " packets, elapsed=" << elapsed.count() << "ms" << std::endl;
+        }
+    }
+    
+    if (!found_idr) {
+        std::cout << "[Multiplexer] IDR search aborted (shutdown)" << std::endl;
+        switch_buffer_.clear();
+        return false;
+    }
+    
+    // We found an IDR! Switch to live mode and drain buffer from IDR
+    std::cout << "[Multiplexer] Switching to LIVE mode at IDR boundary!" << std::endl;
+    switcher_->setMode(Mode::LIVE);
+    switcher_->updateLiveTimestamp();
+    
+    // Set up timestamp offset from the IDR packet
+    TimestampInfo ts_info = live_analyzer_->extractTimestamps(switch_buffer_[idr_packet_index]);
+    timestamp_mgr_->onSourceSwitch(Source::LIVE, ts_info);
+    
+    // Drain buffer starting from IDR (with SPS/PPS injection if needed)
+    drainBufferFromIDR(switch_buffer_, idr_packet_index, Source::LIVE, needs_sps_pps_injection);
+    
+    switch_buffer_.clear();
+    return true;
+}
+
+bool Multiplexer::switchToFallbackAtIDR() {
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    std::cout << "[Multiplexer] IDR-AWARE SWITCH: Waiting for fallback IDR frame..." << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    
+    switch_buffer_.clear();
+    switch_wait_start_ = std::chrono::steady_clock::now();
+    
+    ts::TSPacket packet;
+    size_t idr_packet_index = 0;
+    bool found_idr = false;
+    bool needs_sps_pps_injection = false;  // Track if we need to inject SPS/PPS
+    
+    while (running_.load()) {
+        // Check timeout
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - switch_wait_start_
+        );
+        
+        if (elapsed.count() >= FALLBACK_IDR_TIMEOUT_MS) {
+            std::cout << "[Multiplexer] IDR TIMEOUT: No IDR found in fallback stream after "
+                      << elapsed.count() << "ms - forcing switch anyway (fallback should have regular IDRs)" << std::endl;
+            // For fallback, we force switch even without IDR since it loops and should have IDRs
+            // This is a safety fallback - shouldn't normally happen
+            break;
+        }
+        
+        // Try to get a fallback packet
+        if (!fallback_queue_->pop(packet, std::chrono::milliseconds(10))) {
+            continue;
+        }
+        
+        // Store packet in buffer
+        switch_buffer_.push_back(packet);
+        
+        // Check if this is a video packet with PUSI (potential IDR)
+        if (fallback_analyzer_->isVideoPacket(packet) && packet.getPUSI()) {
+            FrameInfo frame_info = fallback_analyzer_->extractFrameInfo(packet);
+            
+            if (frame_info.isCleanSwitchPoint()) {
+                found_idr = true;
+                needs_sps_pps_injection = false;  // IDR has inline SPS/PPS
+                idr_packet_index = switch_buffer_.size() - 1;
+                
+                std::cout << "[Multiplexer] FALLBACK IDR FOUND! Clean switch point at buffer index "
+                          << idr_packet_index << " (after " << elapsed.count() << "ms)"
+                          << " - has_sps=" << frame_info.has_sps
+                          << ", has_pps=" << frame_info.has_pps
+                          << " (no injection needed)" << std::endl;
+                break;
+            } else if (frame_info.is_idr) {
+                // IDR found but missing SPS/PPS - check if we have them stored
+                if (fallback_analyzer_->getNALParser().hasParameterSets()) {
+                    found_idr = true;
+                    needs_sps_pps_injection = true;  // Need to inject stored SPS/PPS
+                    idr_packet_index = switch_buffer_.size() - 1;
+                    
+                    std::cout << "[Multiplexer] FALLBACK IDR FOUND (will inject stored SPS/PPS) at buffer index "
+                              << idr_packet_index << " (after " << elapsed.count() << "ms)" << std::endl;
+                    break;
+                }
+            }
+        }
+        
+        // Log progress periodically
+        if (switch_buffer_.size() % 50 == 0) {
+            std::cout << "[Multiplexer] Fallback IDR search: buffered " << switch_buffer_.size()
+                      << " packets, elapsed=" << elapsed.count() << "ms" << std::endl;
+        }
+    }
+    
+    // Switch to fallback mode
+    std::cout << "[Multiplexer] Switching to FALLBACK mode" << (found_idr ? " at IDR boundary!" : " (timeout)") << std::endl;
+    switcher_->setMode(Mode::FALLBACK);
+    
+    if (found_idr && !switch_buffer_.empty()) {
+        // Set up timestamp offset from the IDR packet
+        TimestampInfo ts_info = fallback_analyzer_->extractTimestamps(switch_buffer_[idr_packet_index]);
+        timestamp_mgr_->onSourceSwitch(Source::FALLBACK, ts_info);
+        
+        // Drain buffer starting from IDR (with SPS/PPS injection if needed)
+        drainBufferFromIDR(switch_buffer_, idr_packet_index, Source::FALLBACK, needs_sps_pps_injection);
+    } else if (!switch_buffer_.empty()) {
+        // Timeout case - process from beginning of buffer
+        // Try to inject SPS/PPS if available since we don't have a clean switch point
+        bool timeout_injection_needed = fallback_analyzer_->getNALParser().hasParameterSets();
+        TimestampInfo ts_info = fallback_analyzer_->extractTimestamps(switch_buffer_[0]);
+        timestamp_mgr_->onSourceSwitch(Source::FALLBACK, ts_info);
+        drainBufferFromIDR(switch_buffer_, 0, Source::FALLBACK, timeout_injection_needed);
+    }
+    
+    switch_buffer_.clear();
+    
+    // Reset live stream ready flag so we re-analyze when live comes back
+    live_stream_ready_ = false;
+    
+    return found_idr;
+}
+
+void Multiplexer::drainBufferFromIDR(std::vector<ts::TSPacket>& buffer, size_t idr_index,
+                                     Source source, bool needs_sps_pps_injection) {
+    std::cout << "[Multiplexer] Draining " << (buffer.size() - idr_index)
+              << " packets from buffer starting at IDR (index " << idr_index << ")"
+              << (needs_sps_pps_injection ? " [with SPS/PPS injection]" : "") << std::endl;
+    
+    // Inject SPS/PPS before the IDR if needed
+    if (needs_sps_pps_injection && idr_index < buffer.size()) {
+        // Get video PID and timestamps from the IDR packet
+        uint16_t video_pid = buffer[idr_index].getPID();
+        
+        TSAnalyzer* analyzer = (source == Source::LIVE) ? live_analyzer_.get() : fallback_analyzer_.get();
+        TimestampInfo ts_info = analyzer->extractTimestamps(buffer[idr_index]);
+        
+        size_t injected = injectSPSPPS(source, video_pid, ts_info.pts, ts_info.dts);
+        std::cout << "[Multiplexer] Injected " << injected << " SPS/PPS packets before IDR" << std::endl;
+    }
+    
+    for (size_t i = idr_index; i < buffer.size(); i++) {
+        processPacket(buffer[i], source);
+        packets_processed_++;
+    }
+    
+    std::cout << "[Multiplexer] Buffer drain complete" << std::endl;
+}
+
+size_t Multiplexer::injectSPSPPS(Source source, uint16_t video_pid,
+                                  std::optional<uint64_t> pts, std::optional<uint64_t> dts) {
+    if (!sps_pps_injector_) {
+        std::cerr << "[Multiplexer] SPS/PPS injector not initialized!" << std::endl;
+        return 0;
+    }
+    
+    // Get the appropriate analyzer for the source
+    TSAnalyzer* analyzer = (source == Source::LIVE) ? live_analyzer_.get() : fallback_analyzer_.get();
+    if (!analyzer) {
+        std::cerr << "[Multiplexer] Analyzer not available for source" << std::endl;
+        return 0;
+    }
+    
+    const NALParser& nal_parser = analyzer->getNALParser();
+    if (!nal_parser.hasParameterSets()) {
+        std::cerr << "[Multiplexer] No SPS/PPS stored for injection" << std::endl;
+        return 0;
+    }
+    
+    const std::vector<uint8_t>& sps = nal_parser.getLastSPS();
+    const std::vector<uint8_t>& pps = nal_parser.getLastPPS();
+    
+    std::cout << "[Multiplexer] Creating SPS/PPS injection packets for PID " << video_pid
+              << " (SPS: " << sps.size() << " bytes, PPS: " << pps.size() << " bytes)"
+              << ", PTS=" << (pts.has_value() ? std::to_string(pts.value()) : "none")
+              << ", DTS=" << (dts.has_value() ? std::to_string(dts.value()) : "none")
+              << std::endl;
+    
+    // Create the injection packets
+    std::vector<ts::TSPacket> injection_packets = sps_pps_injector_->createSPSPPSPackets(
+        sps, pps, video_pid, pts, dts
+    );
+    
+    if (injection_packets.empty()) {
+        std::cerr << "[Multiplexer] Failed to create SPS/PPS injection packets" << std::endl;
+        return 0;
+    }
+    
+    // Write injection packets to output
+    for (auto& packet : injection_packets) {
+        // For fallback source, remap PIDs and fix continuity counters
+        if (source == Source::FALLBACK) {
+            pid_mapper_->remapPacket(packet);
+            pid_mapper_->fixContinuityCounter(packet);
+        }
+        
+        rtmp_output_->writePacket(packet);
+        packets_processed_++;
+    }
+    
+    std::cout << "[Multiplexer] SPS/PPS injection complete - wrote " << injection_packets.size()
+              << " packets" << std::endl;
+    
+    return injection_packets.size();
 }

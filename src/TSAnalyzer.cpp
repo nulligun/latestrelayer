@@ -1,4 +1,5 @@
 #include "TSAnalyzer.h"
+#include "NALParser.h"
 #include <iostream>
 #include <cstring>
 
@@ -242,6 +243,47 @@ std::optional<uint64_t> TSAnalyzer::extractDTS(const uint8_t* pes_header) {
     return dts;
 }
 
+FrameInfo TSAnalyzer::extractFrameInfo(const ts::TSPacket& packet) {
+    FrameInfo info;
+    
+    // Only process video packets with PUSI (Payload Unit Start Indicator)
+    // This indicates the start of a new PES packet which contains the NAL units
+    if (!isVideoPacket(packet) || !packet.getPUSI()) {
+        return info;
+    }
+    
+    const uint8_t* payload = packet.getPayload();
+    size_t payload_size = packet.getPayloadSize();
+    
+    if (payload_size < 9) {  // Minimum PES header size check
+        return info;
+    }
+    
+    // Check for PES start code (00 00 01)
+    if (payload[0] != 0x00 || payload[1] != 0x00 || payload[2] != 0x01) {
+        return info;
+    }
+    
+    // Get PES header data length (byte 8)
+    uint8_t pes_header_data_length = payload[8];
+    
+    // Calculate where the video payload starts (after PES header)
+    // PES header: 3 (start code) + 1 (stream id) + 2 (packet length) + 3 (flags) + header_data_length
+    size_t video_payload_offset = 9 + pes_header_data_length;
+    
+    if (video_payload_offset >= payload_size) {
+        return info;  // No video data in this packet
+    }
+    
+    // Parse NAL units from the video payload
+    const uint8_t* video_data = payload + video_payload_offset;
+    size_t video_size = payload_size - video_payload_offset;
+    
+    info = nal_parser_.parseVideoPayload(video_data, video_size);
+    
+    return info;
+}
+
 void TSAnalyzer::reset() {
     std::cout << "[TSAnalyzer] DEBUG: reset() called" << std::endl;
     std::cout << "[TSAnalyzer] DEBUG: Pre-reset state: initialized=" << stream_info_.initialized
@@ -265,4 +307,7 @@ void TSAnalyzer::reset() {
               << ", audio_pid=" << stream_info_.audio_pid << std::endl;
     
     std::cout << "[TSAnalyzer] Reset complete - re-monitoring PAT on PID 0" << std::endl;
+    
+    // Reset NAL parser as well
+    nal_parser_.reset();
 }
