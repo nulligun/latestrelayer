@@ -56,16 +56,6 @@ services:
       - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
       - SRT_PORT=${SRT_PORT:-1937}
       - SRT_DOMAIN=${SRT_DOMAIN:-localhost}
-      # Video encoding settings
-      - VIDEO_BITRATE=${VIDEO_BITRATE:-1500}
-      - VIDEO_WIDTH=${VIDEO_WIDTH:-1280}
-      - VIDEO_HEIGHT=${VIDEO_HEIGHT:-720}
-      - VIDEO_FPS=${VIDEO_FPS:-30}
-      - VIDEO_ENCODER=${VIDEO_ENCODER:-libx264}
-      # Audio encoding settings
-      - AUDIO_ENCODER=${AUDIO_ENCODER:-aac}
-      - AUDIO_BITRATE=${AUDIO_BITRATE:-128}
-      - AUDIO_SAMPLE_RATE=${AUDIO_SAMPLE_RATE:-48000}
     networks:
       - tsnet
     restart: unless-stopped
@@ -220,17 +210,6 @@ services:
     container_name: ffmpeg-fallback
     volumes:
       - ${SHARED_FOLDER}:/media:rw
-    environment:
-      # Video encoding settings
-      - VIDEO_BITRATE=${VIDEO_BITRATE:-1500}
-      - VIDEO_WIDTH=${VIDEO_WIDTH:-1280}
-      - VIDEO_HEIGHT=${VIDEO_HEIGHT:-720}
-      - VIDEO_FPS=${VIDEO_FPS:-30}
-      - VIDEO_ENCODER=${VIDEO_ENCODER:-libx264}
-      # Audio encoding settings
-      - AUDIO_ENCODER=${AUDIO_ENCODER:-aac}
-      - AUDIO_BITRATE=${AUDIO_BITRATE:-128}
-      - AUDIO_SAMPLE_RATE=${AUDIO_SAMPLE_RATE:-48000}
     networks:
       - tsnet
     restart: unless-stopped
@@ -314,17 +293,6 @@ services:
     container_name: mock-camera
     profiles:
       - manual
-    environment:
-      # Video encoding settings
-      - VIDEO_BITRATE=${VIDEO_BITRATE:-1500}
-      - VIDEO_WIDTH=${VIDEO_WIDTH:-1280}
-      - VIDEO_HEIGHT=${VIDEO_HEIGHT:-720}
-      - VIDEO_FPS=${VIDEO_FPS:-30}
-      - VIDEO_ENCODER=${VIDEO_ENCODER:-libx264}
-      # Audio encoding settings
-      - AUDIO_ENCODER=${AUDIO_ENCODER:-aac}
-      - AUDIO_BITRATE=${AUDIO_BITRATE:-128}
-      - AUDIO_SAMPLE_RATE=${AUDIO_SAMPLE_RATE:-48000}
     networks:
       - tsnet
     restart: unless-stopped
