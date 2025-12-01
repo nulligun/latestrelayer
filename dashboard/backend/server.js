@@ -29,7 +29,6 @@ const NGINX_RTMP_HLS = process.env.NGINX_RTMP_HLS || 'http://nginx-rtmp:8080';
 const SHARED_DIR = '/app/shared';
 const FALLBACK_CONFIG_PATH = path.join(SHARED_DIR, 'fallback_config.json');
 const KICK_CONFIG_PATH = path.join(SHARED_DIR, 'kick_config.json');
-const ENCODING_SETTINGS_PATH = path.join(SHARED_DIR, 'dashboard_encoding_settings.json');
 
 console.log('='.repeat(60));
 console.log('Stream Dashboard Backend - Starting Up');
@@ -358,18 +357,7 @@ app.get('/api/config', async (req, res) => {
       hlsUrl: '/api/hls/stream.m3u8',
       rtmpPort: RTMP_PORT,
       kickChannel: KICK_CHANNEL,
-      droneUrl: `rtmp://${SRT_DOMAIN}:1938/live/drone`,
-      // Encoding settings from environment
-      encodingSettings: {
-        videoEncoder: process.env.VIDEO_ENCODER || 'libx264',
-        videoWidth: parseInt(process.env.VIDEO_WIDTH || '1280', 10),
-        videoHeight: parseInt(process.env.VIDEO_HEIGHT || '720', 10),
-        videoFps: parseInt(process.env.VIDEO_FPS || '30', 10),
-        videoBitrate: parseInt(process.env.VIDEO_BITRATE || '1500', 10),
-        audioEncoder: process.env.AUDIO_ENCODER || 'aac',
-        audioBitrate: parseInt(process.env.AUDIO_BITRATE || '128', 10),
-        audioSampleRate: parseInt(process.env.AUDIO_SAMPLE_RATE || '48000', 10)
-      }
+      droneUrl: `rtmp://${SRT_DOMAIN}:1938/live/drone`
     });
   } catch (error) {
     console.error('[api] Error getting config:', error.message);
@@ -1132,149 +1120,6 @@ uploadProcessor.on('progress', (progressData) => {
   broadcast(progressData);
 });
 
-/**
- * Check if encoding settings have changed since last run and reprocess files if needed.
- * This ensures that any uploaded images/videos are re-encoded with the new settings.
- */
-async function checkEncodingSettingsAndReprocess() {
-  const currentSettings = uploadProcessor.getEncodingSettings();
-  console.log('[encoding] Current encoding settings:', JSON.stringify(currentSettings));
-  
-  let settingsChanged = false;
-  
-  try {
-    // Try to read stored settings
-    const storedData = await fs.readFile(ENCODING_SETTINGS_PATH, 'utf8');
-    const storedSettings = JSON.parse(storedData);
-    
-    // Compare settings
-    const settingsMatch =
-      currentSettings.videoWidth === storedSettings.videoWidth &&
-      currentSettings.videoHeight === storedSettings.videoHeight &&
-      currentSettings.videoFps === storedSettings.videoFps &&
-      currentSettings.videoEncoder === storedSettings.videoEncoder &&
-      currentSettings.audioEncoder === storedSettings.audioEncoder &&
-      currentSettings.audioBitrate === storedSettings.audioBitrate &&
-      currentSettings.audioSampleRate === storedSettings.audioSampleRate;
-    
-    if (!settingsMatch) {
-      console.log('[encoding] Settings have changed since last run');
-      console.log('[encoding] Previous settings:', JSON.stringify(storedSettings));
-      settingsChanged = true;
-    } else {
-      console.log('[encoding] Settings unchanged since last run');
-    }
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      console.log('[encoding] No previous settings file found, creating one');
-    } else {
-      console.error('[encoding] Error reading settings file:', error.message);
-    }
-    settingsChanged = true; // Treat as changed if we can't read the file
-  }
-  
-  if (settingsChanged) {
-    // Save current settings
-    try {
-      await fs.mkdir(SHARED_DIR, { recursive: true });
-      await fs.writeFile(ENCODING_SETTINGS_PATH, JSON.stringify(currentSettings, null, 2));
-      console.log('[encoding] Saved current encoding settings');
-    } catch (error) {
-      console.error('[encoding] Error saving settings file:', error.message);
-    }
-    
-    // Check for existing processed files and reprocess them
-    await reprocessExistingFiles();
-  }
-}
-
-/**
- * Reprocess existing uploaded files (static-image.ts, video.ts) with new encoding settings.
- */
-async function reprocessExistingFiles() {
-  console.log('[encoding] Checking for files that need reprocessing...');
-  
-  const staticImagePath = path.join(SHARED_DIR, 'static-image.ts');
-  const videoTsPath = path.join(SHARED_DIR, 'video.ts');
-  const offlineImagePath = path.join(SHARED_DIR, 'offline.png');
-  const offlineVideoPath = path.join(SHARED_DIR, 'offline.mp4');
-  
-  let reprocessedCount = 0;
-  
-  // Check if static-image.ts exists and offline.png source exists
-  try {
-    await fs.access(staticImagePath);
-    await fs.access(offlineImagePath);
-    
-    console.log('[encoding] Found static-image.ts, reprocessing with new settings...');
-    
-    // Delete the old file
-    await fs.unlink(staticImagePath);
-    console.log('[encoding] Deleted old static-image.ts');
-    
-    // Reprocess the image
-    const uploadId = `reprocess_img_${Date.now()}`;
-    uploadProcessor.processImage(uploadId, offlineImagePath)
-      .then(() => {
-        console.log('[encoding] Image reprocessing completed');
-      })
-      .catch((error) => {
-        console.error('[encoding] Image reprocessing failed:', error.message);
-      });
-    
-    reprocessedCount++;
-  } catch (error) {
-    if (error.code !== 'ENOENT') {
-      console.error('[encoding] Error checking static-image.ts:', error.message);
-    } else {
-      console.log('[encoding] No static-image.ts found to reprocess');
-    }
-  }
-  
-  // Check if video.ts exists and offline.mp4 source exists
-  try {
-    await fs.access(videoTsPath);
-    await fs.access(offlineVideoPath);
-    
-    // Wait for image processing to complete before starting video
-    if (reprocessedCount > 0) {
-      console.log('[encoding] Waiting for image processing to complete before video...');
-      // Simple delay to allow image processing to finish first
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-    
-    console.log('[encoding] Found video.ts, reprocessing with new settings...');
-    
-    // Delete the old file
-    await fs.unlink(videoTsPath);
-    console.log('[encoding] Deleted old video.ts');
-    
-    // Reprocess the video
-    const uploadId = `reprocess_vid_${Date.now()}`;
-    uploadProcessor.processVideo(uploadId, offlineVideoPath)
-      .then(() => {
-        console.log('[encoding] Video reprocessing completed');
-      })
-      .catch((error) => {
-        console.error('[encoding] Video reprocessing failed:', error.message);
-      });
-    
-    reprocessedCount++;
-  } catch (error) {
-    if (error.code !== 'ENOENT') {
-      console.error('[encoding] Error checking video.ts:', error.message);
-    } else {
-      console.log('[encoding] No video.ts found to reprocess');
-    }
-  }
-  
-  if (reprocessedCount === 0) {
-    console.log('[encoding] No files needed reprocessing');
-  } else {
-    console.log(`[encoding] Started reprocessing ${reprocessedCount} file(s)`);
-  }
-}
-
 // Start server
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[http] Server listening on port ${PORT}`);
@@ -1298,15 +1143,6 @@ server.listen(PORT, '0.0.0.0', () => {
   
   // Start system metrics polling
   startMetricsPolling();
-  
-  // Check encoding settings and reprocess files if needed
-  checkEncodingSettingsAndReprocess()
-    .then(() => {
-      console.log('[main] Encoding settings check completed');
-    })
-    .catch((error) => {
-      console.error('[main] Error checking encoding settings:', error.message);
-    });
   
   console.log('[main] Dashboard backend is now running');
 });

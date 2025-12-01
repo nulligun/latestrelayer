@@ -1,33 +1,16 @@
 #!/bin/bash
 #
 # Generate fallback video with "BRB..." message
-# This script creates fallback.mp4 with configurable encoding settings.
-#
-# Settings are read from environment variables with defaults:
-#   - VIDEO_WIDTH (default: 1280)
-#   - VIDEO_HEIGHT (default: 720)
-#   - VIDEO_FPS (default: 30)
-#   - VIDEO_BITRATE (default: 1500) in kbps
-#   - VIDEO_ENCODER (default: libx264)
-#   - AUDIO_ENCODER (default: aac)
-#   - AUDIO_BITRATE (default: 128) in kbps
-#   - AUDIO_SAMPLE_RATE (default: 48000) in Hz
-#
-# Audio is always stereo. Duration is 30 seconds.
-# Visual: Black background with yellow "BRB..." text centered
+# This script creates fallback.mp4 with the following specifications:
+#   - Resolution: 1280x720 (720p)
+#   - Frame rate: 30 fps
+#   - Video bitrate: 1500 kbps
+#   - Audio: Stereo AAC at 48 kHz (silent)
+#   - Duration: 30 seconds
+#   - Visual: Black background with yellow "BRB..." text centered
 #
 
 set -e
-
-# Read encoding settings from environment with defaults
-VIDEO_WIDTH="${VIDEO_WIDTH:-1280}"
-VIDEO_HEIGHT="${VIDEO_HEIGHT:-720}"
-VIDEO_FPS="${VIDEO_FPS:-30}"
-VIDEO_BITRATE="${VIDEO_BITRATE:-1500}"
-VIDEO_ENCODER="${VIDEO_ENCODER:-libx264}"
-AUDIO_ENCODER="${AUDIO_ENCODER:-aac}"
-AUDIO_BITRATE="${AUDIO_BITRATE:-128}"
-AUDIO_SAMPLE_RATE="${AUDIO_SAMPLE_RATE:-48000}"
 
 OUTPUT="${1:-fallback.mp4}"
 
@@ -46,17 +29,17 @@ fi
 echo "Generating $OUTPUT with the following specifications:"
 echo ""
 echo "  Video:"
-echo "    - Resolution: ${VIDEO_WIDTH}x${VIDEO_HEIGHT}"
-echo "    - Frame rate: ${VIDEO_FPS} fps"
-echo "    - Bitrate: ${VIDEO_BITRATE} kbps"
-echo "    - Codec: ${VIDEO_ENCODER}"
+echo "    - Resolution: 1280x720"
+echo "    - Frame rate: 30 fps"
+echo "    - Bitrate: 1500 kbps"
+echo "    - Codec: H.264"
 echo "    - Background: Black"
 echo "    - Text: Yellow 'BRB...' centered"
 echo ""
 echo "  Audio:"
-echo "    - Codec: ${AUDIO_ENCODER}"
+echo "    - Codec: AAC"
 echo "    - Channels: Stereo"
-echo "    - Sample rate: ${AUDIO_SAMPLE_RATE} Hz"
+echo "    - Sample rate: 48 kHz"
 echo "    - Silent audio"
 echo ""
 echo "  Duration: 30 seconds"
@@ -77,20 +60,20 @@ done
 
 if [ -z "$FONTFILE" ]; then
     echo "Warning: No suitable font found, generating video without text overlay"
-    ffmpeg -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=${VIDEO_FPS}" \
-      -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=${AUDIO_SAMPLE_RATE}" \
-      -c:v "${VIDEO_ENCODER}" -b:v "${VIDEO_BITRATE}k" -r "${VIDEO_FPS}" -pix_fmt yuv420p \
-      -c:a "${AUDIO_ENCODER}" -ac 2 -ar "${AUDIO_SAMPLE_RATE}" \
+    ffmpeg -f lavfi -i color=c=black:s=1280x720:r=30 \
+      -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
+      -c:v libx264 -b:v 1500k -r 30 -pix_fmt yuv420p \
+      -c:a aac -ac 2 -ar 48000 \
       -t 30 \
       -y \
       "$OUTPUT"
 else
     echo "Using font: $FONTFILE"
-    ffmpeg -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=${VIDEO_FPS}" \
-      -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=${AUDIO_SAMPLE_RATE}" \
+    ffmpeg -f lavfi -i color=c=black:s=1280x720:r=30 \
+      -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
       -vf "drawtext=fontfile='$FONTFILE':text='BRB...':fontcolor=yellow:fontsize=72:x=(w-text_w)/2:y=(h-text_h)/2" \
-      -c:v "${VIDEO_ENCODER}" -b:v "${VIDEO_BITRATE}k" -r "${VIDEO_FPS}" -pix_fmt yuv420p \
-      -c:a "${AUDIO_ENCODER}" -ac 2 -ar "${AUDIO_SAMPLE_RATE}" \
+      -c:v libx264 -b:v 1500k -r 30 -pix_fmt yuv420p \
+      -c:a aac -ac 2 -ar 48000 \
       -t 30 \
       -y \
       "$OUTPUT"

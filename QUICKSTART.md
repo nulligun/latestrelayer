@@ -16,36 +16,12 @@ Create or update your `.env` file with the shared folder path:
 SHARED_FOLDER=/path/to/your/shared/folder
 ```
 
-### Encoding Settings (Optional)
-
-The system uses configurable encoding settings for fallback videos, uploads, and mock camera. You can customize these in your `.env` file:
-
-```bash
-# Video Encoding Settings
-VIDEO_BITRATE=1500      # Video bitrate in kbps
-VIDEO_WIDTH=1280        # Video width in pixels
-VIDEO_HEIGHT=720        # Video height in pixels
-VIDEO_FPS=30            # Frame rate
-VIDEO_ENCODER=libx264   # Video encoder
-
-# Audio Encoding Settings (always stereo)
-AUDIO_ENCODER=aac       # Audio encoder
-AUDIO_BITRATE=128       # Audio bitrate in kbps
-AUDIO_SAMPLE_RATE=48000 # Audio sample rate in Hz
-```
-
-**Note:** When encoding settings are changed:
-- The `ffmpeg-fallback` container will automatically regenerate `fallback.ts` on next startup
-- The `dashboard` container will automatically reprocess any existing uploaded images/videos on next startup
-- No manual intervention is required - just restart the containers after changing settings
-
 The system will automatically generate a default fallback video (black screen with "BRB..." text) on first startup if one doesn't exist.
 
 **Optional: Custom Fallback Video**
 If you want to use your own fallback video instead of the auto-generated one, place it in the shared folder as `fallback.ts`:
 ```bash
-# Convert your video to MPEG-TS format using the configured encoding settings.
-# Default values shown below - these should match your .env settings:
+# Convert your video to MPEG-TS format
 ffmpeg -i /path/to/your/video.mp4 \
   -c:v libx264 -preset fast -crf 23 \
   -g 30 -keyint_min 30 -sc_threshold 0 \
@@ -236,28 +212,9 @@ log_level: "INFO"
 ## Performance Tips
 
 1. **Use hardware encoding for live input** to reduce CPU load
-2. **Match fallback bitrate** to live stream for smooth transitions - configure `VIDEO_BITRATE` in `.env` to match your live stream
+2. **Match fallback bitrate** to live stream for smooth transitions
 3. **Monitor queue sizes** in logs to detect bottlenecks
 4. **Use SSD storage** for fallback video file
-5. **Match resolution and frame rate** across all sources - use the encoding settings in `.env` to ensure consistency
-
-## Encoding Settings Reference
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VIDEO_BITRATE` | 1500 | Video bitrate in kbps |
-| `VIDEO_WIDTH` | 1280 | Video width in pixels |
-| `VIDEO_HEIGHT` | 720 | Video height in pixels |
-| `VIDEO_FPS` | 30 | Frame rate |
-| `VIDEO_ENCODER` | libx264 | Video encoder (H.264) |
-| `AUDIO_ENCODER` | aac | Audio encoder |
-| `AUDIO_BITRATE` | 128 | Audio bitrate in kbps |
-| `AUDIO_SAMPLE_RATE` | 48000 | Audio sample rate in Hz |
-
-These settings are used by:
-- **ffmpeg-fallback**: Auto-generated fallback video
-- **dashboard**: Processing uploaded images and videos
-- **mock-camera**: Test stream generator
 
 ## Support
 

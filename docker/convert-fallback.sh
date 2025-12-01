@@ -3,22 +3,10 @@
 # Convert MP4 to MPEG-TS with proper PSI tables
 # This script converts fallback.mp4 to fallback.ts with proper PAT/PMT tables
 #
-# Settings are read from environment variables with defaults:
-#   - VIDEO_FPS (default: 30) - used for GOP size calculation
-#   - VIDEO_ENCODER (default: libx264)
-#   - AUDIO_ENCODER (default: aac)
-#   - AUDIO_BITRATE (default: 128) in kbps
-#
 # Usage: ./convert-fallback.sh [input.mp4] [output.ts]
 #
 
 set -e
-
-# Read encoding settings from environment with defaults
-VIDEO_FPS="${VIDEO_FPS:-30}"
-VIDEO_ENCODER="${VIDEO_ENCODER:-libx264}"
-AUDIO_ENCODER="${AUDIO_ENCODER:-aac}"
-AUDIO_BITRATE="${AUDIO_BITRATE:-128}"
 
 INPUT="${1:-fallback.mp4}"
 OUTPUT="${2:-fallback.ts}"
@@ -32,12 +20,6 @@ fi
 
 echo "Converting $INPUT to $OUTPUT with proper MPEG-TS PSI tables..."
 echo ""
-echo "Settings:"
-echo "  - Video encoder: ${VIDEO_ENCODER}"
-echo "  - Audio encoder: ${AUDIO_ENCODER}"
-echo "  - Audio bitrate: ${AUDIO_BITRATE}k"
-echo "  - GOP size: ${VIDEO_FPS} (keyframe every 1 second at ${VIDEO_FPS}fps)"
-echo ""
 echo "This will:"
 echo "  - Convert H.264 from AVCC to Annex B format"
 echo "  - Generate proper PAT (PID 0) and PMT tables"
@@ -46,16 +28,16 @@ echo "  - Maintain video/audio quality (no re-encoding)"
 echo ""
 
 # Re-encode with more keyframes for better seeking and reliability
-# GOP size equals FPS for keyframe every 1 second
+# GOP size of 30 means keyframe every 1 second at 30fps
 ffmpeg -i "$INPUT" \
-  -c:v "${VIDEO_ENCODER}" \
+  -c:v libx264 \
   -preset fast \
   -crf 23 \
-  -g "${VIDEO_FPS}" \
-  -keyint_min "${VIDEO_FPS}" \
+  -g 30 \
+  -keyint_min 30 \
   -sc_threshold 0 \
-  -c:a "${AUDIO_ENCODER}" \
-  -b:a "${AUDIO_BITRATE}k" \
+  -c:a aac \
+  -b:a 128k \
   -bsf:v h264_mp4toannexb \
   -f mpegts \
   -mpegts_flags +resend_headers \

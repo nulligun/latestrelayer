@@ -2,14 +2,8 @@
   <div class="stream-card">
     <h2>Camera Details</h2>
     
-    <!-- Camera Details - 3 Row Grid -->
+    <!-- Camera Details - 2 Row Grid -->
     <div class="camera-details-grid">
-      <!-- Row 0: Encoder Settings (full width) -->
-      <div class="info-item encoder-settings-item">
-        <div class="info-label">ENCODER SETTINGS</div>
-        <div class="encoder-settings-value">{{ encoderSettingsDisplay }}</div>
-      </div>
-      
       <!-- Row 1: URLs -->
       <!-- Preview URL -->
       <div class="info-item url-item">
@@ -187,7 +181,6 @@ export default {
       localSrtUrl: '',
       localPreviewUrl: '',
       localDroneUrl: '',
-      localEncodingSettings: null,
       copySuccess: false,
       copyPreviewSuccess: false,
       copyDroneSuccess: false,
@@ -231,18 +224,6 @@ export default {
       }
       // Return masked text when hidden
       return '••••••••••••••••••••••••••••••';
-    },
-    encoderSettingsDisplay() {
-      const config = this.cameraConfig?.encodingSettings || this.localEncodingSettings;
-      if (!config) return 'Loading...';
-      
-      // Transform libx264 → h264 for user-friendly display
-      const videoCodec = config.videoEncoder === 'libx264' ? 'h264' : config.videoEncoder;
-      
-      // Format audio sample rate as kHz
-      const audioSampleKHz = Math.round(config.audioSampleRate / 1000);
-      
-      return `${videoCodec}: ${config.videoWidth}x${config.videoHeight} @ ${config.videoFps}fps, ${config.videoBitrate}kbps, ${config.audioEncoder}: ${config.audioBitrate}kbps, ${audioSampleKHz}kHz stereo`;
     },
     displayScene() {
       if (!this.currentScene) return 'Unknown';
@@ -320,13 +301,11 @@ export default {
         this.localSrtUrl = config.srtUrl;
         this.localPreviewUrl = config.previewUrl;
         this.localDroneUrl = config.droneUrl;
-        this.localEncodingSettings = config.encodingSettings;
       } catch (error) {
         console.error('[StreamStats] Error fetching SRT config:', error);
         this.localSrtUrl = 'Error loading URL';
         this.localPreviewUrl = 'Error loading URL';
         this.localDroneUrl = 'Error loading URL';
-        this.localEncodingSettings = null;
       }
     },
     async fetchInputSource() {
@@ -516,30 +495,6 @@ h2 {
   background: #0f172a;
   border-radius: 6px;
   padding: 15px;
-}
-
-.encoder-settings-item {
-  grid-column: span 3;
-}
-
-.encoder-settings-value {
-  font-family: 'Courier New', monospace;
-  font-size: 1rem;
-  color: #10b981;
-  font-weight: 600;
-  padding: 8px 0;
-}
-
-@media (max-width: 1024px) {
-  .encoder-settings-item {
-    grid-column: span 2;
-  }
-}
-
-@media (max-width: 768px) {
-  .encoder-settings-item {
-    grid-column: span 1;
-  }
 }
 
 .url-item {
