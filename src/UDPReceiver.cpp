@@ -8,10 +8,12 @@
 #include <fcntl.h>
 #include <errno.h>
 
-UDPReceiver::UDPReceiver(const std::string& name, uint16_t port, TSPacketQueue& queue)
+UDPReceiver::UDPReceiver(const std::string& name, uint16_t port, TSPacketQueue& queue,
+                         uint32_t buffer_size)
     : name_(name),
       port_(port),
       queue_(queue),
+      buffer_size_(buffer_size),
       running_(false),
       should_stop_(false),
       socket_fd_(-1),
@@ -89,10 +91,13 @@ bool UDPReceiver::createSocket() {
         return false;
     }
     
-    // Increase receive buffer size
-    int rcvbuf = 4 * 1024 * 1024; // 4MB
+    // Set receive buffer size from configuration
+    int rcvbuf = static_cast<int>(buffer_size_);
     if (setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
-        std::cerr << "[" << name_ << "] Warning: Failed to set receive buffer size" << std::endl;
+        std::cerr << "[" << name_ << "] Warning: Failed to set receive buffer size to "
+                  << buffer_size_ << " bytes" << std::endl;
+    } else {
+        std::cout << "[" << name_ << "] Set UDP receive buffer to " << buffer_size_ << " bytes" << std::endl;
     }
     
     // Bind to port

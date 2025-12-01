@@ -116,8 +116,10 @@ services:
       controller:
         condition: service_healthy
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx.conf.template:/etc/nginx/nginx.conf.template:ro
       - ./nginx-start.sh:/usr/local/bin/nginx-start.sh:ro
+    environment:
+      - HLS_FRAGMENT_SIZE=${HLS_FRAGMENT_SIZE:-3}
     ports:
       - "1935:1935"    # RTMP
       - "8080:8080"    # HTTP/HLS
@@ -160,6 +162,13 @@ services:
       - ${SHARED_FOLDER}/tsduck-src:/opt/tsduck-src
       - ${SHARED_FOLDER}/tsduck-build:/opt/tsduck-build
       - ${SHARED_FOLDER}/tsduck:/opt/tsduck
+    environment:
+      - UDP_RCVBUF_SIZE=${UDP_RCVBUF_SIZE:-262144}
+      - TS_QUEUE_SIZE=${TS_QUEUE_SIZE:-5000}
+      - RTMP_PACING_US=${RTMP_PACING_US:-10}
+      - MIN_CONSECUTIVE_FOR_SWITCH=${MIN_CONSECUTIVE_FOR_SWITCH:-10}
+      - LIVE_IDR_TIMEOUT_MS=${LIVE_IDR_TIMEOUT_MS:-10000}
+      - FALLBACK_IDR_TIMEOUT_MS=${FALLBACK_IDR_TIMEOUT_MS:-2000}
     networks:
       - tsnet
     restart: unless-stopped
@@ -187,6 +196,8 @@ services:
     container_name: ffmpeg-srt-live
     ports:
       - "1937:1937/udp"
+    environment:
+      - SRT_LATENCY_MS=${SRT_LATENCY_MS:-200}
     networks:
       - tsnet
     restart: unless-stopped

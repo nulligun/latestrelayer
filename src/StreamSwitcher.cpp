@@ -1,13 +1,17 @@
 #include "StreamSwitcher.h"
 #include <iostream>
 
-StreamSwitcher::StreamSwitcher(uint32_t max_live_gap_ms, std::shared_ptr<HttpClient> http_client)
+StreamSwitcher::StreamSwitcher(uint32_t max_live_gap_ms, std::shared_ptr<HttpClient> http_client,
+                               uint32_t min_consecutive_for_switch)
     : current_mode_(Mode::LIVE),
       max_live_gap_ms_(max_live_gap_ms),
       privacy_mode_(false),
       last_live_packet_time_(std::chrono::steady_clock::now()),
       consecutive_live_packets_(0),
+      min_consecutive_for_switch_(min_consecutive_for_switch),
       http_client_(http_client) {
+    std::cout << "[StreamSwitcher] Configured with min_consecutive_for_switch="
+              << min_consecutive_for_switch_ << std::endl;
 }
 
 StreamSwitcher::~StreamSwitcher() {
@@ -43,9 +47,9 @@ void StreamSwitcher::updateLiveTimestamp() {
     uint32_t new_count = consecutive_live_packets_.load();
     if (new_count == 1) {
         std::cout << "[StreamSwitcher] DEBUG: First consecutive live packet detected" << std::endl;
-    } else if (new_count == MIN_CONSECUTIVE_FOR_SWITCH) {
-        std::cout << "[StreamSwitcher] DEBUG: Reached MIN_CONSECUTIVE_FOR_SWITCH ("
-                  << MIN_CONSECUTIVE_FOR_SWITCH << ")" << std::endl;
+    } else if (new_count == min_consecutive_for_switch_) {
+        std::cout << "[StreamSwitcher] DEBUG: Reached min_consecutive_for_switch ("
+                  << min_consecutive_for_switch_ << ")" << std::endl;
     } else if (new_count % 100 == 0) {
         std::cout << "[StreamSwitcher] DEBUG: consecutive_live_packets_ = " << new_count << std::endl;
     }
@@ -88,11 +92,11 @@ bool StreamSwitcher::tryReturnToLive() {
         std::cout << "[StreamSwitcher] DEBUG: tryReturnToLive() check #" << try_return_count
                   << " - mode=" << (mode == Mode::LIVE ? "LIVE" : "FALLBACK")
                   << ", consecutive_live_packets=" << consec
-                  << ", MIN_CONSECUTIVE=" << MIN_CONSECUTIVE_FOR_SWITCH << std::endl;
+                  << ", min_consecutive=" << min_consecutive_for_switch_ << std::endl;
     }
     
     // Only switch back if we're in FALLBACK mode and have enough consecutive packets
-    if (mode == Mode::FALLBACK && consec >= MIN_CONSECUTIVE_FOR_SWITCH) {
+    if (mode == Mode::FALLBACK && consec >= min_consecutive_for_switch_) {
         
         std::cout << "[StreamSwitcher] FALLBACK → LIVE (consecutive packets="
                   << consec << ")" << std::endl;

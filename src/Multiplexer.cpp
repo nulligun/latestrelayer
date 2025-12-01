@@ -11,7 +11,11 @@ Multiplexer::Multiplexer(const Config& config)
       initialized_(false),
       live_stream_ready_(false),
       initial_privacy_mode_(false),
-      packets_processed_(0) {
+      packets_processed_(0),
+      live_idr_timeout_ms_(config.getLiveIdrTimeoutMs()),
+      fallback_idr_timeout_ms_(config.getFallbackIdrTimeoutMs()) {
+    std::cout << "[Multiplexer] Configured with IDR timeouts: live=" << live_idr_timeout_ms_
+              << "ms, fallback=" << fallback_idr_timeout_ms_ << "ms" << std::endl;
 }
 
 Multiplexer::~Multiplexer() {
@@ -53,15 +57,19 @@ bool Multiplexer::initialize() {
     // Query initial privacy mode from controller
     queryInitialPrivacyMode();
     
-    // Create packet queues
-    live_queue_ = std::make_unique<TSPacketQueue>(10000);
-    fallback_queue_ = std::make_unique<TSPacketQueue>(10000);
+    // Create packet queues with configurable size
+    uint32_t queue_size = config_.getTsQueueSize();
+    std::cout << "[Multiplexer] Creating packet queues with size=" << queue_size << std::endl;
+    live_queue_ = std::make_unique<TSPacketQueue>(queue_size);
+    fallback_queue_ = std::make_unique<TSPacketQueue>(queue_size);
     
-    // Create UDP receivers
+    // Create UDP receivers with configurable buffer size
+    uint32_t udp_buffer = config_.getUdpRcvbufSize();
+    std::cout << "[Multiplexer] Creating UDP receivers with buffer=" << udp_buffer << " bytes" << std::endl;
     live_receiver_ = std::make_unique<UDPReceiver>(
-        "Live", config_.getLiveUdpPort(), *live_queue_);
+        "Live", config_.getLiveUdpPort(), *live_queue_, udp_buffer);
     fallback_receiver_ = std::make_unique<UDPReceiver>(
-        "Fallback", config_.getFallbackUdpPort(), *fallback_queue_);
+        "Fallback", config_.getFallbackUdpPort(), *fallback_queue_, udp_buffer);
     
     // Create analyzers
     live_analyzer_ = std::make_unique<TSAnalyzer>();
@@ -70,7 +78,11 @@ bool Multiplexer::initialize() {
     // Create processing components
     timestamp_mgr_ = std::make_unique<TimestampManager>();
     pid_mapper_ = std::make_unique<PIDMapper>();
-    switcher_ = std::make_unique<StreamSwitcher>(config_.getMaxLiveGapMs(), http_client_);
+    
+    // Create stream switcher with configurable min consecutive packets
+    uint32_t min_consecutive = config_.getMinConsecutiveForSwitch();
+    std::cout << "[Multiplexer] Creating StreamSwitcher with min_consecutive=" << min_consecutive << std::endl;
+    switcher_ = std::make_unique<StreamSwitcher>(config_.getMaxLiveGapMs(), http_client_, min_consecutive);
     
     // Apply initial privacy mode that was queried earlier
     if (initial_privacy_mode_.load()) {
@@ -86,8 +98,10 @@ bool Multiplexer::initialize() {
         }
     });
     
-    // Create RTMP output
-    rtmp_output_ = std::make_unique<RTMPOutput>(config_.getRtmpUrl());
+    // Create RTMP output with configurable pacing
+    uint32_t pacing_us = config_.getRtmpPacingUs();
+    std::cout << "[Multiplexer] Creating RTMPOutput with pacing=" << pacing_us << "µs" << std::endl;
+    rtmp_output_ = std::make_unique<RTMPOutput>(config_.getRtmpUrl(), pacing_us);
     
     // Create SPS/PPS injector for splice points
     sps_pps_injector_ = std::make_unique<SPSPPSInjector>();
@@ -691,9 +705,9 @@ bool Multiplexer::switchToLiveAtIDR() {
             std::chrono::steady_clock::now() - switch_wait_start_
         );
         
-        if (elapsed.count() >= LIVE_IDR_TIMEOUT_MS) {
+        if (elapsed.count() >= static_cast<int64_t>(live_idr_timeout_ms_)) {
             std::cout << "[Multiplexer] IDR TIMEOUT: No IDR found in live stream after "
-                      << elapsed.count() << "ms - staying on FALLBACK" << std::endl;
+                      << elapsed.count() << "ms (timeout=" << live_idr_timeout_ms_ << "ms) - staying on FALLBACK" << std::endl;
             switch_buffer_.clear();
             return false;
         }
@@ -785,9 +799,9 @@ bool Multiplexer::switchToFallbackAtIDR() {
             std::chrono::steady_clock::now() - switch_wait_start_
         );
         
-        if (elapsed.count() >= FALLBACK_IDR_TIMEOUT_MS) {
+        if (elapsed.count() >= static_cast<int64_t>(fallback_idr_timeout_ms_)) {
             std::cout << "[Multiplexer] IDR TIMEOUT: No IDR found in fallback stream after "
-                      << elapsed.count() << "ms - forcing switch anyway (fallback should have regular IDRs)" << std::endl;
+                      << elapsed.count() << "ms (timeout=" << fallback_idr_timeout_ms_ << "ms) - forcing switch anyway (fallback should have regular IDRs)" << std::endl;
             // For fallback, we force switch even without IDR since it loops and should have IDRs
             // This is a safety fallback - shouldn't normally happen
             break;

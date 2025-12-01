@@ -21,11 +21,17 @@ trap cleanup SIGTERM SIGINT
 echo "[Wrapper] Waiting for multiplexer to be ready..."
 sleep 3
 
+# Get SRT latency from environment variable (default: 200ms)
+# SRT latency is specified in microseconds in the URL
+SRT_LATENCY_MS=${SRT_LATENCY_MS:-200}
+SRT_LATENCY_US=$((SRT_LATENCY_MS * 1000))
+echo "[Wrapper] Using SRT latency: ${SRT_LATENCY_MS}ms (${SRT_LATENCY_US}µs)"
+
 # Start ffmpeg in background
 echo "[Wrapper] Starting ffmpeg SRT live stream..."
 ffmpeg -nostdin \
     -loglevel info \
-    -i 'srt://0.0.0.0:1937?mode=listener&latency=200000&transtype=live&payload_size=1316' \
+    -i "srt://0.0.0.0:1937?mode=listener&latency=${SRT_LATENCY_US}&transtype=live&payload_size=1316" \
     -c copy \
     -f mpegts 'udp://multiplexer:10000?pkt_size=1316' &
 

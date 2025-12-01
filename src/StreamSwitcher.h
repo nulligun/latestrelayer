@@ -15,7 +15,10 @@ enum class Mode {
 
 class StreamSwitcher {
 public:
-    explicit StreamSwitcher(uint32_t max_live_gap_ms, std::shared_ptr<HttpClient> http_client = nullptr);
+    // Constructor with configurable min consecutive packets threshold
+    // min_consecutive_for_switch: minimum live packets needed before switching from fallback to live (default 10)
+    explicit StreamSwitcher(uint32_t max_live_gap_ms, std::shared_ptr<HttpClient> http_client = nullptr,
+                           uint32_t min_consecutive_for_switch = 10);
     ~StreamSwitcher();
     
     // Get current mode
@@ -61,7 +64,7 @@ private:
     
     // Track consecutive live packets for switch-back stability
     std::atomic<uint32_t> consecutive_live_packets_;
-    static constexpr uint32_t MIN_CONSECUTIVE_FOR_SWITCH = 10;
+    uint32_t min_consecutive_for_switch_;  // Configurable threshold
     
     // HTTP client for notifying controller
     std::shared_ptr<HttpClient> http_client_;
