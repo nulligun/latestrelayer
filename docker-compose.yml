@@ -56,6 +56,8 @@ services:
       - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
       - SRT_PORT=${SRT_PORT:-1937}
       - SRT_DOMAIN=${SRT_DOMAIN:-localhost}
+      - KICK_URL=${KICK_URL:-}
+      - KICK_KEY=${KICK_KEY:-}
     networks:
       - tsnet
     restart: unless-stopped

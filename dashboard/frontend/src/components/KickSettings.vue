@@ -186,6 +186,8 @@ export default {
         }
         
         const config = await response.json();
+        console.log('[KickSettings] API response:', config);
+        
         this.configSource = config.source || 'env';
         
         if (this.configSource === 'env') {
@@ -195,6 +197,7 @@ export default {
           // Keep input fields empty for user input
           this.kickUrl = '';
           this.kickKey = '';
+          console.log('[KickSettings] Stored env values - envUrl:', this.envUrl, 'envKey:', this.envKey ? '[SET]' : '[EMPTY]');
         } else {
           // For saved config, populate the input fields
           this.kickUrl = config.kickUrl || '';
@@ -328,10 +331,12 @@ export default {
     
     toggleUrlVisibility() {
       this.showUrl = !this.showUrl;
+      console.log('[KickSettings] toggleUrlVisibility - showUrl:', this.showUrl, 'configSource:', this.configSource, 'envUrl:', this.envUrl);
     },
     
     toggleKeyVisibility() {
       this.showKey = !this.showKey;
+      console.log('[KickSettings] toggleKeyVisibility - showKey:', this.showKey, 'configSource:', this.configSource, 'envKey:', this.envKey ? '[SET]' : '[EMPTY]');
     },
     
     handleUrlInput(event) {
