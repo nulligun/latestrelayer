@@ -2,8 +2,8 @@
   <div class="kick-settings-card">
     <div class="header-row">
       <h2>Kick Settings</h2>
-      <div v-if="configSource === 'config'" class="source-badge source-config">
-        Using saved config
+      <div v-if="configSource" class="source-badge" :class="sourceBadgeClass">
+        {{ sourceBadgeText }}
       </div>
     </div>
     
@@ -15,7 +15,7 @@
           <input
             v-model="kickUrl"
             :type="showUrl ? 'text' : 'password'"
-            :placeholder="urlPlaceholder"
+            placeholder="rtmps://..."
             class="setting-input"
             :disabled="savingConfig"
             @focus="handleUrlFocus"
@@ -38,7 +38,7 @@
           <input
             v-model="kickKey"
             :type="showKey ? 'text' : 'password'"
-            :placeholder="keyPlaceholder"
+            placeholder="sk_..."
             class="setting-input"
             :disabled="savingConfig"
             @focus="handleKeyFocus"
@@ -113,8 +113,6 @@ export default {
     return {
       kickUrl: '',
       kickKey: '',
-      envKickUrl: '',
-      envKickKey: '',
       showUrl: false,
       showKey: false,
       savingConfig: false,
@@ -130,11 +128,13 @@ export default {
     isConfigValid() {
       return this.kickUrl.trim().length > 0 && this.kickKey.trim().length > 0;
     },
-    urlPlaceholder() {
-      return this.envKickUrl || 'rtmps://...';
+    sourceBadgeText() {
+      return this.configSource === 'config' 
+        ? 'Using saved config' 
+        : 'Using defaults from .env';
     },
-    keyPlaceholder() {
-      return this.envKickKey || 'sk_...';
+    sourceBadgeClass() {
+      return this.configSource === 'config' ? 'source-config' : 'source-env';
     },
     confirmModalMessage() {
       return `This will:\n\n• Delete saved configuration\n• Reload defaults from environment variables\n• Restart ffmpeg-kick container if running\n\nYou can save new settings anytime.`;
@@ -152,12 +152,6 @@ export default {
         }
         
         const config = await response.json();
-        
-        // Store env values for placeholders
-        this.envKickUrl = config.envKickUrl || '';
-        this.envKickKey = config.envKickKey || '';
-        
-        // Set input values (empty when source is env, populated when source is config)
         this.kickUrl = config.kickUrl || '';
         this.kickKey = config.kickKey || '';
         this.configSource = config.source || 'env';
@@ -247,11 +241,9 @@ export default {
         const result = await response.json();
         console.log('[KickSettings] Configuration reset:', result);
         
-        // Update UI with environment defaults (empty inputs, env values as placeholders)
-        this.kickUrl = '';
-        this.kickKey = '';
-        this.envKickUrl = result.config.envKickUrl || result.config.kickUrl || '';
-        this.envKickKey = result.config.envKickKey || result.config.kickKey || '';
+        // Update UI with environment defaults
+        this.kickUrl = result.config.kickUrl || '';
+        this.kickKey = result.config.kickKey || '';
         this.configSource = 'env';
         
         this.resetSuccess = true;

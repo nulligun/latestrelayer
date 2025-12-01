@@ -8,12 +8,11 @@
     <div v-if="!isKickLive" class="control-section go-live-section">
       <button
         @click="handleKickToggle"
-        :disabled="kickActionPending || kickStartPending"
-        :class="['main-button', kickStartPending ? 'button-going-live' : 'button-start']"
+        :disabled="kickActionPending"
+        class="main-button button-start"
       >
-        <span v-if="kickStartPending" class="button-spinner"></span>
-        <span v-else class="button-icon">▶</span>
-        <span class="button-text">{{ kickStartPending ? 'Going Live' : 'Go Live' }}</span>
+        <span class="button-icon">▶</span>
+        <span class="button-text">Go Live</span>
       </button>
     </div>
 
@@ -89,7 +88,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import ConfirmationModal from './ConfirmationModal.vue';
 import VideoPreview from './VideoPreview.vue';
 
@@ -134,8 +133,6 @@ export default {
     const streamActionPending = ref(false);
     const privacyActionPending = ref(false);
     const kickActionPending = ref(false);
-    const kickStartPending = ref(false);
-    const kickStartTimeoutId = ref(null);
     const streamActionMessage = ref('');
     const privacyActionMessage = ref('');
     const showKickConfirmModal = ref(false);
@@ -250,14 +247,13 @@ export default {
     
     const confirmKickToggle = async () => {
       kickActionPending.value = true;
-      const isStarting = pendingKickAction.value === 'start';
       
       try {
-        const endpoint = isStarting
+        const endpoint = pendingKickAction.value === 'start'
           ? '/api/kick/start'
           : '/api/kick/stop';
         
-        console.log(`[SimplifiedView] ${isStarting ? 'Starting' : 'Stopping'} Kick stream...`);
+        console.log(`[SimplifiedView] ${pendingKickAction.value === 'start' ? 'Starting' : 'Stopping'} Kick stream...`);
         
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -270,26 +266,6 @@ export default {
         }
         
         console.log(`[SimplifiedView] Kick stream ${pendingKickAction.value} successful`);
-        
-        // If starting, set pending state and 30-second timeout
-        if (isStarting) {
-          kickStartPending.value = true;
-          console.log('[SimplifiedView] Waiting for container to start (30s timeout)...');
-          
-          // Clear any existing timeout
-          if (kickStartTimeoutId.value) {
-            clearTimeout(kickStartTimeoutId.value);
-          }
-          
-          // Set 30-second timeout
-          kickStartTimeoutId.value = setTimeout(() => {
-            if (kickStartPending.value) {
-              console.warn('[SimplifiedView] Kick container start timeout - reverting state');
-              kickStartPending.value = false;
-              kickStartTimeoutId.value = null;
-            }
-          }, 30000);
-        }
       } catch (err) {
         console.error('[SimplifiedView] Kick toggle error:', err);
         error.value = err.message;
@@ -423,32 +399,9 @@ export default {
       }
     };
 
-    // Watch for kick streaming status changes from WebSocket updates
-    watch(
-      () => props.switcherHealth?.kick_streaming_enabled,
-      (newKickEnabled) => {
-        if (newKickEnabled === true && kickStartPending.value) {
-          console.log('[SimplifiedView] Kick container started, clearing pending state');
-          kickStartPending.value = false;
-          if (kickStartTimeoutId.value) {
-            clearTimeout(kickStartTimeoutId.value);
-            kickStartTimeoutId.value = null;
-          }
-        }
-      }
-    );
-
     // Fetch on mount
     onMounted(() => {
       fetchKickChannel();
-    });
-
-    // Cleanup on unmount
-    onUnmounted(() => {
-      if (kickStartTimeoutId.value) {
-        clearTimeout(kickStartTimeoutId.value);
-        kickStartTimeoutId.value = null;
-      }
     });
 
     return {
@@ -456,7 +409,6 @@ export default {
       streamActionPending,
       privacyActionPending,
       kickActionPending,
-      kickStartPending,
       streamActionMessage,
       privacyActionMessage,
       showKickConfirmModal,
@@ -603,27 +555,6 @@ export default {
 
 .button-start:hover:not(:disabled) {
   background: linear-gradient(135deg, #059669 0%, #047857 100%);
-}
-
-.button-going-live {
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-  color: white;
-}
-
-.button-spinner {
-  display: inline-block;
-  width: 2.5rem;
-  height: 2.5rem;
-  border: 4px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
-  border-radius: 50%;
-  animation: button-spin 0.8s linear infinite;
-}
-
-@keyframes button-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .button-stop {
