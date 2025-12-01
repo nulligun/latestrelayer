@@ -16,17 +16,19 @@ public:
     TimestampManager();
     ~TimestampManager();
     
-    // Process and adjust timestamps in a packet (FALLBACK only)
+    // Process and adjust timestamps in a packet
     // Returns true if timestamps were successfully adjusted
-    // Note: For LIVE source, this is now a no-op - live packets pass through unmodified
+    // For LIVE: Applies live_offset_ if non-zero (for FALLBACK→LIVE continuity)
+    // For FALLBACK: Applies fallback_offset_ (for LIVE→FALLBACK continuity)
     bool adjustPacket(ts::TSPacket& packet, Source source, const TimestampInfo& input_ts);
     
-    // Track timestamps from live packets without modifying them
+    // Track timestamps from live packets
+    // When live_offset_ is non-zero, stores adjusted timestamps to maintain timeline continuity
     // Updates last_live_pts_ and wall-clock time for gap-aware fallback transitions
-    void trackLiveTimestamps(const TimestampInfo& ts_info);
+    void trackLiveTimestamps(const TimestampInfo& ts_info, uint64_t adjusted_pts, uint64_t adjusted_dts, uint64_t adjusted_pcr);
     
     // Called when switching sources to calculate new offset
-    // For LIVE: No-op (live is passthrough)
+    // For LIVE: Calculates offset to continue from fallback output timeline (bidirectional continuity)
     // For FALLBACK: Calculates offset based on last live PTS + elapsed gap time
     void onSourceSwitch(Source new_source, const TimestampInfo& first_packet_ts);
     
