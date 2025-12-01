@@ -2,9 +2,6 @@
   <div class="kick-settings-card">
     <div class="header-row">
       <h2>Kick Settings</h2>
-      <div v-if="configSource" class="source-badge" :class="sourceBadgeClass">
-        {{ sourceBadgeText }}
-      </div>
     </div>
     
     <div class="settings-content">
@@ -13,9 +10,10 @@
         <label class="setting-label">Kick Stream URL (RTMPS)</label>
         <div class="input-wrapper">
           <input
-            v-model="kickUrl"
-            :type="showUrl ? 'text' : 'password'"
-            placeholder="rtmps://..."
+            :value="displayUrlValue"
+            @input="handleUrlInput"
+            type="text"
+            :placeholder="urlPlaceholder"
             class="setting-input"
             :disabled="savingConfig"
             @focus="handleUrlFocus"
@@ -23,10 +21,10 @@
           <button
             @click="toggleUrlVisibility"
             class="toggle-visibility-btn"
-            :class="{ active: showUrl }"
             type="button"
+            :title="showUrl ? 'Hide URL' : 'Show URL'"
           >
-            {{ showUrl ? '👁️' : '👁️‍🗨️' }}
+            {{ showUrl ? '🔓' : '🔒' }}
           </button>
         </div>
       </div>
@@ -36,9 +34,10 @@
         <label class="setting-label">Kick Stream Key</label>
         <div class="input-wrapper">
           <input
-            v-model="kickKey"
-            :type="showKey ? 'text' : 'password'"
-            placeholder="sk_..."
+            :value="displayKeyValue"
+            @input="handleKeyInput"
+            type="text"
+            :placeholder="keyPlaceholder"
             class="setting-input"
             :disabled="savingConfig"
             @focus="handleKeyFocus"
@@ -46,10 +45,10 @@
           <button
             @click="toggleKeyVisibility"
             class="toggle-visibility-btn"
-            :class="{ active: showKey }"
             type="button"
+            :title="showKey ? 'Hide Key' : 'Show Key'"
           >
-            {{ showKey ? '👁️' : '👁️‍🗨️' }}
+            {{ showKey ? '🔓' : '🔒' }}
           </button>
         </div>
       </div>
@@ -113,6 +112,8 @@ export default {
     return {
       kickUrl: '',
       kickKey: '',
+      envUrl: '',  // Store env defaults separately
+      envKey: '',  // Store env defaults separately
       showUrl: false,
       showKey: false,
       savingConfig: false,
@@ -126,15 +127,48 @@ export default {
   },
   computed: {
     isConfigValid() {
+      // For env source, check if user has entered values OR env values exist
+      if (this.configSource === 'env') {
+        return (this.kickUrl.trim().length > 0 || this.envUrl.length > 0) &&
+               (this.kickKey.trim().length > 0 || this.envKey.length > 0);
+      }
       return this.kickUrl.trim().length > 0 && this.kickKey.trim().length > 0;
     },
-    sourceBadgeText() {
-      return this.configSource === 'config' 
-        ? 'Using saved config' 
-        : 'Using defaults from .env';
+    urlPlaceholder() {
+      if (this.configSource === 'env') {
+        return this.showUrl ? this.envUrl : '••••••••••••••••••••••••••••••';
+      }
+      return 'rtmps://...';
     },
-    sourceBadgeClass() {
-      return this.configSource === 'config' ? 'source-config' : 'source-env';
+    keyPlaceholder() {
+      if (this.configSource === 'env') {
+        return this.showKey ? this.envKey : '••••••••••••••••••••••••••••••';
+      }
+      return 'sk_...';
+    },
+    displayUrlValue() {
+      if (this.configSource === 'env') {
+        // For env source, show user input (may be empty)
+        return this.kickUrl;
+      }
+      // For saved config source
+      if (this.showUrl) {
+        return this.kickUrl;
+      }
+      // Show asterisks when locked (if there's a value)
+      return this.kickUrl ? '••••••••••••••••••••••••••••••' : '';
+    },
+    displayKeyValue() {
+      if (this.configSource === 'env') {
+        // For env source, show user input (may be empty)
+        return this.kickKey;
+      }
+      // For saved config source
+      if (this.showKey) {
+        return this.kickKey;
+      }
+      // Show asterisks when locked (if there's a value)
+      return this.kickKey ? '••••••••••••••••••••••••••••••' : '';
     },
     confirmModalMessage() {
       return `This will:\n\n• Delete saved configuration\n• Reload defaults from environment variables\n• Restart ffmpeg-kick container if running\n\nYou can save new settings anytime.`;
@@ -152,9 +186,22 @@ export default {
         }
         
         const config = await response.json();
-        this.kickUrl = config.kickUrl || '';
-        this.kickKey = config.kickKey || '';
         this.configSource = config.source || 'env';
+        
+        if (this.configSource === 'env') {
+          // Store env values separately for placeholder display
+          this.envUrl = config.kickUrl || '';
+          this.envKey = config.kickKey || '';
+          // Keep input fields empty for user input
+          this.kickUrl = '';
+          this.kickKey = '';
+        } else {
+          // For saved config, populate the input fields
+          this.kickUrl = config.kickUrl || '';
+          this.kickKey = config.kickKey || '';
+          this.envUrl = '';
+          this.envKey = '';
+        }
         
         console.log('[KickSettings] Configuration loaded from:', this.configSource);
       } catch (error) {
@@ -174,6 +221,10 @@ export default {
       this.resetSuccess = false;
       this.saveError = null;
       
+      // Determine which values to save
+      const urlToSave = this.kickUrl.trim() || this.envUrl;
+      const keyToSave = this.kickKey.trim() || this.envKey;
+      
       try {
         const response = await fetch('/api/kick/config', {
           method: 'POST',
@@ -181,8 +232,8 @@ export default {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            kickUrl: this.kickUrl.trim(),
-            kickKey: this.kickKey.trim()
+            kickUrl: urlToSave,
+            kickKey: keyToSave
           })
         });
         
@@ -196,6 +247,12 @@ export default {
         
         this.saveSuccess = true;
         this.configSource = 'config';
+        
+        // Update kickUrl/kickKey with the saved values
+        this.kickUrl = urlToSave;
+        this.kickKey = keyToSave;
+        this.envUrl = '';
+        this.envKey = '';
         
         // Hide success message after 3 seconds
         setTimeout(() => {
@@ -242,8 +299,10 @@ export default {
         console.log('[KickSettings] Configuration reset:', result);
         
         // Update UI with environment defaults
-        this.kickUrl = result.config.kickUrl || '';
-        this.kickKey = result.config.kickKey || '';
+        this.envUrl = result.config.kickUrl || '';
+        this.envKey = result.config.kickKey || '';
+        this.kickUrl = '';
+        this.kickKey = '';
         this.configSource = 'env';
         
         this.resetSuccess = true;
@@ -273,6 +332,30 @@ export default {
     
     toggleKeyVisibility() {
       this.showKey = !this.showKey;
+    },
+    
+    handleUrlInput(event) {
+      if (this.configSource === 'env') {
+        // For env source, just update the user input
+        this.kickUrl = event.target.value;
+      } else {
+        // For saved config, only update when unlocked
+        if (this.showUrl) {
+          this.kickUrl = event.target.value;
+        }
+      }
+    },
+    
+    handleKeyInput(event) {
+      if (this.configSource === 'env') {
+        // For env source, just update the user input
+        this.kickKey = event.target.value;
+      } else {
+        // For saved config, only update when unlocked
+        if (this.showKey) {
+          this.kickKey = event.target.value;
+        }
+      }
     },
     
     handleUrlFocus() {
@@ -309,26 +392,6 @@ h2 {
   margin: 0;
   font-size: 1.25rem;
   color: #f1f5f9;
-}
-
-.source-badge {
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.source-badge.source-config {
-  background: rgba(16, 185, 129, 0.15);
-  color: #10b981;
-  border: 1px solid #10b981;
-}
-
-.source-badge.source-env {
-  background: rgba(59, 130, 246, 0.15);
-  color: #3b82f6;
-  border: 1px solid #3b82f6;
 }
 
 .settings-content {
@@ -387,28 +450,23 @@ h2 {
 }
 
 .toggle-visibility-btn {
-  padding: 10px 12px;
-  background: #334155;
-  border: 1px solid #475569;
-  border-radius: 6px;
-  color: #e2e8f0;
-  font-size: 1.2rem;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 1.1rem;
   cursor: pointer;
-  transition: all 0.2s ease;
-  min-width: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  padding: 8px;
+  transition: color 0.2s ease, transform 0.1s ease;
+  flex-shrink: 0;
 }
 
 .toggle-visibility-btn:hover {
-  background: #475569;
-  border-color: #64748b;
+  color: #e2e8f0;
+  transform: scale(1.1);
 }
 
-.toggle-visibility-btn.active {
-  background: #3b82f6;
-  border-color: #3b82f6;
+.toggle-visibility-btn:active {
+  transform: scale(0.95);
 }
 
 .button-row {
