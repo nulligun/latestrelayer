@@ -47,7 +47,6 @@
         :rtmpStats="data.rtmpStats"
         :switcherHealth="data.switcherHealth"
         :streamStatus="data.streamStatus"
-        :currentSource="data.currentSource"
       />
 
       <!-- Full Interface -->
@@ -88,7 +87,6 @@
             :cameraConfig="data.cameraConfig"
             :switcherHealth="data.switcherHealth"
             :fallbackConfig="data.fallbackConfig"
-            :currentSource="data.currentSource"
           />
           <StreamControls
             :switcherHealth="data.switcherHealth"
@@ -251,8 +249,7 @@ export default {
         imagePath: '/app/shared/offline.png',
         videoPath: '/app/shared/offline.mp4',
         browserUrl: 'https://example.com'
-      },
-      currentSource: 'camera'
+      }
     });
 
     const formatTime = (timestamp) => {
@@ -374,10 +371,6 @@ export default {
         if (message.currentScene !== undefined) {
           data.value.currentScene = message.currentScene;
         }
-      } else if (message.type === 'input_source_change') {
-        // Handle input source change messages
-        console.log(`[app] Input source change received: ${message.currentSource}`);
-        data.value.currentSource = message.currentSource;
       } else if (message.type === 'log_snapshot' || message.type === 'new_logs') {
         // Forward log messages to ContainerLogs component
         console.log(`[app] Forwarding ${message.type} message for ${message.container}`);
@@ -414,10 +407,6 @@ export default {
       }
       if (message.privacyEnabled !== undefined) {
         data.value.switcherHealth.privacy_enabled = message.privacyEnabled;
-      }
-      if (message.currentSource !== undefined) {
-        console.log(`[app] Input source from container_update: ${message.currentSource}`);
-        data.value.currentSource = message.currentSource;
       }
       
       // Process containers and apply pending operations

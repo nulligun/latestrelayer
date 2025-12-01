@@ -24,10 +24,9 @@ class ControllerWebSocketClient extends EventEmitter {
     // Queue for pending log subscriptions when not connected
     this.pendingSubscriptions = new Map(); // containerName -> { lines }
     
-    // Scene, privacy, and input source state from controller
+    // Scene and privacy state from controller
     this.currentScene = 'unknown';
     this.privacyEnabled = false;
-    this.currentSource = 'camera';
     
     console.log(`[controller-ws] Initialized with URL: ${this.wsUrl}`);
   }
@@ -112,7 +111,7 @@ class ControllerWebSocketClient extends EventEmitter {
     switch (type) {
       case 'initial_state':
         console.log(`[controller-ws] Received initial state with ${message.containers?.length || 0} containers`);
-        // Update scene, privacy, and input source state from initial state
+        // Update scene and privacy state from initial state
         if (message.current_scene !== undefined) {
           this.currentScene = message.current_scene;
           console.log(`[controller-ws] Initial scene: ${this.currentScene}`);
@@ -121,16 +120,12 @@ class ControllerWebSocketClient extends EventEmitter {
           this.privacyEnabled = message.privacy_enabled;
           console.log(`[controller-ws] Initial privacy mode: ${this.privacyEnabled}`);
         }
-        if (message.current_source !== undefined) {
-          this.currentSource = message.current_source;
-          console.log(`[controller-ws] Initial input source: ${this.currentSource}`);
-        }
         this.emit('initial_state', message);
         break;
         
       case 'status_change':
         console.log(`[controller-ws] Container status changed: ${message.changes?.length || 0} change(s)`);
-        // Update scene, privacy, and input source state from status change
+        // Update scene and privacy state from status change
         if (message.current_scene !== undefined) {
           const previousScene = this.currentScene;
           this.currentScene = message.current_scene;
@@ -149,17 +144,6 @@ class ControllerWebSocketClient extends EventEmitter {
             console.log(`[controller-ws] Privacy mode changed: ${this.privacyEnabled}`);
             this.emit('privacy_change', {
               privacyEnabled: this.privacyEnabled
-            });
-          }
-        }
-        if (message.current_source !== undefined) {
-          const previousSource = this.currentSource;
-          this.currentSource = message.current_source;
-          if (previousSource !== this.currentSource) {
-            console.log(`[controller-ws] Input source changed: ${previousSource} -> ${this.currentSource}`);
-            this.emit('input_source_change', {
-              previousSource,
-              currentSource: this.currentSource
             });
           }
         }
@@ -193,16 +177,6 @@ class ControllerWebSocketClient extends EventEmitter {
         this.emit('privacy_change', {
           privacyEnabled: this.privacyEnabled,
           currentScene: this.currentScene,
-          changeData: message.change_data,
-          timestamp: message.timestamp
-        });
-        break;
-        
-      case 'input_source_change':
-        console.log(`[controller-ws] Input source change received: ${message.current_source}`);
-        this.currentSource = message.current_source;
-        this.emit('input_source_change', {
-          currentSource: this.currentSource,
           changeData: message.change_data,
           timestamp: message.timestamp
         });
@@ -323,20 +297,12 @@ class ControllerWebSocketClient extends EventEmitter {
   }
   
   /**
-   * Get the current input source
-   */
-  getCurrentSource() {
-    return this.currentSource;
-  }
-  
-  /**
-   * Get scene, privacy, and input source state
+   * Get both scene and privacy state
    */
   getSceneState() {
     return {
       currentScene: this.currentScene,
-      privacyEnabled: this.privacyEnabled,
-      currentSource: this.currentSource
+      privacyEnabled: this.privacyEnabled
     };
   }
 }

@@ -105,16 +105,6 @@ void HttpServer::setHealthCallback(HealthCallback callback) {
     health_callback_ = std::move(callback);
 }
 
-void HttpServer::setInputSourceCallback(InputSourceCallback callback) {
-    std::lock_guard<std::mutex> lock(callback_mutex_);
-    input_source_callback_ = std::move(callback);
-}
-
-void HttpServer::setInputSourceGetCallback(InputSourceGetCallback callback) {
-    std::lock_guard<std::mutex> lock(callback_mutex_);
-    input_source_get_callback_ = std::move(callback);
-}
-
 void HttpServer::serverLoop() {
     while (running_.load()) {
         // Use poll to wait for connections with timeout
@@ -234,82 +224,6 @@ std::string HttpServer::handleRequest(const std::string& method, const std::stri
                  << "Content-Length: " << response_body.length() << "\r\n"
                  << "\r\n"
                  << response_body;
-        return response.str();
-    }
-    
-    // Handle POST /input
-    if (method == "POST" && path == "/input") {
-        // Parse JSON body for "source" field
-        std::string source;
-        
-        // Simple JSON parsing for "source": "camera" or "source": "drone"
-        size_t source_pos = body.find("\"source\"");
-        if (source_pos != std::string::npos) {
-            size_t colon_pos = body.find(':', source_pos);
-            if (colon_pos != std::string::npos) {
-                size_t quote_start = body.find('"', colon_pos);
-                if (quote_start != std::string::npos) {
-                    size_t quote_end = body.find('"', quote_start + 1);
-                    if (quote_end != std::string::npos) {
-                        source = body.substr(quote_start + 1, quote_end - quote_start - 1);
-                    }
-                }
-            }
-        }
-        
-        // Validate source
-        if (source != "camera" && source != "drone") {
-            std::string response_body = "{\"error\": \"Invalid source. Must be 'camera' or 'drone'\"}";
-            std::ostringstream response;
-            response << "HTTP/1.1 400 Bad Request\r\n"
-                     << "Content-Type: application/json\r\n"
-                     << "Content-Length: " << response_body.length() << "\r\n"
-                     << "\r\n"
-                     << response_body;
-            return response.str();
-        }
-        
-        std::cout << "[HttpServer] Input source change request: source=" << source << std::endl;
-        
-        // Call input source callback
-        {
-            std::lock_guard<std::mutex> lock(callback_mutex_);
-            if (input_source_callback_) {
-                input_source_callback_(source);
-            }
-        }
-        
-        std::string response_body = "{\"status\": \"ok\", \"source\": \"" + source + "\"}";
-        std::ostringstream response;
-        response << "HTTP/1.1 200 OK\r\n"
-                 << "Content-Type: application/json\r\n"
-                 << "Content-Length: " << response_body.length() << "\r\n"
-                 << "\r\n"
-                 << response_body;
-        return response.str();
-    }
-    
-    // Handle GET /input
-    if (method == "GET" && path == "/input") {
-        std::ostringstream response_body;
-        
-        {
-            std::lock_guard<std::mutex> lock(callback_mutex_);
-            if (input_source_get_callback_) {
-                InputSourceStatus status = input_source_get_callback_();
-                response_body << "{\"source\": \"" << status.current_source << "\"}";
-            } else {
-                response_body << "{\"source\": \"camera\"}";  // Default
-            }
-        }
-        
-        std::string body_str = response_body.str();
-        std::ostringstream response;
-        response << "HTTP/1.1 200 OK\r\n"
-                 << "Content-Type: application/json\r\n"
-                 << "Content-Length: " << body_str.length() << "\r\n"
-                 << "\r\n"
-                 << body_str;
         return response.str();
     }
     
