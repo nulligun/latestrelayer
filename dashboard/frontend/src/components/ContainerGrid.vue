@@ -17,8 +17,8 @@
         
         <div class="container-description">{{ getContainerDescription(container.name) }}</div>
         
-        <div v-if="getStatusDetailDisplay(container)" class="container-status-detail">
-          {{ getStatusDetailDisplay(container) }}
+        <div v-if="container.statusDetail" class="container-status-detail">
+          {{ container.statusDetail }}
         </div>
         
         <div class="container-actions">
@@ -81,8 +81,6 @@ export default {
       loading: false,
       actionPending: {},
       actionError: {},
-      currentTime: Date.now(),
-      timeUpdateInterval: null,
       containerDescriptions: {
         'multiplexer': 'Auto switch between Camera and BRB',
         'ffmpeg-kick': 'Stream to kick',
@@ -97,105 +95,7 @@ export default {
       }
     };
   },
-  mounted() {
-    // Update current time every second to trigger reactive uptime updates
-    this.timeUpdateInterval = setInterval(() => {
-      this.currentTime = Date.now();
-    }, 1000);
-  },
-  beforeUnmount() {
-    // Clean up timer to prevent memory leaks
-    if (this.timeUpdateInterval) {
-      clearInterval(this.timeUpdateInterval);
-      this.timeUpdateInterval = null;
-    }
-  },
   methods: {
-    /**
-     * Format a time delta into human-readable string
-     * Matches the Python controller's format for consistency
-     */
-    formatTimeDelta(totalSeconds) {
-      if (totalSeconds < 60) {
-        return `${totalSeconds} second${totalSeconds !== 1 ? 's' : ''}`;
-      } else if (totalSeconds < 3600) {
-        const minutes = Math.floor(totalSeconds / 60);
-        return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
-      } else if (totalSeconds < 86400) {
-        const hours = Math.floor(totalSeconds / 3600);
-        return `${hours} hour${hours !== 1 ? 's' : ''}`;
-      } else {
-        const days = Math.floor(totalSeconds / 86400);
-        return `${days} day${days !== 1 ? 's' : ''}`;
-      }
-    },
-    
-    /**
-     * Get the status detail display string for a container
-     * Calculates live uptime/time-ago for running/exited containers
-     */
-    getStatusDetailDisplay(container) {
-      // Use currentTime to make this reactive (triggers re-computation every second)
-      const now = this.currentTime;
-      
-      // For running containers, calculate live uptime
-      if (container.status === 'running' && container.startedAt) {
-        try {
-          const startedAt = new Date(container.startedAt).getTime();
-          const totalSeconds = Math.floor((now - startedAt) / 1000);
-          
-          if (totalSeconds < 0) {
-            // Clock skew or invalid timestamp, fall back to static display
-            return container.statusDetail;
-          }
-          
-          const uptime = this.formatTimeDelta(totalSeconds);
-          
-          // Include health status if available
-          if (container.health === 'healthy') {
-            return `Up ${uptime} (healthy)`;
-          } else if (container.health === 'unhealthy') {
-            return `Up ${uptime} (unhealthy)`;
-          } else if (container.health === 'starting') {
-            return `Up ${uptime} (health: starting)`;
-          } else {
-            return `Up ${uptime}`;
-          }
-        } catch (e) {
-          // Invalid date, fall back to static display
-          return container.statusDetail;
-        }
-      }
-      
-      // For exited containers, calculate live time-ago
-      if (container.status === 'exited' && container.finishedAt) {
-        try {
-          const finishedAt = new Date(container.finishedAt).getTime();
-          const totalSeconds = Math.floor((now - finishedAt) / 1000);
-          
-          if (totalSeconds < 0) {
-            // Clock skew or invalid timestamp, fall back to static display
-            return container.statusDetail;
-          }
-          
-          const timeAgo = this.formatTimeDelta(totalSeconds);
-          
-          // Extract exit code from statusDetail if available
-          // Format: "Exited (0) 5 minutes ago"
-          const exitCodeMatch = container.statusDetail?.match(/Exited \((\d+)\)/);
-          const exitCode = exitCodeMatch ? exitCodeMatch[1] : '0';
-          
-          return `Exited (${exitCode}) ${timeAgo} ago`;
-        } catch (e) {
-          // Invalid date, fall back to static display
-          return container.statusDetail;
-        }
-      }
-      
-      // For all other cases, use the static statusDetail from the server
-      return container.statusDetail;
-    },
-    
     isCriticalContainer(container) {
       const criticalNames = ['nginx-proxy', 'dashboard', 'controller'];
       return criticalNames.includes(container.name) || container.isCritical === true;
