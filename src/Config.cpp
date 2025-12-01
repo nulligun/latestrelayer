@@ -37,10 +37,6 @@ bool Config::loadFromFile(const std::string& filename) {
         }
         
         // Load optional fields
-        if (config["drone_udp_port"]) {
-            drone_udp_port_ = config["drone_udp_port"].as<uint16_t>();
-        }
-        
         if (config["max_live_gap_ms"]) {
             max_live_gap_ms_ = config["max_live_gap_ms"].as<uint32_t>();
         }
@@ -64,7 +60,6 @@ void Config::print() const {
     std::cout << "=== Configuration ===" << std::endl;
     std::cout << "Live UDP Port:     " << live_udp_port_ << std::endl;
     std::cout << "Fallback UDP Port: " << fallback_udp_port_ << std::endl;
-    std::cout << "Drone UDP Port:    " << drone_udp_port_ << std::endl;
     std::cout << "RTMP URL:          " << rtmp_url_ << std::endl;
     std::cout << "Max Live Gap (ms): " << max_live_gap_ms_ << std::endl;
     std::cout << "Log Level:         " << log_level_ << std::endl;

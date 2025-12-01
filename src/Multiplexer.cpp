@@ -2,7 +2,6 @@
 #include <iostream>
 #include <thread>
 #include <csignal>
-#include <fstream>
 
 Multiplexer::Multiplexer(const Config& config)
     : config_(config),
@@ -10,9 +9,7 @@ Multiplexer::Multiplexer(const Config& config)
       running_(false),
       initialized_(false),
       live_stream_ready_(false),
-      drone_stream_ready_(false),
       initial_privacy_mode_(false),
-      current_input_source_(InputSource::CAMERA),
       packets_processed_(0) {
 }
 
@@ -42,17 +39,6 @@ bool Multiplexer::initialize() {
         onPrivacyModeChange(enabled);
     });
     
-    // Set up input source callbacks
-    http_server_->setInputSourceCallback([this](const std::string& source) {
-        onInputSourceChange(source);
-    });
-    
-    http_server_->setInputSourceGetCallback([this]() -> InputSourceStatus {
-        InputSourceStatus status;
-        status.current_source = (current_input_source_.load() == InputSource::CAMERA) ? "camera" : "drone";
-        return status;
-    });
-    
     // Note: Health callback will be set after rtmp_output_ is created
     
     if (!http_server_->start()) {
@@ -66,26 +52,19 @@ bool Multiplexer::initialize() {
     // Query initial privacy mode from controller
     queryInitialPrivacyMode();
     
-    // Load persisted input source
-    loadInputSource();
-    
     // Create packet queues
     live_queue_ = std::make_unique<TSPacketQueue>(10000);
     fallback_queue_ = std::make_unique<TSPacketQueue>(10000);
-    drone_queue_ = std::make_unique<TSPacketQueue>(10000);
     
     // Create UDP receivers
     live_receiver_ = std::make_unique<UDPReceiver>(
         "Live", config_.getLiveUdpPort(), *live_queue_);
     fallback_receiver_ = std::make_unique<UDPReceiver>(
         "Fallback", config_.getFallbackUdpPort(), *fallback_queue_);
-    drone_receiver_ = std::make_unique<UDPReceiver>(
-        "Drone", config_.getDroneUdpPort(), *drone_queue_);
     
     // Create analyzers
     live_analyzer_ = std::make_unique<TSAnalyzer>();
     fallback_analyzer_ = std::make_unique<TSAnalyzer>();
-    drone_analyzer_ = std::make_unique<TSAnalyzer>();
     
     // Create processing components
     timestamp_mgr_ = std::make_unique<TimestampManager>();
@@ -117,11 +96,6 @@ bool Multiplexer::initialize() {
     
     if (!fallback_receiver_->start()) {
         std::cerr << "[Multiplexer] Failed to start fallback receiver" << std::endl;
-        return false;
-    }
-    
-    if (!drone_receiver_->start()) {
-        std::cerr << "[Multiplexer] Failed to start drone receiver" << std::endl;
         return false;
     }
     
@@ -237,7 +211,6 @@ void Multiplexer::stop() {
     std::cout << "[Multiplexer] Stopping UDP receivers..." << std::endl;
     if (live_receiver_) live_receiver_->stop();
     if (fallback_receiver_) fallback_receiver_->stop();
-    if (drone_receiver_) drone_receiver_->stop();
     
     // Stop RTMP output
     std::cout << "[Multiplexer] Stopping RTMP output..." << std::endl;
@@ -253,10 +226,8 @@ void Multiplexer::stop() {
     std::cout << "  Runtime: " << elapsed.count() << "s" << std::endl;
     std::cout << "  Packets processed: " << packets_processed_.load() << std::endl;
     std::cout << "  Live packets received: " << live_receiver_->getPacketsReceived() << std::endl;
-    std::cout << "  Drone packets received: " << drone_receiver_->getPacketsReceived() << std::endl;
     std::cout << "  Fallback packets received: " << fallback_receiver_->getPacketsReceived() << std::endl;
     std::cout << "  RTMP packets written: " << rtmp_output_->getPacketsWritten() << std::endl;
-    std::cout << "  Input source: " << (current_input_source_.load() == InputSource::CAMERA ? "CAMERA" : "DRONE") << std::endl;
     
     auto shutdown_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - shutdown_start
@@ -470,29 +441,13 @@ void Multiplexer::processLoop() {
     
     while (running_.load()) {
         Mode current_mode = switcher_->getMode();
-        InputSource input_source = current_input_source_.load();
         
-        // Get the active queue and analyzer based on input source
-        TSPacketQueue* active_live_queue = getActiveLiveQueue();
-        TSAnalyzer* active_live_analyzer = getActiveLiveAnalyzer();
-        bool active_stream_ready = isActiveLiveStreamReady();
-        
-        // Periodically check for active live stream if not yet detected
-        if (!active_stream_ready && packets_processed_ % live_check_interval == 0) {
-            if (!active_live_queue->empty()) {
-                bool detected = false;
-                
-                if (input_source == InputSource::CAMERA) {
-                    std::cout << "[Multiplexer] Camera packets detected, attempting analysis..." << std::endl;
-                    detected = analyzeLiveStreamDynamically();
-                } else {
-                    std::cout << "[Multiplexer] Drone packets detected, attempting analysis..." << std::endl;
-                    detected = analyzeDroneStreamDynamically();
-                }
-                
-                if (detected) {
-                    std::cout << "[Multiplexer] " << (input_source == InputSource::CAMERA ? "Camera" : "Drone")
-                              << " stream successfully initialized!" << std::endl;
+        // Periodically check for live stream if not yet detected
+        if (!live_stream_ready_.load() && packets_processed_ % live_check_interval == 0) {
+            if (!live_queue_->empty()) {
+                std::cout << "[Multiplexer] Live packets detected, attempting analysis..." << std::endl;
+                if (analyzeLiveStreamDynamically()) {
+                    std::cout << "[Multiplexer] Live stream successfully initialized!" << std::endl;
                     std::cout << "[Multiplexer] Switching to LIVE mode" << std::endl;
                     
                     // Switch to live mode
@@ -501,8 +456,8 @@ void Multiplexer::processLoop() {
                     
                     // Calculate timestamp offset for live stream
                     ts::TSPacket first_live_packet;
-                    if (active_live_queue->pop(first_live_packet, std::chrono::milliseconds(10))) {
-                        TimestampInfo ts_info = active_live_analyzer->extractTimestamps(first_live_packet);
+                    if (live_queue_->pop(first_live_packet, std::chrono::milliseconds(10))) {
+                        TimestampInfo ts_info = live_analyzer_->extractTimestamps(first_live_packet);
                         timestamp_mgr_->onSourceSwitch(Source::LIVE, ts_info);
                         processPacket(first_live_packet, Source::LIVE);
                         packets_processed_++;
@@ -512,8 +467,8 @@ void Multiplexer::processLoop() {
             }
         }
         
-        // Select queue based on current mode and input source
-        TSPacketQueue* queue = (current_mode == Mode::LIVE) ? active_live_queue : fallback_queue_.get();
+        // Select queue based on current mode
+        TSPacketQueue* queue = (current_mode == Mode::LIVE) ? live_queue_.get() : fallback_queue_.get();
         Source source = (current_mode == Mode::LIVE) ? Source::LIVE : Source::FALLBACK;
         
         // Try to get a packet (with short timeout for responsive shutdown)
@@ -523,18 +478,8 @@ void Multiplexer::processLoop() {
                 switcher_->updateLiveTimestamp();
             }
             
-            // Process the packet - use appropriate analyzer based on input source
-            if (source == Source::LIVE) {
-                TimestampInfo ts_info = active_live_analyzer->extractTimestamps(packet);
-                timestamp_mgr_->trackLiveTimestamps(ts_info);
-            } else {
-                processPacket(packet, source);
-            }
-            
-            // Write to RTMP output
-            if (source == Source::LIVE) {
-                rtmp_output_->writePacket(packet);
-            }
+            // Process the packet
+            processPacket(packet, source);
             
             packets_processed_++;
             
@@ -542,9 +487,8 @@ void Multiplexer::processLoop() {
             if (packets_processed_ % log_interval == 0) {
                 std::cout << "[Multiplexer] Processed " << packets_processed_.load()
                           << " packets. Mode: " << (current_mode == Mode::LIVE ? "LIVE" : "FALLBACK")
-                          << ", Input: " << (input_source == InputSource::CAMERA ? "CAMERA" : "DRONE")
                           << ", Queue size: " << queue->size()
-                          << ", Stream ready: " << (active_stream_ready ? "Yes" : "No") << std::endl;
+                          << ", Live ready: " << (live_stream_ready_.load() ? "Yes" : "No") << std::endl;
             }
             
             // Check for mode switch after processing
@@ -553,32 +497,26 @@ void Multiplexer::processLoop() {
                 if (switcher_->checkLiveTimeout()) {
                     std::cout << "[Multiplexer] Switched to FALLBACK mode (live timeout)" << std::endl;
                     
-                    // Reset the appropriate stream_ready flag so we can re-detect the stream
-                    if (input_source == InputSource::CAMERA) {
-                        live_stream_ready_ = false;
-                        std::cout << "[Multiplexer] Camera stream marked as not ready - will re-analyze when packets arrive" << std::endl;
-                    } else {
-                        drone_stream_ready_ = false;
-                        std::cout << "[Multiplexer] Drone stream marked as not ready - will re-analyze when packets arrive" << std::endl;
-                    }
+                    // Reset live_stream_ready_ so we can re-detect the live stream
+                    // This allows proper re-analysis when SRT reconnects
+                    live_stream_ready_ = false;
+                    std::cout << "[Multiplexer] Live stream marked as not ready - will re-analyze when packets arrive" << std::endl;
                 }
             } else {
                 // In FALLBACK mode, check if live packets are arriving
                 // If so, increment the counter to track consecutive live packets
-                if (!active_live_queue->empty()) {
+                if (!live_queue_->empty()) {
                     switcher_->updateLiveTimestamp();
                 }
                 
-                // Try to return to live if packets are available and stream is ready
-                if (isActiveLiveStreamReady() && !active_live_queue->empty() && switcher_->tryReturnToLive()) {
-                    std::cout << "[Multiplexer] Switched to LIVE mode ("
-                              << (input_source == InputSource::CAMERA ? "camera" : "drone")
-                              << " stream restored)" << std::endl;
+                // Try to return to live if packets are available and live is ready
+                if (live_stream_ready_.load() && !live_queue_->empty() && switcher_->tryReturnToLive()) {
+                    std::cout << "[Multiplexer] Switched to LIVE mode (live stream restored)" << std::endl;
                     
                     // Calculate new timestamp offset for live stream
                     ts::TSPacket first_live_packet;
-                    if (active_live_queue->pop(first_live_packet, std::chrono::milliseconds(10))) {
-                        TimestampInfo ts_info = active_live_analyzer->extractTimestamps(first_live_packet);
+                    if (live_queue_->pop(first_live_packet, std::chrono::milliseconds(10))) {
+                        TimestampInfo ts_info = live_analyzer_->extractTimestamps(first_live_packet);
                         timestamp_mgr_->onSourceSwitch(Source::LIVE, ts_info);
                         processPacket(first_live_packet, Source::LIVE);
                         packets_processed_++;
@@ -648,171 +586,4 @@ void Multiplexer::onPrivacyModeChange(bool enabled) {
             switcher_->setMode(Mode::FALLBACK);
         }
     }
-}
-
-void Multiplexer::onInputSourceChange(const std::string& source) {
-    InputSource new_source = (source == "drone") ? InputSource::DRONE : InputSource::CAMERA;
-    InputSource old_source = current_input_source_.exchange(new_source);
-    
-    if (old_source != new_source) {
-        std::cout << "[Multiplexer] Input source changed: "
-                  << (old_source == InputSource::CAMERA ? "CAMERA" : "DRONE")
-                  << " -> "
-                  << (new_source == InputSource::CAMERA ? "CAMERA" : "DRONE") << std::endl;
-        
-        // Save the new input source to persistent storage
-        saveInputSource();
-        
-        // If currently in LIVE mode, we need to switch based on stream availability
-        if (switcher_->getMode() == Mode::LIVE) {
-            // Check if the new source is ready
-            if (!isActiveLiveStreamReady()) {
-                std::cout << "[Multiplexer] New input source not ready, switching to FALLBACK mode" << std::endl;
-                switcher_->setMode(Mode::FALLBACK);
-            }
-        }
-    }
-}
-
-void Multiplexer::loadInputSource() {
-    std::cout << "[Multiplexer] Loading persisted input source..." << std::endl;
-    
-    try {
-        std::ifstream file(INPUT_SOURCE_FILE);
-        if (file.is_open()) {
-            std::string content((std::istreambuf_iterator<char>(file)),
-                                std::istreambuf_iterator<char>());
-            file.close();
-            
-            // Simple JSON parsing for "source" field
-            if (content.find("\"source\": \"drone\"") != std::string::npos ||
-                content.find("\"source\":\"drone\"") != std::string::npos) {
-                current_input_source_ = InputSource::DRONE;
-                std::cout << "[Multiplexer] Loaded input source: DRONE" << std::endl;
-            } else {
-                current_input_source_ = InputSource::CAMERA;
-                std::cout << "[Multiplexer] Loaded input source: CAMERA" << std::endl;
-            }
-        } else {
-            std::cout << "[Multiplexer] No persisted input source found, defaulting to CAMERA" << std::endl;
-            current_input_source_ = InputSource::CAMERA;
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "[Multiplexer] Error loading input source: " << e.what() << std::endl;
-        current_input_source_ = InputSource::CAMERA;
-    }
-}
-
-void Multiplexer::saveInputSource() {
-    std::cout << "[Multiplexer] Saving input source..." << std::endl;
-    
-    try {
-        std::ofstream file(INPUT_SOURCE_FILE);
-        if (file.is_open()) {
-            std::string source = (current_input_source_.load() == InputSource::CAMERA) ? "camera" : "drone";
-            file << "{\n  \"source\": \"" << source << "\"\n}\n";
-            file.close();
-            std::cout << "[Multiplexer] Saved input source: " << source << std::endl;
-        } else {
-            std::cerr << "[Multiplexer] Failed to open file for writing: " << INPUT_SOURCE_FILE << std::endl;
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "[Multiplexer] Error saving input source: " << e.what() << std::endl;
-    }
-}
-
-TSPacketQueue* Multiplexer::getActiveLiveQueue() {
-    return (current_input_source_.load() == InputSource::CAMERA)
-           ? live_queue_.get()
-           : drone_queue_.get();
-}
-
-TSAnalyzer* Multiplexer::getActiveLiveAnalyzer() {
-    return (current_input_source_.load() == InputSource::CAMERA)
-           ? live_analyzer_.get()
-           : drone_analyzer_.get();
-}
-
-bool Multiplexer::isActiveLiveStreamReady() {
-    return (current_input_source_.load() == InputSource::CAMERA)
-           ? live_stream_ready_.load()
-           : drone_stream_ready_.load();
-}
-
-bool Multiplexer::analyzeDroneStreamDynamically() {
-    std::cout << "[Multiplexer] Attempting to detect drone stream..." << std::endl;
-    
-    // Get the current queue size
-    size_t queue_size = drone_queue_->size();
-    
-    // Use adaptive packet budget
-    size_t max_packets_to_analyze = std::max(queue_size, static_cast<size_t>(500));
-    
-    std::cout << "[Multiplexer] Analyzing up to " << max_packets_to_analyze
-              << " drone packets (queue size: " << queue_size << ")" << std::endl;
-    
-    // Reset the analyzer to start fresh
-    drone_analyzer_->reset();
-    
-    // Analyze accumulated packets from the queue
-    size_t drone_packets_analyzed = 0;
-    ts::TSPacket packet;
-    
-    // Use a longer timeout (50ms) to allow real-time packets to arrive
-    while (drone_packets_analyzed < max_packets_to_analyze && running_.load() &&
-           drone_queue_->pop(packet, std::chrono::milliseconds(50))) {
-        drone_analyzer_->analyzePacket(packet);
-        drone_packets_analyzed++;
-        
-        // Log progress periodically
-        if (drone_packets_analyzed % 100 == 0) {
-            const auto& info = drone_analyzer_->getStreamInfo();
-            std::cout << "[Multiplexer] Drone analysis progress: " << drone_packets_analyzed << " packets"
-                      << ", initialized=" << (info.initialized ? "yes" : "no")
-                      << ", video=" << info.valid_video_packets
-                      << "/" << StreamInfo::MIN_VALID_VIDEO_PACKETS
-                      << ", audio=" << info.valid_audio_packets
-                      << "/" << StreamInfo::MIN_VALID_AUDIO_PACKETS << std::endl;
-        }
-        
-        // Check if we have valid media data
-        if (drone_analyzer_->hasValidMediaData()) {
-            std::cout << "[Multiplexer] Valid drone media data found after "
-                      << drone_packets_analyzed << " packets" << std::endl;
-            break;
-        }
-    }
-    
-    // Check for shutdown signal
-    if (!running_.load()) {
-        return false;
-    }
-    
-    const auto& drone_info = drone_analyzer_->getStreamInfo();
-    
-    // Check for valid media data
-    if (!drone_analyzer_->hasValidMediaData()) {
-        if (drone_info.initialized) {
-            std::cout << "[Multiplexer] Drone stream PSI detected but waiting for valid media packets..." << std::endl;
-        } else {
-            std::cout << "[Multiplexer] No drone PSI tables found after "
-                      << drone_packets_analyzed << " packets" << std::endl;
-        }
-        return false;
-    }
-    
-    std::cout << "[Multiplexer] Drone stream detected!" << std::endl;
-    std::cout << "  Video PID: " << drone_info.video_pid << std::endl;
-    std::cout << "  Audio PID: " << drone_info.audio_pid << std::endl;
-    std::cout << "  PMT PID: " << drone_info.pmt_pid << std::endl;
-    std::cout << "  Valid video packets: " << drone_info.valid_video_packets << std::endl;
-    std::cout << "  Valid audio packets: " << drone_info.valid_audio_packets << std::endl;
-    
-    // Reinitialize PID mapper with drone stream info
-    const auto& fallback_info = fallback_analyzer_->getStreamInfo();
-    pid_mapper_->initialize(drone_info, fallback_info);
-    
-    drone_stream_ready_ = true;
-    
-    return true;
 }

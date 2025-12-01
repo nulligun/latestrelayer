@@ -513,69 +513,6 @@ class ControllerService {
       return { error: error.message, scene: 'unknown' };
     }
   }
-
-  // Input source endpoints
-  
-  async getInputSource() {
-    const url = `${this.controllerUrl}/input`;
-    
-    try {
-      console.log(`[controller] Getting input source`);
-      const result = await this._fetchWithRetry(url, {
-        method: 'GET',
-        headers: { 'Accept': 'application/json' }
-      }, 3, 5000);
-      
-      if (!result.success) {
-        console.error(`[controller] Failed to get input source:`, result.error.message);
-        return { error: result.error.message, current_source: 'camera' };
-      }
-      
-      const response = result.response;
-      const rawText = await response.text();
-      
-      if (!response.ok) {
-        console.error(`[controller] Input source response error (${response.status}):`, rawText);
-        return { error: `HTTP ${response.status}: ${response.statusText}`, current_source: 'camera' };
-      }
-      
-      return JSON.parse(rawText);
-    } catch (error) {
-      console.error(`[controller] Error getting input source:`, error.message);
-      return { error: error.message, current_source: 'camera' };
-    }
-  }
-
-  async setInputSource(source) {
-    const url = `${this.controllerUrl}/input`;
-    
-    try {
-      console.log(`[controller] Setting input source to: ${source}`);
-      const result = await this._fetchWithRetry(url, {
-        method: 'POST',
-        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source })
-      }, 3, 10000);
-      
-      if (!result.success) {
-        console.error(`[controller] Failed to set input source:`, result.error.message);
-        return { error: result.error.message };
-      }
-      
-      const response = result.response;
-      const rawText = await response.text();
-      console.log(`[controller] Set input source response (${response.status}):`, rawText);
-      
-      if (!response.ok) {
-        return { error: `HTTP ${response.status}: ${response.statusText}` };
-      }
-      
-      return JSON.parse(rawText);
-    } catch (error) {
-      console.error(`[controller] Error setting input source:`, error.message);
-      return { error: error.message };
-    }
-  }
 }
 
 module.exports = ControllerService;

@@ -28,7 +28,7 @@
     <!-- Scene Display -->
     <div class="scene-section">
       <div class="scene-label">
-        {{ isKickLive ? '🔴 LIVE ON KICK' : 'KICK OFFLINE' }}, Input Source = {{ displayInputSource }}
+        {{ isKickLive ? '🔴 LIVE ON KICK' : 'KICK OFFLINE' }}
       </div>
       <div class="scene-value">{{ displayScene }}</div>
       <div v-if="sceneDurationSeconds > 0" class="scene-duration">
@@ -122,10 +122,6 @@ export default {
     streamStatus: {
       type: Object,
       default: () => ({})
-    },
-    currentSource: {
-      type: String,
-      default: 'camera'
     }
   },
   setup(props) {
@@ -193,12 +189,6 @@ export default {
       
       // Return original scene name for any unknown scenes
       return props.currentScene;
-    });
-
-    // Computed: Display input source
-    const displayInputSource = computed(() => {
-      const source = props.currentSource || 'camera';
-      return source.charAt(0).toUpperCase() + source.slice(1).toLowerCase();
     });
 
     // Computed: Is stream online (same as isKickLive for backwards compatibility)
@@ -418,7 +408,6 @@ export default {
       isPrivacyMode,
       isCameraScene,
       displayScene,
-      displayInputSource,
       streamButtonText,
       streamButtonIcon,
       streamButtonClass,
