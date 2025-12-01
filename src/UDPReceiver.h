@@ -9,7 +9,10 @@
 
 class UDPReceiver {
 public:
-    UDPReceiver(const std::string& name, uint16_t port, TSPacketQueue& queue);
+    // Constructor with configurable receive buffer size
+    // buffer_size: SO_RCVBUF size in bytes (default 262144 = 256KB)
+    UDPReceiver(const std::string& name, uint16_t port, TSPacketQueue& queue,
+                uint32_t buffer_size = 262144);
     ~UDPReceiver();
     
     // Start receiving on the specified port
@@ -39,6 +42,7 @@ private:
     std::string name_;
     uint16_t port_;
     TSPacketQueue& queue_;
+    uint32_t buffer_size_;  // SO_RCVBUF size in bytes
     
     std::thread receiver_thread_;
     std::atomic<bool> running_;

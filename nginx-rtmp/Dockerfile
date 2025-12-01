@@ -1,8 +1,8 @@
 FROM tiangolo/nginx-rtmp:latest
 
-# Install curl for health checks
+# Install curl for health checks and gettext-base for envsubst (nginx.conf templating)
 RUN apt-get update && \
-    apt-get install -y curl && \
+    apt-get install -y curl gettext-base && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy health check script (build context is project root)

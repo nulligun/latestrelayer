@@ -6,11 +6,26 @@ set -e
 echo "========================================="
 echo "[nginx-rtmp] Starting nginx-rtmp server"
 echo "========================================="
-echo "[nginx-rtmp] RTMP port: 1935"
-echo "[nginx-rtmp] HTTP/HLS port: 8080"
-echo "[nginx-rtmp] Statistics: http://localhost:8080/stat"
-echo "[nginx-rtmp] HLS streams: http://localhost:8080/hls/"
+
+# Set default values for environment variables
+export HLS_FRAGMENT_SIZE=${HLS_FRAGMENT_SIZE:-3}
+
+echo "[nginx-rtmp] Configuration:"
+echo "[nginx-rtmp]   HLS fragment size: ${HLS_FRAGMENT_SIZE}s"
+echo "[nginx-rtmp]   RTMP port: 1935"
+echo "[nginx-rtmp]   HTTP/HLS port: 8080"
+echo "[nginx-rtmp]   Statistics: http://localhost:8080/stat"
+echo "[nginx-rtmp]   HLS streams: http://localhost:8080/hls/"
 echo "========================================="
+
+# Generate nginx.conf from template using envsubst
+if [ -f /etc/nginx/nginx.conf.template ]; then
+    echo "[nginx-rtmp] Generating nginx.conf from template..."
+    envsubst '${HLS_FRAGMENT_SIZE}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+    echo "[nginx-rtmp] nginx.conf generated successfully"
+else
+    echo "[nginx-rtmp] Warning: nginx.conf.template not found, using existing nginx.conf"
+fi
 
 # Function for fast shutdown
 shutdown() {

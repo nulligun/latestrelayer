@@ -8,8 +8,9 @@
 #include <fcntl.h>
 #include <sstream>
 
-RTMPOutput::RTMPOutput(const std::string& rtmp_url)
+RTMPOutput::RTMPOutput(const std::string& rtmp_url, uint32_t pacing_us)
     : rtmp_url_(rtmp_url),
+      pacing_us_(pacing_us),
       stdin_pipe_{-1, -1},
       stderr_pipe_{-1, -1},
       ffmpeg_pid_(-1),
@@ -26,6 +27,7 @@ RTMPOutput::RTMPOutput(const std::string& rtmp_url)
       last_reconnect_attempt_(std::chrono::steady_clock::now()),
       last_write_time_(std::chrono::steady_clock::now()),
       last_write_wallclock_(std::chrono::steady_clock::now()) {
+    std::cout << "[RTMPOutput] Configured with pacing=" << pacing_us_ << "µs" << std::endl;
 }
 
 RTMPOutput::~RTMPOutput() {
@@ -125,8 +127,11 @@ bool RTMPOutput::writePacket(const ts::TSPacket& packet) {
     packets_written_++;
     last_write_time_ = std::chrono::steady_clock::now();
     
-    // Simple pacing: Sleep a bit to avoid overwhelming FFmpeg
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    // Configurable pacing: Sleep to avoid overwhelming FFmpeg
+    // pacing_us_ of 0 means no pacing (lowest latency, but may overwhelm FFmpeg)
+    if (pacing_us_ > 0) {
+        std::this_thread::sleep_for(std::chrono::microseconds(pacing_us_));
+    }
     
     return true;
 }

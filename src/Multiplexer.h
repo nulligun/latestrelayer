@@ -132,7 +132,7 @@ private:
     static constexpr const char* CONTROLLER_URL = "http://controller:8089";
     static constexpr uint16_t HTTP_SERVER_PORT = 8091;
     
-    // IDR wait timeouts
-    static constexpr uint32_t LIVE_IDR_TIMEOUT_MS = 10000;    // 10 seconds for live
-    static constexpr uint32_t FALLBACK_IDR_TIMEOUT_MS = 2000; // 2 seconds for fallback (has 1s GOP)
+    // IDR wait timeouts (configurable via Config)
+    uint32_t live_idr_timeout_ms_;     // Loaded from config
+    uint32_t fallback_idr_timeout_ms_; // Loaded from config
 };

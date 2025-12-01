@@ -18,7 +18,9 @@ public:
         RECONNECTING
     };
     
-    explicit RTMPOutput(const std::string& rtmp_url);
+    // Constructor with configurable pacing delay
+    // pacing_us: microseconds to sleep between packet writes (default 10µs)
+    explicit RTMPOutput(const std::string& rtmp_url, uint32_t pacing_us = 10);
     ~RTMPOutput();
     
     // Start FFmpeg process
@@ -67,6 +69,7 @@ private:
     void attemptReconnection();
     
     std::string rtmp_url_;
+    uint32_t pacing_us_;  // Microseconds to sleep between packet writes
     
     int stdin_pipe_[2];   // Pipe to FFmpeg stdin
     int stderr_pipe_[2];  // Pipe from FFmpeg stderr
