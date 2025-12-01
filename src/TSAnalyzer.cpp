@@ -14,12 +14,32 @@ TSAnalyzer::~TSAnalyzer() {
 }
 
 void TSAnalyzer::analyzePacket(const ts::TSPacket& packet) {
-    // Feed packet to section demux - it will call our handleTable callback
-    demux_.feedPacket(packet);
-    
     // Track packet counts per PID
     uint16_t pid = packet.getPID();
     pid_packet_count_[pid]++;
+    
+    // Store PAT packets (PID 0) for splice point injection
+    // We collect packets until the table is complete (signaled by handlePAT callback)
+    if (pid == ts::PID_PAT) {
+        // If this packet has PUSI, it starts a new table - clear pending buffer
+        if (packet.getPUSI()) {
+            pending_pat_packets_.clear();
+        }
+        pending_pat_packets_.push_back(packet);
+    }
+    
+    // Store PMT packets for splice point injection
+    // PMT PID is discovered from PAT, so we need to check dynamically
+    if (stream_info_.pmt_pid != ts::PID_NULL && pid == stream_info_.pmt_pid) {
+        // If this packet has PUSI, it starts a new table - clear pending buffer
+        if (packet.getPUSI()) {
+            pending_pmt_packets_.clear();
+        }
+        pending_pmt_packets_.push_back(packet);
+    }
+    
+    // Feed packet to section demux - it will call our handleTable callback
+    demux_.feedPacket(packet);
     
     // Only log first occurrence of important PIDs (PAT, PMT, video, audio)
     if (pid_packet_count_[pid] == 1) {
@@ -99,6 +119,15 @@ void TSAnalyzer::handlePAT(const ts::PAT& pat) {
     pat_count++;
     std::cout << "[TSAnalyzer] ✓ PAT received and parsed by SectionDemux (PAT #" << pat_count << ")" << std::endl;
     
+    // Store the pending PAT packets now that we have a complete table
+    // These will be used for injection at splice points per splice.md requirements
+    if (!pending_pat_packets_.empty()) {
+        last_pat_packets_ = pending_pat_packets_;
+        stream_info_.pat_version = pat.version();
+        std::cout << "[TSAnalyzer] Stored " << last_pat_packets_.size()
+                  << " PAT packet(s) for splice injection (version " << static_cast<int>(pat.version()) << ")" << std::endl;
+    }
+    
     if (pat.pmts.empty()) {
         std::cout << "[TSAnalyzer] ✗ PAT contains no PMTs" << std::endl;
         return;
@@ -113,6 +142,9 @@ void TSAnalyzer::handlePAT(const ts::PAT& pat) {
     if (stream_info_.pmt_pid != ts::PID_NULL && stream_info_.pmt_pid != new_pmt_pid) {
         std::cout << "[TSAnalyzer] DEBUG: PMT PID changed from " << stream_info_.pmt_pid
                   << " to " << new_pmt_pid << std::endl;
+        // Clear pending PMT packets since PMT PID changed
+        pending_pmt_packets_.clear();
+        last_pmt_packets_.clear();
     }
     
     stream_info_.pmt_pid = new_pmt_pid;
@@ -129,6 +161,15 @@ void TSAnalyzer::handlePMT(const ts::PMT& pmt) {
     std::cout << "[TSAnalyzer] DEBUG: PMT details - service_id=" << pmt.service_id
               << ", pcr_pid=" << pmt.pcr_pid
               << ", stream count=" << pmt.streams.size() << std::endl;
+    
+    // Store the pending PMT packets now that we have a complete table
+    // These will be used for injection at splice points per splice.md requirements
+    if (!pending_pmt_packets_.empty()) {
+        last_pmt_packets_ = pending_pmt_packets_;
+        stream_info_.pmt_version = pmt.version();
+        std::cout << "[TSAnalyzer] Stored " << last_pmt_packets_.size()
+                  << " PMT packet(s) for splice injection (version " << static_cast<int>(pmt.version()) << ")" << std::endl;
+    }
     
     stream_info_.pcr_pid = pmt.pcr_pid;
     
@@ -294,6 +335,12 @@ void TSAnalyzer::reset() {
     
     stream_info_ = StreamInfo();
     pid_packet_count_.clear();
+    
+    // Clear stored PAT/PMT packets and pending buffers
+    last_pat_packets_.clear();
+    last_pmt_packets_.clear();
+    pending_pat_packets_.clear();
+    pending_pmt_packets_.clear();
     
     std::cout << "[TSAnalyzer] DEBUG: Calling demux_.reset()..." << std::endl;
     demux_.reset();

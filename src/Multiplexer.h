@@ -63,6 +63,11 @@ private:
     size_t injectSPSPPS(Source source, uint16_t video_pid,
                         std::optional<uint64_t> pts, std::optional<uint64_t> dts);
     
+    // Inject PAT/PMT tables at splice points for decoder stream configuration update
+    // Per splice.md: "Emit a new PAT/PMT at the splice" and "ensure tables repeat a few times for safety"
+    // Returns the total number of packets injected
+    size_t injectPATMT(Source source, int repetitions = 3);
+    
     // Query initial privacy mode from controller
     void queryInitialPrivacyMode();
     

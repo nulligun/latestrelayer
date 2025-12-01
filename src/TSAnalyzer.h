@@ -23,6 +23,10 @@ struct StreamInfo {
     // Audio: requires only 2 PUSI packets due to ~15x lower packet rate (128kbps vs 2Mbps)
     static constexpr uint32_t MIN_VALID_VIDEO_PACKETS = 5;
     static constexpr uint32_t MIN_VALID_AUDIO_PACKETS = 2;
+    
+    // PAT/PMT table version tracking for detecting updates
+    uint8_t pat_version = 0xFF;  // 0xFF = not yet received
+    uint8_t pmt_version = 0xFF;  // 0xFF = not yet received
 };
 
 struct TimestampInfo {
@@ -70,6 +74,18 @@ public:
     // Reset analyzer state
     void reset();
     
+    // Get stored PAT packets for injection at splice points
+    // Returns the raw TS packets that carried the last complete PAT
+    const std::vector<ts::TSPacket>& getLastPATPackets() const { return last_pat_packets_; }
+    
+    // Get stored PMT packets for injection at splice points
+    // Returns the raw TS packets that carried the last complete PMT
+    const std::vector<ts::TSPacket>& getLastPMTPackets() const { return last_pmt_packets_; }
+    
+    // Check if we have valid PAT/PMT packets stored for injection
+    bool hasPATPackets() const { return !last_pat_packets_.empty(); }
+    bool hasPMTPackets() const { return !last_pmt_packets_.empty(); }
+    
 private:
     // TableHandlerInterface implementation
     virtual void handleTable(ts::SectionDemux&, const ts::BinaryTable&) override;
@@ -97,4 +113,13 @@ private:
     
     // NAL unit parser for IDR detection
     NALParser nal_parser_;
+    
+    // Storage for raw PAT/PMT packets for injection at splice points
+    // Per splice.md: "Emit a new PAT/PMT at the splice" and "ensure tables repeat a few times for safety"
+    std::vector<ts::TSPacket> last_pat_packets_;
+    std::vector<ts::TSPacket> last_pmt_packets_;
+    
+    // Temporary buffers for collecting packets during table assembly
+    std::vector<ts::TSPacket> pending_pat_packets_;
+    std::vector<ts::TSPacket> pending_pmt_packets_;
 };
