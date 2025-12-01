@@ -625,12 +625,15 @@ void Multiplexer::processPacket(ts::TSPacket& packet, Source source) {
     timestamp_mgr_->adjustPacket(packet, source, ts_info);
     
     if (source == Source::FALLBACK) {
-        // Remap PIDs to match live stream PIDs
+        // Remap PIDs to match live stream PIDs (only needed for fallback)
         pid_mapper_->remapPacket(packet);
-        // Fix continuity counters for seamless stream
-        pid_mapper_->fixContinuityCounter(packet);
     }
-    // Note: LIVE packets don't need PID remapping or CC fixing - they're already correct
+    
+    // Fix continuity counters for ALL packets to ensure seamless output stream.
+    // Input CC values are irrelevant - what matters is output stream consistency.
+    // This prevents CC discontinuities when switching between LIVE and FALLBACK,
+    // which could cause strict decoders to drop packets and cause brief glitches.
+    pid_mapper_->fixContinuityCounter(packet);
     
     // Write to RTMP output
     rtmp_output_->writePacket(packet);
@@ -868,7 +871,15 @@ void Multiplexer::drainBufferFromIDR(std::vector<ts::TSPacket>& buffer, size_t i
               << " packets from buffer starting at IDR (index " << idr_index << ")"
               << (needs_sps_pps_injection ? " [with SPS/PPS injection]" : "") << std::endl;
     
-    // Inject SPS/PPS before the IDR if needed
+    // STEP 1: Inject PAT/PMT at splice point
+    // Per splice.md: "Emit a new PAT/PMT at the splice" and "ensure tables repeat a few times for safety"
+    // This ensures the downstream decoder receives updated stream configuration
+    size_t patpmt_injected = injectPATMT(source, 3);  // Repeat 3 times for safety
+    if (patpmt_injected > 0) {
+        std::cout << "[Multiplexer] Injected " << patpmt_injected << " PAT/PMT packets at splice point" << std::endl;
+    }
+    
+    // STEP 2: Inject SPS/PPS before the IDR if needed
     if (needs_sps_pps_injection && idr_index < buffer.size()) {
         // Get video PID and timestamps from the IDR packet
         uint16_t video_pid = buffer[idr_index].getPID();
@@ -886,6 +897,67 @@ void Multiplexer::drainBufferFromIDR(std::vector<ts::TSPacket>& buffer, size_t i
     }
     
     std::cout << "[Multiplexer] Buffer drain complete" << std::endl;
+}
+
+size_t Multiplexer::injectPATMT(Source source, int repetitions) {
+    // Get the appropriate analyzer for the source
+    TSAnalyzer* analyzer = (source == Source::LIVE) ? live_analyzer_.get() : fallback_analyzer_.get();
+    if (!analyzer) {
+        std::cerr << "[Multiplexer] Analyzer not available for PAT/PMT injection" << std::endl;
+        return 0;
+    }
+    
+    // Check if we have stored PAT/PMT packets
+    if (!analyzer->hasPATPackets() && !analyzer->hasPMTPackets()) {
+        std::cout << "[Multiplexer] No PAT/PMT packets stored for injection - skipping" << std::endl;
+        return 0;
+    }
+    
+    const std::vector<ts::TSPacket>& pat_packets = analyzer->getLastPATPackets();
+    const std::vector<ts::TSPacket>& pmt_packets = analyzer->getLastPMTPackets();
+    
+    std::cout << "[Multiplexer] Injecting PAT/PMT at splice point:"
+              << " PAT=" << pat_packets.size() << " packets,"
+              << " PMT=" << pmt_packets.size() << " packets,"
+              << " repetitions=" << repetitions << std::endl;
+    
+    size_t total_injected = 0;
+    
+    // Inject PAT and PMT multiple times for safety
+    // Per splice.md: "ensure tables repeat a few times for safety"
+    for (int rep = 0; rep < repetitions; rep++) {
+        // Inject PAT packets
+        for (const auto& packet : pat_packets) {
+            ts::TSPacket pkt_copy = packet;
+            
+            // Fix continuity counter for output stream consistency
+            pid_mapper_->fixContinuityCounter(pkt_copy);
+            
+            rtmp_output_->writePacket(pkt_copy);
+            total_injected++;
+        }
+        
+        // Inject PMT packets
+        for (const auto& packet : pmt_packets) {
+            ts::TSPacket pkt_copy = packet;
+            
+            // For fallback source, remap PIDs to match live stream
+            if (source == Source::FALLBACK) {
+                pid_mapper_->remapPacket(pkt_copy);
+            }
+            
+            // Fix continuity counter for output stream consistency
+            pid_mapper_->fixContinuityCounter(pkt_copy);
+            
+            rtmp_output_->writePacket(pkt_copy);
+            total_injected++;
+        }
+    }
+    
+    std::cout << "[Multiplexer] PAT/PMT injection complete - wrote " << total_injected
+              << " packets total" << std::endl;
+    
+    return total_injected;
 }
 
 size_t Multiplexer::injectSPSPPS(Source source, uint16_t video_pid,
