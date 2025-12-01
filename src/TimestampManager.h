@@ -55,9 +55,12 @@ private:
     // Handle 33-bit timestamp wraparound
     uint64_t handleWraparound(uint64_t ts, uint64_t reference);
     
-    // Timestamp offsets for each source
-    int64_t live_offset_;
-    int64_t fallback_offset_;
+    // Separate timestamp offsets for PTS/DTS and PCR per source
+    // This is necessary because PTS-to-PCR relationships can differ between streams
+    int64_t live_pts_offset_;
+    int64_t live_pcr_offset_;
+    int64_t fallback_pts_offset_;
+    int64_t fallback_pcr_offset_;
     
     // Last output timestamps (after adjustment)
     uint64_t last_output_pts_;
@@ -65,9 +68,14 @@ private:
     uint64_t last_output_pcr_;
     
     // Last original timestamps per source (before offset)
+    // PTS/DTS tracking
     uint64_t last_live_pts_;
     uint64_t last_fallback_pts_;
     uint64_t last_fallback_dts_;
+    
+    // PCR tracking per source for accurate gap calculations
+    uint64_t last_live_pcr_;
+    uint64_t last_fallback_pcr_;
     
     // Wall-clock time tracking for gap-aware fallback transitions
     std::chrono::steady_clock::time_point last_live_packet_wall_time_;
