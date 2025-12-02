@@ -45,6 +45,10 @@ public:
     // Get time since last live packet
     std::chrono::milliseconds getTimeSinceLastLive() const;
     
+    // Reset internal state (used when switching input sources)
+    // Resets consecutive packet counter and updates timestamp
+    void resetState();
+    
     // Set callback for mode changes (called after mode switch)
     using ModeChangeCallback = std::function<void(Mode new_mode)>;
     void setModeChangeCallback(ModeChangeCallback callback);

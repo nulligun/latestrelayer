@@ -39,6 +39,7 @@ private:
     bool analyzeStreams();
     
     // Dynamically analyze live stream when it becomes available
+    // Uses the active input queue based on current input source
     bool analyzeLiveStreamDynamically();
     
     // Main processing loop
@@ -54,6 +55,19 @@ private:
     // IDR-aware switch to fallback - buffers packets until IDR found
     // Returns true if switch was successful, false if timeout
     bool switchToFallbackAtIDR();
+    
+    // IDR-aware switch to camera input source
+    // Waits for IDR on camera queue, maintains timestamp continuity
+    // Returns true if switch was successful, false if timeout
+    bool switchToCameraAtIDR();
+    
+    // IDR-aware switch to drone input source
+    // Waits for IDR on drone queue, maintains timestamp continuity
+    // Returns true if switch was successful, false if timeout
+    bool switchToDroneAtIDR();
+    
+    // Handle input source change callback from InputSourceManager
+    void onInputSourceChange(InputSource old_source, InputSource new_source);
     
     // Drain buffered packets to output starting from IDR
     // If needs_sps_pps_injection is true, injects stored SPS/PPS before IDR
@@ -79,6 +93,12 @@ private:
     // Notify controller of initial scene with retry logic
     void notifyInitialScene();
     
+    // Get the active live input queue based on current input source
+    TSPacketQueue* getActiveLiveQueue() const;
+    
+    // Get the active live analyzer based on current input source
+    TSAnalyzer* getActiveLiveAnalyzer() const;
+    
     const Config& config_;
     
     // HTTP client for controller communication
@@ -90,20 +110,22 @@ private:
     // Input source manager
     std::shared_ptr<InputSourceManager> input_source_manager_;
     
-    // Packet queues
-    std::unique_ptr<TSPacketQueue> live_queue_;
-    std::unique_ptr<TSPacketQueue> fallback_queue_;
+    // Packet queues - separate queues for camera and drone (hot standby)
+    std::unique_ptr<TSPacketQueue> camera_queue_;   // Camera input queue
+    std::unique_ptr<TSPacketQueue> drone_queue_;    // Drone input queue
+    std::unique_ptr<TSPacketQueue> fallback_queue_; // Fallback queue (always active)
     
-    // Live input receivers (only one is active based on input source)
+    // Live input receivers - both run simultaneously for hot standby
     std::unique_ptr<UDPReceiver> camera_receiver_;      // Camera input via UDP (from ffmpeg-srt-live)
     std::unique_ptr<RTMPReceiver> drone_receiver_;      // Drone input via RTMP pull
     
     // Fallback receiver (always UDP)
     std::unique_ptr<UDPReceiver> fallback_receiver_;
     
-    // Stream analyzers
-    std::unique_ptr<TSAnalyzer> live_analyzer_;
-    std::unique_ptr<TSAnalyzer> fallback_analyzer_;
+    // Stream analyzers - separate analyzers for camera and drone
+    std::unique_ptr<TSAnalyzer> camera_analyzer_;   // Camera stream analyzer
+    std::unique_ptr<TSAnalyzer> drone_analyzer_;    // Drone stream analyzer
+    std::unique_ptr<TSAnalyzer> fallback_analyzer_; // Fallback stream analyzer
     
     // Processing components
     std::unique_ptr<TimestampManager> timestamp_mgr_;
@@ -119,8 +141,13 @@ private:
     // Control
     std::atomic<bool> running_;
     std::atomic<bool> initialized_;
-    std::atomic<bool> live_stream_ready_;
-    std::atomic<bool> initial_privacy_mode_;  // Privacy mode queried on startup
+    std::atomic<bool> camera_stream_ready_;  // Camera stream detected and analyzed
+    std::atomic<bool> drone_stream_ready_;   // Drone stream detected and analyzed
+    std::atomic<bool> initial_privacy_mode_; // Privacy mode queried on startup
+    
+    // Input switching control
+    std::atomic<bool> input_switching_;      // True during camera<->drone switch, prevents fallback trigger
+    std::atomic<InputSource> pending_input_switch_;  // Target input source if switch requested
     
     // Statistics
     std::atomic<uint64_t> packets_processed_;
@@ -130,7 +157,9 @@ private:
     enum class SwitchState {
         NONE,               // No switch pending
         WAITING_LIVE_IDR,   // Waiting for IDR on live stream to switch to live
-        WAITING_FB_IDR      // Waiting for IDR on fallback stream to switch to fallback
+        WAITING_FB_IDR,     // Waiting for IDR on fallback stream to switch to fallback
+        WAITING_CAMERA_IDR, // Waiting for IDR on camera stream for input switch
+        WAITING_DRONE_IDR   // Waiting for IDR on drone stream for input switch
     };
     std::atomic<SwitchState> switch_state_{SwitchState::NONE};
     std::chrono::steady_clock::time_point switch_wait_start_;
@@ -141,6 +170,7 @@ private:
     static constexpr uint16_t HTTP_SERVER_PORT = 8091;
     
     // IDR wait timeouts (configurable via Config)
-    uint32_t live_idr_timeout_ms_;     // Loaded from config
-    uint32_t fallback_idr_timeout_ms_; // Loaded from config
+    uint32_t live_idr_timeout_ms_;          // Loaded from config
+    uint32_t fallback_idr_timeout_ms_;      // Loaded from config
+    uint32_t input_switch_idr_timeout_ms_;  // Timeout for camera<->drone switch IDR wait
 };

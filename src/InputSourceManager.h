@@ -3,6 +3,7 @@
 #include <string>
 #include <mutex>
 #include <atomic>
+#include <functional>
 
 /**
  * InputSource enum - represents the active input source for the multiplexer
@@ -13,16 +14,23 @@ enum class InputSource {
 };
 
 /**
+ * Callback type for input source changes
+ * @param old_source The previous input source
+ * @param new_source The new input source
+ */
+using InputSourceChangeCallback = std::function<void(InputSource old_source, InputSource new_source)>;
+
+/**
  * InputSourceManager - Manages which input source (camera/drone) is active
- * 
+ *
  * This class handles:
  * - Persisting the input source selection to a JSON file
  * - Loading the input source selection on startup
  * - Providing thread-safe access to the current selection
- * 
- * Note: Changing the input source via setInputSource() only saves the value.
- * The actual switch happens on multiplexer restart - runtime switching is not
- * implemented yet.
+ * - Notifying registered callbacks when input source changes
+ *
+ * Runtime switching is supported via the callback mechanism. When setInputSource()
+ * is called, registered callbacks are notified to perform the actual switch.
  */
 class InputSourceManager {
 public:
@@ -80,6 +88,14 @@ public:
     bool isDrone() const { return current_source_.load() == InputSource::DRONE; }
     
     /**
+     * Set callback for input source changes
+     * The callback will be invoked whenever setInputSource() changes the source.
+     * The callback is invoked AFTER the source value is updated.
+     * @param callback Function to call on source change
+     */
+    void setInputSourceChangeCallback(InputSourceChangeCallback callback);
+    
+    /**
      * Convert InputSource enum to string
      */
     static std::string toString(InputSource source);
@@ -102,4 +118,8 @@ private:
     std::string state_file_path_;
     std::atomic<InputSource> current_source_;
     mutable std::mutex file_mutex_;  // Protects file operations
+    
+    // Callback for input source changes
+    InputSourceChangeCallback change_callback_;
+    std::mutex callback_mutex_;  // Protects callback invocation
 };

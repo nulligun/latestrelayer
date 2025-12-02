@@ -21,10 +21,10 @@ The system will automatically generate a default fallback video (black screen wi
 **Optional: Custom Fallback Video**
 If you want to use your own fallback video instead of the auto-generated one, place it in the shared folder as `fallback.ts`:
 ```bash
-# Convert your video to MPEG-TS format
+# Convert your video to MPEG-TS format (keyframe every 0.5s for fast switching)
 ffmpeg -i /path/to/your/video.mp4 \
   -c:v libx264 -preset fast -crf 23 \
-  -g 30 -keyint_min 30 -sc_threshold 0 \
+  -g 15 -keyint_min 15 -sc_threshold 0 \
   -c:a aac -b:a 128k \
   -bsf:v h264_mp4toannexb \
   -f mpegts -mpegts_flags +resend_headers \
