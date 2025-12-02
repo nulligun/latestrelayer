@@ -115,6 +115,9 @@ bool Config::loadFromFile(const std::string& filename) {
         if (config["fallback_idr_timeout_ms"]) {
             fallback_idr_timeout_ms_ = config["fallback_idr_timeout_ms"].as<uint32_t>();
         }
+        if (config["input_switch_idr_timeout_ms"]) {
+            input_switch_idr_timeout_ms_ = config["input_switch_idr_timeout_ms"].as<uint32_t>();
+        }
         
         // Environment variables override YAML values
         // Priority: env var > YAML > hardcoded default
@@ -124,6 +127,7 @@ bool Config::loadFromFile(const std::string& filename) {
         min_consecutive_for_switch_ = getEnvUint32("MIN_CONSECUTIVE_FOR_SWITCH", min_consecutive_for_switch_);
         live_idr_timeout_ms_ = getEnvUint32("LIVE_IDR_TIMEOUT_MS", live_idr_timeout_ms_);
         fallback_idr_timeout_ms_ = getEnvUint32("FALLBACK_IDR_TIMEOUT_MS", fallback_idr_timeout_ms_);
+        input_switch_idr_timeout_ms_ = getEnvUint32("INPUT_SWITCH_IDR_TIMEOUT_MS", input_switch_idr_timeout_ms_);
         drone_reconnect_initial_ms_ = getEnvUint32("DRONE_RECONNECT_INITIAL_MS", drone_reconnect_initial_ms_);
         drone_reconnect_max_ms_ = getEnvUint32("DRONE_RECONNECT_MAX_MS", drone_reconnect_max_ms_);
         drone_reconnect_backoff_ = getEnvDouble("DRONE_RECONNECT_BACKOFF", drone_reconnect_backoff_);
@@ -159,5 +163,6 @@ void Config::print() const {
     std::cout << "Min Consecutive for Switch:   " << min_consecutive_for_switch_ << " packets" << std::endl;
     std::cout << "Live IDR Timeout:             " << live_idr_timeout_ms_ << " ms" << std::endl;
     std::cout << "Fallback IDR Timeout:         " << fallback_idr_timeout_ms_ << " ms" << std::endl;
+    std::cout << "Input Switch IDR Timeout:     " << input_switch_idr_timeout_ms_ << " ms" << std::endl;
     std::cout << "=====================" << std::endl;
 }

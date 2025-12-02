@@ -27,14 +27,14 @@ echo "  - Add periodic PSI table retransmission"
 echo "  - Maintain video/audio quality (no re-encoding)"
 echo ""
 
-# Re-encode with more keyframes for better seeking and reliability
-# GOP size of 30 means keyframe every 1 second at 30fps
+# Re-encode with frequent keyframes for better seeking and fast fallback switching
+# GOP size of 15 means keyframe every 0.5 seconds at 30fps
 ffmpeg -i "$INPUT" \
   -c:v libx264 \
   -preset fast \
   -crf 23 \
-  -g 30 \
-  -keyint_min 30 \
+  -g 15 \
+  -keyint_min 15 \
   -sc_threshold 0 \
   -c:a aac \
   -b:a 128k \

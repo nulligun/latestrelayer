@@ -12,7 +12,7 @@ rtmp {
     server {
         listen 1935;
         listen [::]:1935 ipv6only=on;
-        
+        chunk_size 4096;
         # Enable access logging for RTMP connections
         access_log /dev/stdout;
 
@@ -24,6 +24,10 @@ rtmp {
             hls_path /tmp/hls;
             hls_fragment ${HLS_FRAGMENT_SIZE};
             hls_playlist_length 60;
+    
+            gop_cache on;
+            play_restart on;
+            drop_idle_publisher 5s;
             
             # Disable recording by default
             record off;
@@ -46,6 +50,9 @@ rtmp {
             record off;
             allow publish all;
             allow play all;
+            gop_cache on;
+            play_restart on;
+            drop_idle_publisher 5s;
         }
     }
 }

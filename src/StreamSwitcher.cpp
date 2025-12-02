@@ -161,3 +161,10 @@ void StreamSwitcher::setModeChangeCallback(ModeChangeCallback callback) {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     mode_change_callback_ = std::move(callback);
 }
+
+void StreamSwitcher::resetState() {
+    std::lock_guard<std::mutex> lock(timestamp_mutex_);
+    consecutive_live_packets_ = 0;
+    last_live_packet_time_ = std::chrono::steady_clock::now();
+    std::cout << "[StreamSwitcher] State reset (consecutive_live_packets_=0, timestamp updated)" << std::endl;
+}
