@@ -336,11 +336,12 @@ app.get('/api/data', async (req, res) => {
 app.get('/api/config', async (req, res) => {
   try {
     res.json({
-      srtUrl: `srt://${SRT_DOMAIN}:${SRT_PORT}`,
+      srtUrl: `srt://${SRT_DOMAIN}:${SRT_PORT}?streamid=live/stream`,
       srtPort: SRT_PORT,
       srtDomain: SRT_DOMAIN,
       protocol: 'srt',
       previewUrl: `rtmp://${SRT_DOMAIN}:${RTMP_PORT}/live/stream`,
+      droneUrl: `rtmp://${SRT_DOMAIN}:${RTMP_PORT}/publish/drone`,
       hlsUrl: '/api/hls/stream.m3u8',
       rtmpPort: RTMP_PORT,
       kickChannel: KICK_CHANNEL
@@ -587,6 +588,10 @@ app.get('/api/fallback/config', async (req, res) => {
     try {
       const data = await fs.readFile(FALLBACK_CONFIG_PATH, 'utf8');
       config = JSON.parse(data);
+      // Ensure activeInput has a default value if not present
+      if (!config.activeInput) {
+        config.activeInput = 'camera';
+      }
     } catch (error) {
       // Config doesn't exist, return defaults from environment
       config = {
@@ -595,6 +600,7 @@ app.get('/api/fallback/config', async (req, res) => {
         videoPath: '/app/shared/offline.mp4',
         browserUrl: process.env.OFFLINE_SOURCE_URL || 'https://example.com',
         activeContainer: null,
+        activeInput: 'camera',
         lastUpdated: new Date().toISOString()
       };
     }
@@ -609,10 +615,16 @@ app.get('/api/fallback/config', async (req, res) => {
 // Update fallback configuration
 app.post('/api/fallback/config', async (req, res) => {
   try {
-    const { source, browserUrl } = req.body;
+    const { source, browserUrl, activeInput } = req.body;
     
-    if (!['BLACK', 'IMAGE', 'VIDEO', 'BROWSER'].includes(source)) {
+    // Validate source if provided
+    if (source !== undefined && !['BLACK', 'IMAGE', 'VIDEO', 'BROWSER'].includes(source)) {
       return res.status(400).json({ error: 'Invalid source type' });
+    }
+    
+    // Validate activeInput if provided
+    if (activeInput !== undefined && !['camera', 'drone'].includes(activeInput)) {
+      return res.status(400).json({ error: 'Invalid activeInput value. Must be "camera" or "drone"' });
     }
     
     // Ensure shared directory exists
@@ -634,17 +646,24 @@ app.post('/api/fallback/config', async (req, res) => {
     }
     
     // Update config
-    config.source = source;
+    if (source !== undefined) {
+      config.source = source;
+    }
     if (browserUrl !== undefined) {
       config.browserUrl = browserUrl;
+    }
+    if (activeInput !== undefined) {
+      config.activeInput = activeInput;
     }
     config.lastUpdated = new Date().toISOString();
     
     // Get the currently active container before making changes
     const previousActiveContainer = config.activeContainer;
     
-    // Manage offline containers based on source
-    const containerActions = {
+    // Only manage containers if source is being changed
+    if (source !== undefined) {
+      // Manage offline containers based on source
+      const containerActions = {
       'BLACK': async () => {
         // Stop the currently active container if any
         if (previousActiveContainer) {
@@ -699,31 +718,42 @@ app.post('/api/fallback/config', async (req, res) => {
       }
     };
     
-    // Execute container actions and save config afterwards
-    if (containerActions[source]) {
-      await containerActions[source]();
+      // Execute container actions and save config afterwards
+      if (containerActions[source]) {
+        await containerActions[source]();
+      }
+      
+      // Save config with updated activeContainer after container operations
+      await fs.writeFile(FALLBACK_CONFIG_PATH, JSON.stringify(config, null, 2));
+      console.log(`[fallback] Configuration saved: source=${source}, activeContainer=${config.activeContainer}`);
+      
+      // Restart ffmpeg-fallback container to pick up the new configuration
+      try {
+        console.log(`[fallback] Restarting ffmpeg-fallback container to apply new fallback source...`);
+        await controller.restartContainer('ffmpeg-fallback');
+        console.log(`[fallback] ffmpeg-fallback container restart initiated`);
+      } catch (restartError) {
+        console.error('[fallback] Error restarting ffmpeg-fallback container:', restartError.message);
+        // Continue anyway - config was saved, container can be manually restarted
+      }
+      
+      res.json({
+        success: true,
+        config: config,
+        message: `Fallback source set to ${source}`,
+        fallbackContainerRestarted: true
+      });
+    } else {
+      // Only activeInput or browserUrl was updated, no container changes needed
+      await fs.writeFile(FALLBACK_CONFIG_PATH, JSON.stringify(config, null, 2));
+      console.log(`[fallback] Configuration saved: activeInput=${config.activeInput}`);
+      
+      res.json({
+        success: true,
+        config: config,
+        message: activeInput ? `Active input set to ${activeInput}` : 'Configuration updated'
+      });
     }
-    
-    // Save config with updated activeContainer after container operations
-    await fs.writeFile(FALLBACK_CONFIG_PATH, JSON.stringify(config, null, 2));
-    console.log(`[fallback] Configuration saved: source=${source}, activeContainer=${config.activeContainer}`);
-    
-    // Restart ffmpeg-fallback container to pick up the new configuration
-    try {
-      console.log(`[fallback] Restarting ffmpeg-fallback container to apply new fallback source...`);
-      await controller.restartContainer('ffmpeg-fallback');
-      console.log(`[fallback] ffmpeg-fallback container restart initiated`);
-    } catch (restartError) {
-      console.error('[fallback] Error restarting ffmpeg-fallback container:', restartError.message);
-      // Continue anyway - config was saved, container can be manually restarted
-    }
-    
-    res.json({
-      success: true,
-      config: config,
-      message: `Fallback source set to ${source}`,
-      fallbackContainerRestarted: true
-    });
   } catch (error) {
     console.error('[api] Error updating fallback config:', error.message);
     res.status(500).json({ error: error.message });
