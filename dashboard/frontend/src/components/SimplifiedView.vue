@@ -28,7 +28,7 @@
     <!-- Scene Display -->
     <div class="scene-section">
       <div class="scene-label">
-        {{ isKickLive ? '🔴 LIVE ON KICK' : 'KICK OFFLINE' }}
+        {{ isKickLive ? '🔴 LIVE ON KICK' : 'KICK OFFLINE' }}, Input = {{ displayActiveInput }}
       </div>
       <div class="scene-value">{{ displayScene }}</div>
       <div v-if="sceneDurationSeconds > 0" class="scene-duration">
@@ -135,6 +135,7 @@ export default {
     const pendingKickAction = ref(null);
     const kickChannelUrl = ref(null);
     const hlsUrl = ref('/api/hls/stream.m3u8');
+    const activeInput = ref('camera');
 
     // Fetch HLS URL from config
     const fetchConfig = async () => {
@@ -148,6 +149,23 @@ export default {
         console.error('[SimplifiedView] Error fetching config:', err);
       }
     };
+
+    // Fetch active input from fallback config
+    const fetchActiveInput = async () => {
+      try {
+        const response = await fetch('/api/fallback/config');
+        const data = await response.json();
+        activeInput.value = data.activeInput || 'camera';
+      } catch (err) {
+        console.error('[SimplifiedView] Error fetching active input:', err);
+        activeInput.value = 'camera';
+      }
+    };
+
+    // Computed: Display active input with capitalized first letter
+    const displayActiveInput = computed(() => {
+      return activeInput.value.charAt(0).toUpperCase() + activeInput.value.slice(1);
+    });
 
     // Computed: Is Kick live
     const isKickLive = computed(() => {
@@ -392,6 +410,7 @@ export default {
     // Fetch on mount
     onMounted(() => {
       fetchKickChannel();
+      fetchActiveInput();
     });
 
     return {
@@ -421,7 +440,9 @@ export default {
       confirmKickToggle,
       handlePrivacyToggle,
       kickChannelUrl,
-      hlsUrl
+      hlsUrl,
+      activeInput,
+      displayActiveInput
     };
   }
 };
