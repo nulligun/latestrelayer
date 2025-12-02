@@ -5,6 +5,10 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
+#include <memory>
+
+// Forward declaration
+class InputSourceManager;
 
 /**
  * Health status structure returned by health callback
@@ -17,7 +21,11 @@ struct HealthStatus {
 
 /**
  * Simple HTTP server for receiving callbacks from the controller.
- * Listens on a specified port and handles POST /privacy endpoint.
+ * Listens on a specified port and handles:
+ * - POST /privacy - Privacy mode changes
+ * - GET /health - Health status
+ * - GET /input - Get current input source
+ * - POST /input - Set input source
  */
 class HttpServer {
 public:
@@ -43,6 +51,9 @@ public:
     // Register callback for health status
     void setHealthCallback(HealthCallback callback);
     
+    // Set input source manager for /input endpoints
+    void setInputSourceManager(std::shared_ptr<InputSourceManager> manager);
+    
     // Check if server is running
     bool isRunning() const { return running_.load(); }
     
@@ -64,4 +75,5 @@ private:
     std::mutex callback_mutex_;
     PrivacyCallback privacy_callback_;
     HealthCallback health_callback_;
+    std::shared_ptr<InputSourceManager> input_source_manager_;
 };

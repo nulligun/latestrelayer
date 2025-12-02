@@ -38,11 +38,19 @@ bool Multiplexer::initialize() {
     
     std::cout << "[Multiplexer] Initializing..." << std::endl;
     
-    // Start HTTP server for receiving callbacks (privacy mode changes, health status)
+    // Initialize input source manager and load saved state
+    input_source_manager_ = std::make_shared<InputSourceManager>(config_.getInputSourceFile());
+    if (!input_source_manager_->load()) {
+        std::cerr << "[Multiplexer] Warning: Failed to load input source state, using default (camera)" << std::endl;
+    }
+    std::cout << "[Multiplexer] Input source: " << input_source_manager_->getInputSourceString() << std::endl;
+    
+    // Start HTTP server for receiving callbacks (privacy mode changes, health status, input source)
     http_server_ = std::make_unique<HttpServer>(HTTP_SERVER_PORT);
     http_server_->setPrivacyCallback([this](bool enabled) {
         onPrivacyModeChange(enabled);
     });
+    http_server_->setInputSourceManager(input_source_manager_);
     
     // Note: Health callback will be set after rtmp_output_ is created
     
@@ -63,11 +71,25 @@ bool Multiplexer::initialize() {
     live_queue_ = std::make_unique<TSPacketQueue>(queue_size);
     fallback_queue_ = std::make_unique<TSPacketQueue>(queue_size);
     
-    // Create UDP receivers with configurable buffer size
+    // Create live input receiver based on configured input source
     uint32_t udp_buffer = config_.getUdpRcvbufSize();
-    std::cout << "[Multiplexer] Creating UDP receivers with buffer=" << udp_buffer << " bytes" << std::endl;
-    live_receiver_ = std::make_unique<UDPReceiver>(
-        "Live", config_.getLiveUdpPort(), *live_queue_, udp_buffer);
+    
+    if (input_source_manager_->isCamera()) {
+        // Camera mode: Use UDP receiver (from ffmpeg-srt-live)
+        std::cout << "[Multiplexer] Creating Camera UDP receiver on port " << config_.getLiveUdpPort()
+                  << " with buffer=" << udp_buffer << " bytes" << std::endl;
+        camera_receiver_ = std::make_unique<UDPReceiver>(
+            "Camera", config_.getLiveUdpPort(), *live_queue_, udp_buffer);
+    } else {
+        // Drone mode: Use RTMP receiver
+        std::cout << "[Multiplexer] Creating Drone RTMP receiver for URL: " << config_.getDroneRtmpUrl() << std::endl;
+        drone_receiver_ = std::make_unique<RTMPReceiver>(
+            "Drone", config_.getDroneRtmpUrl(), *live_queue_);
+    }
+    
+    // Fallback receiver (always UDP)
+    std::cout << "[Multiplexer] Creating Fallback UDP receiver on port " << config_.getFallbackUdpPort()
+              << " with buffer=" << udp_buffer << " bytes" << std::endl;
     fallback_receiver_ = std::make_unique<UDPReceiver>(
         "Fallback", config_.getFallbackUdpPort(), *fallback_queue_, udp_buffer);
     
@@ -106,12 +128,20 @@ bool Multiplexer::initialize() {
     // Create SPS/PPS injector for splice points
     sps_pps_injector_ = std::make_unique<SPSPPSInjector>();
     
-    // Start UDP receivers
-    if (!live_receiver_->start()) {
-        std::cerr << "[Multiplexer] Failed to start live receiver" << std::endl;
-        return false;
+    // Start live input receiver (camera or drone depending on configuration)
+    if (camera_receiver_) {
+        if (!camera_receiver_->start()) {
+            std::cerr << "[Multiplexer] Failed to start camera receiver" << std::endl;
+            return false;
+        }
+    } else if (drone_receiver_) {
+        if (!drone_receiver_->start()) {
+            std::cerr << "[Multiplexer] Failed to start drone receiver" << std::endl;
+            return false;
+        }
     }
     
+    // Start fallback receiver
     if (!fallback_receiver_->start()) {
         std::cerr << "[Multiplexer] Failed to start fallback receiver" << std::endl;
         return false;
@@ -226,8 +256,9 @@ void Multiplexer::stop() {
     if (http_server_) http_server_->stop();
     
     // Stop receivers
-    std::cout << "[Multiplexer] Stopping UDP receivers..." << std::endl;
-    if (live_receiver_) live_receiver_->stop();
+    std::cout << "[Multiplexer] Stopping input receivers..." << std::endl;
+    if (camera_receiver_) camera_receiver_->stop();
+    if (drone_receiver_) drone_receiver_->stop();
     if (fallback_receiver_) fallback_receiver_->stop();
     
     // Stop RTMP output
@@ -242,8 +273,14 @@ void Multiplexer::stop() {
     std::cout << "[Multiplexer] ========================================" << std::endl;
     std::cout << "[Multiplexer] Statistics:" << std::endl;
     std::cout << "  Runtime: " << elapsed.count() << "s" << std::endl;
+    std::cout << "  Input source: " << (input_source_manager_ ? input_source_manager_->getInputSourceString() : "unknown") << std::endl;
     std::cout << "  Packets processed: " << packets_processed_.load() << std::endl;
-    std::cout << "  Live packets received: " << live_receiver_->getPacketsReceived() << std::endl;
+    if (camera_receiver_) {
+        std::cout << "  Camera packets received: " << camera_receiver_->getPacketsReceived() << std::endl;
+    }
+    if (drone_receiver_) {
+        std::cout << "  Drone packets received: " << drone_receiver_->getPacketsReceived() << std::endl;
+    }
     std::cout << "  Fallback packets received: " << fallback_receiver_->getPacketsReceived() << std::endl;
     std::cout << "  RTMP packets written: " << rtmp_output_->getPacketsWritten() << std::endl;
     

@@ -18,6 +18,19 @@ fallback_udp_port: 10001
 rtmp_url: "rtmp://nginx-rtmp/live/stream"
 
 # =============================================================================
+# Input Source Configuration
+# =============================================================================
+
+# Drone RTMP input URL
+# The multiplexer can pull from this RTMP URL when drone input is selected
+drone_rtmp_url: "rtmp://nginx-rtmp:1935/publish/drone"
+
+# Input source state file path
+# This file persists which input source (camera/drone) is active
+# The value is loaded on startup and can be changed via the HTTP API
+input_source_file: "/app/shared/input_source.json"
+
+# =============================================================================
 # Stream Switching Configuration
 # =============================================================================
 

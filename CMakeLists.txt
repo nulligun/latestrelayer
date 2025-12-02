@@ -26,6 +26,8 @@ set(SOURCES
     src/Config.cpp
     src/TSPacketQueue.cpp
     src/UDPReceiver.cpp
+    src/RTMPReceiver.cpp
+    src/InputSourceManager.cpp
     src/TSAnalyzer.cpp
     src/NALParser.cpp
     src/TimestampManager.cpp

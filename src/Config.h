@@ -17,6 +17,10 @@ public:
     uint32_t getMaxLiveGapMs() const { return max_live_gap_ms_; }
     std::string getLogLevel() const { return log_level_; }
     
+    // Drone input configuration
+    std::string getDroneRtmpUrl() const { return drone_rtmp_url_; }
+    std::string getInputSourceFile() const { return input_source_file_; }
+    
     // Buffer and latency configuration values
     // These can be overridden via environment variables
     uint32_t getUdpRcvbufSize() const { return udp_rcvbuf_size_; }
@@ -39,6 +43,10 @@ private:
     std::string rtmp_url_;
     uint32_t max_live_gap_ms_ = 2000;
     std::string log_level_ = "INFO";
+    
+    // Drone input settings
+    std::string drone_rtmp_url_ = "rtmp://nginx-rtmp:1935/publish/drone";
+    std::string input_source_file_ = "/app/shared/input_source.json";
     
     // Buffer and latency settings (with defaults matching .env documentation)
     uint32_t udp_rcvbuf_size_ = 262144;          // UDP_RCVBUF_SIZE: 256KB default

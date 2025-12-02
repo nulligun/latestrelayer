@@ -160,6 +160,7 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./src:/app/src:ro
       - ./CMakeLists.txt:/app/CMakeLists.txt:ro
+      - ${SHARED_FOLDER}:/app/shared:rw
       - ${SHARED_FOLDER}/multiplexer-build:/app/build
       - ${SHARED_FOLDER}/tsduck-src:/opt/tsduck-src
       - ${SHARED_FOLDER}/tsduck-build:/opt/tsduck-build
@@ -283,6 +284,32 @@ services:
     container_name: mock-camera
     profiles:
       - manual
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mock-drone:
+    stop_grace_period: 2s
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mock-drone
+    container_name: mock-drone
+    profiles:
+      - manual
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
     networks:
       - tsnet
     restart: unless-stopped
