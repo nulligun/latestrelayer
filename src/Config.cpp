@@ -61,6 +61,15 @@ bool Config::loadFromFile(const std::string& filename) {
             log_level_ = config["log_level"].as<std::string>();
         }
         
+        // Drone input settings
+        if (config["drone_rtmp_url"]) {
+            drone_rtmp_url_ = config["drone_rtmp_url"].as<std::string>();
+        }
+        
+        if (config["input_source_file"]) {
+            input_source_file_ = config["input_source_file"].as<std::string>();
+        }
+        
         // Load buffer/latency settings from YAML first (as defaults)
         if (config["udp_rcvbuf_size"]) {
             udp_rcvbuf_size_ = config["udp_rcvbuf_size"].as<uint32_t>();
@@ -108,6 +117,9 @@ void Config::print() const {
     std::cout << "RTMP URL:          " << rtmp_url_ << std::endl;
     std::cout << "Max Live Gap (ms): " << max_live_gap_ms_ << std::endl;
     std::cout << "Log Level:         " << log_level_ << std::endl;
+    std::cout << "--- Drone Input Settings ---" << std::endl;
+    std::cout << "Drone RTMP URL:    " << drone_rtmp_url_ << std::endl;
+    std::cout << "Input Source File: " << input_source_file_ << std::endl;
     std::cout << "--- Buffer/Latency Settings ---" << std::endl;
     std::cout << "UDP Rcvbuf Size:              " << udp_rcvbuf_size_ << " bytes" << std::endl;
     std::cout << "TS Queue Size:                " << ts_queue_size_ << " packets" << std::endl;

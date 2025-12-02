@@ -1,0 +1,20 @@
+# FFmpeg Mock Drone - Generates SMPTE bars test pattern with DRONE overlay
+FROM jrottenberg/ffmpeg:4.4-ubuntu
+
+# Install network debugging tools
+RUN apt-get update && apt-get install -y \
+    iputils-ping \
+    iproute2 \
+    tcpdump \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy wrapper script
+COPY docker/mock-drone-wrapper.sh /usr/local/bin/mock-drone-wrapper.sh
+RUN chmod +x /usr/local/bin/mock-drone-wrapper.sh
+
+# Copy health check script
+COPY docker/mock-drone-health-check.sh /usr/local/bin/health-check.sh
+RUN chmod +x /usr/local/bin/health-check.sh
+
+# Use wrapper script as entrypoint
+ENTRYPOINT ["/usr/local/bin/mock-drone-wrapper.sh"]

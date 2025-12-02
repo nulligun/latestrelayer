@@ -1,4 +1,5 @@
 #include "HttpServer.h"
+#include "InputSourceManager.h"
 #include <iostream>
 #include <sstream>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <algorithm>
 
 HttpServer::HttpServer(uint16_t port)
     : port_(port),
@@ -103,6 +105,11 @@ void HttpServer::setPrivacyCallback(PrivacyCallback callback) {
 void HttpServer::setHealthCallback(HealthCallback callback) {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     health_callback_ = std::move(callback);
+}
+
+void HttpServer::setInputSourceManager(std::shared_ptr<InputSourceManager> manager) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    input_source_manager_ = manager;
 }
 
 void HttpServer::serverLoop() {
@@ -224,6 +231,118 @@ std::string HttpServer::handleRequest(const std::string& method, const std::stri
                  << "Content-Length: " << response_body.length() << "\r\n"
                  << "\r\n"
                  << response_body;
+        return response.str();
+    }
+    
+    // Handle GET /input - get current input source
+    if (method == "GET" && path == "/input") {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        
+        if (!input_source_manager_) {
+            std::string response_body = "{\"error\": \"Input source manager not initialized\"}";
+            std::ostringstream response;
+            response << "HTTP/1.1 503 Service Unavailable\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << response_body.length() << "\r\n"
+                     << "\r\n"
+                     << response_body;
+            return response.str();
+        }
+        
+        std::string source = input_source_manager_->getInputSourceString();
+        std::cout << "[HttpServer] GET /input: source=" << source << std::endl;
+        
+        std::ostringstream response_body;
+        response_body << "{\"source\": \"" << source << "\"}";
+        
+        std::string body_str = response_body.str();
+        std::ostringstream response;
+        response << "HTTP/1.1 200 OK\r\n"
+                 << "Content-Type: application/json\r\n"
+                 << "Content-Length: " << body_str.length() << "\r\n"
+                 << "\r\n"
+                 << body_str;
+        return response.str();
+    }
+    
+    // Handle POST /input - set input source
+    if (method == "POST" && path == "/input") {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        
+        if (!input_source_manager_) {
+            std::string response_body = "{\"error\": \"Input source manager not initialized\"}";
+            std::ostringstream response;
+            response << "HTTP/1.1 503 Service Unavailable\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << response_body.length() << "\r\n"
+                     << "\r\n"
+                     << response_body;
+            return response.str();
+        }
+        
+        // Parse JSON body for "source" field
+        // Simple parsing - look for "source": "camera" or "source": "drone"
+        std::string source_value;
+        
+        // Find "source" key
+        size_t pos = body.find("\"source\"");
+        if (pos != std::string::npos) {
+            // Find the colon and then the value
+            pos = body.find(':', pos);
+            if (pos != std::string::npos) {
+                // Find the opening quote of the value
+                pos = body.find('"', pos);
+                if (pos != std::string::npos) {
+                    size_t start = pos + 1;
+                    size_t end = body.find('"', start);
+                    if (end != std::string::npos) {
+                        source_value = body.substr(start, end - start);
+                    }
+                }
+            }
+        }
+        
+        if (source_value.empty()) {
+            std::cout << "[HttpServer] POST /input: missing or invalid 'source' field" << std::endl;
+            std::string response_body = "{\"error\": \"Missing or invalid 'source' field. Expected: {\\\"source\\\": \\\"camera\\\"} or {\\\"source\\\": \\\"drone\\\"}\"}";
+            std::ostringstream response;
+            response << "HTTP/1.1 400 Bad Request\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << response_body.length() << "\r\n"
+                     << "\r\n"
+                     << response_body;
+            return response.str();
+        }
+        
+        // Convert to lowercase
+        std::transform(source_value.begin(), source_value.end(), source_value.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        
+        std::cout << "[HttpServer] POST /input: setting source to " << source_value << std::endl;
+        
+        if (!input_source_manager_->setInputSourceFromString(source_value)) {
+            std::string response_body = "{\"error\": \"Invalid source value. Must be 'camera' or 'drone'\"}";
+            std::ostringstream response;
+            response << "HTTP/1.1 400 Bad Request\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << response_body.length() << "\r\n"
+                     << "\r\n"
+                     << response_body;
+            return response.str();
+        }
+        
+        std::ostringstream response_body;
+        response_body << "{\"status\": \"ok\", \"source\": \"" << source_value
+                      << "\", \"message\": \"Input source set to " << source_value
+                      << ". Change will take effect after multiplexer restart.\"}";
+        
+        std::string body_str = response_body.str();
+        std::ostringstream response;
+        response << "HTTP/1.1 200 OK\r\n"
+                 << "Content-Type: application/json\r\n"
+                 << "Content-Length: " << body_str.length() << "\r\n"
+                 << "\r\n"
+                 << body_str;
         return response.str();
     }
     

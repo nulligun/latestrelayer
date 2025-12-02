@@ -3,6 +3,8 @@
 #include "Config.h"
 #include "TSPacketQueue.h"
 #include "UDPReceiver.h"
+#include "RTMPReceiver.h"
+#include "InputSourceManager.h"
 #include "TSAnalyzer.h"
 #include "TimestampManager.h"
 #include "PIDMapper.h"
@@ -85,12 +87,18 @@ private:
     // HTTP server for receiving callbacks
     std::unique_ptr<HttpServer> http_server_;
     
+    // Input source manager
+    std::shared_ptr<InputSourceManager> input_source_manager_;
+    
     // Packet queues
     std::unique_ptr<TSPacketQueue> live_queue_;
     std::unique_ptr<TSPacketQueue> fallback_queue_;
     
-    // UDP receivers
-    std::unique_ptr<UDPReceiver> live_receiver_;
+    // Live input receivers (only one is active based on input source)
+    std::unique_ptr<UDPReceiver> camera_receiver_;      // Camera input via UDP (from ffmpeg-srt-live)
+    std::unique_ptr<RTMPReceiver> drone_receiver_;      // Drone input via RTMP pull
+    
+    // Fallback receiver (always UDP)
     std::unique_ptr<UDPReceiver> fallback_receiver_;
     
     // Stream analyzers
