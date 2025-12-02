@@ -19,6 +19,21 @@ uint32_t Config::getEnvUint32(const char* name, uint32_t default_value) {
     return default_value;
 }
 
+// Helper to get environment variable as double with default value
+static double getEnvDouble(const char* name, double default_value) {
+    const char* env_value = std::getenv(name);
+    if (env_value != nullptr && env_value[0] != '\0') {
+        try {
+            return std::stod(env_value);
+        } catch (const std::exception& e) {
+            std::cerr << "[Config] Warning: Invalid value for " << name
+                      << " ('" << env_value << "'): " << e.what()
+                      << " - using default " << default_value << std::endl;
+        }
+    }
+    return default_value;
+}
+
 bool Config::loadFromFile(const std::string& filename) {
     try {
         // Check if file exists
@@ -70,6 +85,17 @@ bool Config::loadFromFile(const std::string& filename) {
             input_source_file_ = config["input_source_file"].as<std::string>();
         }
         
+        // Drone reconnect settings
+        if (config["drone_reconnect_initial_ms"]) {
+            drone_reconnect_initial_ms_ = config["drone_reconnect_initial_ms"].as<uint32_t>();
+        }
+        if (config["drone_reconnect_max_ms"]) {
+            drone_reconnect_max_ms_ = config["drone_reconnect_max_ms"].as<uint32_t>();
+        }
+        if (config["drone_reconnect_backoff"]) {
+            drone_reconnect_backoff_ = config["drone_reconnect_backoff"].as<double>();
+        }
+        
         // Load buffer/latency settings from YAML first (as defaults)
         if (config["udp_rcvbuf_size"]) {
             udp_rcvbuf_size_ = config["udp_rcvbuf_size"].as<uint32_t>();
@@ -98,6 +124,9 @@ bool Config::loadFromFile(const std::string& filename) {
         min_consecutive_for_switch_ = getEnvUint32("MIN_CONSECUTIVE_FOR_SWITCH", min_consecutive_for_switch_);
         live_idr_timeout_ms_ = getEnvUint32("LIVE_IDR_TIMEOUT_MS", live_idr_timeout_ms_);
         fallback_idr_timeout_ms_ = getEnvUint32("FALLBACK_IDR_TIMEOUT_MS", fallback_idr_timeout_ms_);
+        drone_reconnect_initial_ms_ = getEnvUint32("DRONE_RECONNECT_INITIAL_MS", drone_reconnect_initial_ms_);
+        drone_reconnect_max_ms_ = getEnvUint32("DRONE_RECONNECT_MAX_MS", drone_reconnect_max_ms_);
+        drone_reconnect_backoff_ = getEnvDouble("DRONE_RECONNECT_BACKOFF", drone_reconnect_backoff_);
         
         return true;
         
@@ -120,6 +149,9 @@ void Config::print() const {
     std::cout << "--- Drone Input Settings ---" << std::endl;
     std::cout << "Drone RTMP URL:    " << drone_rtmp_url_ << std::endl;
     std::cout << "Input Source File: " << input_source_file_ << std::endl;
+    std::cout << "Drone Reconnect Initial:      " << drone_reconnect_initial_ms_ << " ms" << std::endl;
+    std::cout << "Drone Reconnect Max:          " << drone_reconnect_max_ms_ << " ms" << std::endl;
+    std::cout << "Drone Reconnect Backoff:      " << drone_reconnect_backoff_ << "x" << std::endl;
     std::cout << "--- Buffer/Latency Settings ---" << std::endl;
     std::cout << "UDP Rcvbuf Size:              " << udp_rcvbuf_size_ << " bytes" << std::endl;
     std::cout << "TS Queue Size:                " << ts_queue_size_ << " packets" << std::endl;

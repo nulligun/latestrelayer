@@ -8,7 +8,10 @@
 #include <errno.h>
 #include <poll.h>
 
-RTMPReceiver::RTMPReceiver(const std::string& name, const std::string& rtmp_url, TSPacketQueue& queue)
+RTMPReceiver::RTMPReceiver(const std::string& name, const std::string& rtmp_url, TSPacketQueue& queue,
+                           uint32_t initial_reconnect_delay_ms,
+                           uint32_t max_reconnect_delay_ms,
+                           double backoff_multiplier)
     : name_(name),
       rtmp_url_(rtmp_url),
       queue_(queue),
@@ -19,7 +22,13 @@ RTMPReceiver::RTMPReceiver(const std::string& name, const std::string& rtmp_url,
       ffmpeg_stdout_fd_(-1),
       packets_received_(0),
       packets_dropped_(0),
-      bytes_received_(0) {
+      bytes_received_(0),
+      reconnect_attempts_(0),
+      initial_reconnect_delay_ms_(initial_reconnect_delay_ms),
+      max_reconnect_delay_ms_(max_reconnect_delay_ms),
+      backoff_multiplier_(backoff_multiplier) {
+    std::cout << "[" << name_ << "] Configured with reconnect: initial=" << initial_reconnect_delay_ms_
+              << "ms, max=" << max_reconnect_delay_ms_ << "ms, backoff=" << backoff_multiplier_ << "x" << std::endl;
 }
 
 RTMPReceiver::~RTMPReceiver() {
@@ -194,146 +203,205 @@ void RTMPReceiver::receiveLoop() {
     uint8_t packet_buffer[PACKET_BUFFER_SIZE];
     size_t packet_buffer_len = 0;
     
-    std::cout << "[" << name_ << "] Receive loop started" << std::endl;
+    std::cout << "[" << name_ << "] Receive loop started (with auto-reconnect)" << std::endl;
     
     // Stats tracking
     uint64_t stats_interval = 10000;  // Log stats every 10000 packets
-    auto last_data_time = std::chrono::steady_clock::now();
-    bool first_data_received = false;
     
+    // Reconnect state
+    uint32_t current_reconnect_delay_ms = initial_reconnect_delay_ms_;
+    
+    // Outer loop - handles reconnection
     while (!should_stop_.load()) {
-        // Use poll to wait for data with timeout
-        struct pollfd pfd;
-        pfd.fd = ffmpeg_stdout_fd_;
-        pfd.events = POLLIN;
-        
-        int ret = poll(&pfd, 1, 500);  // 500ms timeout
-        
-        if (ret < 0) {
-            if (errno == EINTR) continue;
-            std::cerr << "[" << name_ << "] Poll error: " << strerror(errno) << std::endl;
-            break;
-        }
-        
-        if (ret == 0) {
-            // Timeout - check if FFmpeg is still running
-            if (ffmpeg_pid_ > 0) {
-                int status;
-                pid_t result = waitpid(ffmpeg_pid_, &status, WNOHANG);
-                if (result == ffmpeg_pid_) {
-                    std::cout << "[" << name_ << "] FFmpeg process exited" << std::endl;
-                    ffmpeg_pid_ = -1;
-                    connected_ = false;
+        // Ensure FFmpeg is running
+        if (ffmpeg_pid_ <= 0 || ffmpeg_stdout_fd_ < 0) {
+            // Need to start/restart FFmpeg
+            if (reconnect_attempts_.load() > 0) {
+                std::cout << "[" << name_ << "] Reconnecting in " << current_reconnect_delay_ms
+                          << "ms (attempt #" << (reconnect_attempts_.load() + 1) << ")..." << std::endl;
+                
+                // Sleep with periodic checks for shutdown
+                uint32_t slept_ms = 0;
+                while (slept_ms < current_reconnect_delay_ms && !should_stop_.load()) {
+                    uint32_t sleep_chunk = std::min(100u, current_reconnect_delay_ms - slept_ms);
+                    usleep(sleep_chunk * 1000);
+                    slept_ms += sleep_chunk;
+                }
+                
+                if (should_stop_.load()) {
                     break;
                 }
+                
+                // Update reconnect delay with exponential backoff
+                current_reconnect_delay_ms = static_cast<uint32_t>(
+                    std::min(static_cast<double>(max_reconnect_delay_ms_),
+                             current_reconnect_delay_ms * backoff_multiplier_)
+                );
             }
             
-            // Log if we haven't received data in a while
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_data_time).count();
-            if (first_data_received && elapsed > 5) {
-                std::cout << "[" << name_ << "] No data received for " << elapsed << " seconds" << std::endl;
-                last_data_time = now;  // Reset to avoid spam
-            }
-            
-            continue;
-        }
-        
-        // Data available - read from FFmpeg
-        ssize_t bytes_read = read(ffmpeg_stdout_fd_, read_buffer, READ_BUFFER_SIZE);
-        
-        if (bytes_read < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            if (!startFFmpeg()) {
+                reconnect_attempts_++;
+                std::cerr << "[" << name_ << "] Failed to start FFmpeg, will retry..." << std::endl;
                 continue;
             }
-            std::cerr << "[" << name_ << "] Read error: " << strerror(errno) << std::endl;
-            break;
-        }
-        
-        if (bytes_read == 0) {
-            // EOF - FFmpeg closed stdout
-            std::cout << "[" << name_ << "] FFmpeg closed stdout (EOF)" << std::endl;
-            connected_ = false;
-            break;
-        }
-        
-        // Update stats
-        bytes_received_ += bytes_read;
-        last_data_time = std::chrono::steady_clock::now();
-        
-        if (!first_data_received) {
-            first_data_received = true;
-            connected_ = true;
-            std::cout << "[" << name_ << "] First data received - RTMP stream connected!" << std::endl;
-        }
-        
-        // Append to packet buffer
-        size_t bytes_to_copy = std::min(static_cast<size_t>(bytes_read), 
-                                        PACKET_BUFFER_SIZE - packet_buffer_len);
-        memcpy(packet_buffer + packet_buffer_len, read_buffer, bytes_to_copy);
-        packet_buffer_len += bytes_to_copy;
-        
-        if (bytes_to_copy < static_cast<size_t>(bytes_read)) {
-            std::cerr << "[" << name_ << "] Warning: Packet buffer overflow, discarding "
-                      << (bytes_read - bytes_to_copy) << " bytes" << std::endl;
-        }
-        
-        // Extract complete TS packets from buffer
-        size_t offset = 0;
-        while (offset + ts::PKT_SIZE <= packet_buffer_len) {
-            // Find sync byte
-            while (offset < packet_buffer_len && packet_buffer[offset] != ts::SYNC_BYTE) {
-                offset++;
-            }
             
-            if (offset + ts::PKT_SIZE > packet_buffer_len) {
-                // Not enough data for a complete packet
-                break;
-            }
-            
-            // Validate this is a real packet by checking sync byte of next packet (if available)
-            bool valid_packet = true;
-            if (offset + ts::PKT_SIZE + 1 <= packet_buffer_len) {
-                if (packet_buffer[offset + ts::PKT_SIZE] != ts::SYNC_BYTE) {
-                    // Next byte is not a sync byte - this might be corrupted data
-                    // Skip this byte and try again
-                    offset++;
-                    continue;
-                }
-            }
-            
-            if (valid_packet) {
-                // Create TS packet and push to queue
-                ts::TSPacket packet;
-                memcpy(packet.b, packet_buffer + offset, ts::PKT_SIZE);
-                
-                if (!queue_.push(packet)) {
-                    packets_dropped_++;
-                } else {
-                    packets_received_++;
-                }
-                
-                offset += ts::PKT_SIZE;
-            }
-        }
-        
-        // Move remaining data to beginning of buffer
-        if (offset > 0 && offset < packet_buffer_len) {
-            memmove(packet_buffer, packet_buffer + offset, packet_buffer_len - offset);
-            packet_buffer_len -= offset;
-        } else if (offset >= packet_buffer_len) {
+            reconnect_attempts_++;
+            // Reset buffer state for new connection
             packet_buffer_len = 0;
         }
         
-        // Periodic statistics logging
-        if (packets_received_ > 0 && packets_received_ % stats_interval == 0) {
-            std::cout << "[" << name_ << "] Stats: Bytes: " << bytes_received_.load()
-                      << ", TS packets: " << packets_received_.load()
-                      << ", Dropped: " << packets_dropped_.load() << std::endl;
+        auto last_data_time = std::chrono::steady_clock::now();
+        bool first_data_received = false;
+        bool need_reconnect = false;
+        
+        // Inner loop - handles receiving data from current FFmpeg instance
+        while (!should_stop_.load() && !need_reconnect) {
+            // Use poll to wait for data with timeout
+            struct pollfd pfd;
+            pfd.fd = ffmpeg_stdout_fd_;
+            pfd.events = POLLIN;
+            
+            int ret = poll(&pfd, 1, 500);  // 500ms timeout
+            
+            if (ret < 0) {
+                if (errno == EINTR) continue;
+                std::cerr << "[" << name_ << "] Poll error: " << strerror(errno) << std::endl;
+                need_reconnect = true;
+                break;
+            }
+            
+            if (ret == 0) {
+                // Timeout - check if FFmpeg is still running
+                if (ffmpeg_pid_ > 0) {
+                    int status;
+                    pid_t result = waitpid(ffmpeg_pid_, &status, WNOHANG);
+                    if (result == ffmpeg_pid_) {
+                        std::cout << "[" << name_ << "] FFmpeg process exited - will reconnect" << std::endl;
+                        ffmpeg_pid_ = -1;
+                        connected_ = false;
+                        need_reconnect = true;
+                        break;
+                    }
+                }
+                
+                // Log if we haven't received data in a while
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_data_time).count();
+                if (first_data_received && elapsed > 5) {
+                    std::cout << "[" << name_ << "] No data received for " << elapsed << " seconds" << std::endl;
+                    last_data_time = now;  // Reset to avoid spam
+                }
+                
+                continue;
+            }
+            
+            // Data available - read from FFmpeg
+            ssize_t bytes_read = read(ffmpeg_stdout_fd_, read_buffer, READ_BUFFER_SIZE);
+            
+            if (bytes_read < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                    continue;
+                }
+                std::cerr << "[" << name_ << "] Read error: " << strerror(errno) << " - will reconnect" << std::endl;
+                need_reconnect = true;
+                break;
+            }
+            
+            if (bytes_read == 0) {
+                // EOF - FFmpeg closed stdout
+                std::cout << "[" << name_ << "] FFmpeg closed stdout (EOF) - will reconnect" << std::endl;
+                connected_ = false;
+                need_reconnect = true;
+                break;
+            }
+            
+            // Update stats
+            bytes_received_ += bytes_read;
+            last_data_time = std::chrono::steady_clock::now();
+            
+            if (!first_data_received) {
+                first_data_received = true;
+                connected_ = true;
+                // Reset reconnect delay on successful connection
+                current_reconnect_delay_ms = initial_reconnect_delay_ms_;
+                std::cout << "[" << name_ << "] First data received - RTMP stream connected!" << std::endl;
+            }
+            
+            // Append to packet buffer
+            size_t bytes_to_copy = std::min(static_cast<size_t>(bytes_read),
+                                            PACKET_BUFFER_SIZE - packet_buffer_len);
+            memcpy(packet_buffer + packet_buffer_len, read_buffer, bytes_to_copy);
+            packet_buffer_len += bytes_to_copy;
+            
+            if (bytes_to_copy < static_cast<size_t>(bytes_read)) {
+                std::cerr << "[" << name_ << "] Warning: Packet buffer overflow, discarding "
+                          << (bytes_read - bytes_to_copy) << " bytes" << std::endl;
+            }
+            
+            // Extract complete TS packets from buffer
+            size_t offset = 0;
+            while (offset + ts::PKT_SIZE <= packet_buffer_len) {
+                // Find sync byte
+                while (offset < packet_buffer_len && packet_buffer[offset] != ts::SYNC_BYTE) {
+                    offset++;
+                }
+                
+                if (offset + ts::PKT_SIZE > packet_buffer_len) {
+                    // Not enough data for a complete packet
+                    break;
+                }
+                
+                // Validate this is a real packet by checking sync byte of next packet (if available)
+                bool valid_packet = true;
+                if (offset + ts::PKT_SIZE + 1 <= packet_buffer_len) {
+                    if (packet_buffer[offset + ts::PKT_SIZE] != ts::SYNC_BYTE) {
+                        // Next byte is not a sync byte - this might be corrupted data
+                        // Skip this byte and try again
+                        offset++;
+                        continue;
+                    }
+                }
+                
+                if (valid_packet) {
+                    // Create TS packet and push to queue
+                    ts::TSPacket packet;
+                    memcpy(packet.b, packet_buffer + offset, ts::PKT_SIZE);
+                    
+                    if (!queue_.push(packet)) {
+                        packets_dropped_++;
+                    } else {
+                        packets_received_++;
+                    }
+                    
+                    offset += ts::PKT_SIZE;
+                }
+            }
+            
+            // Move remaining data to beginning of buffer
+            if (offset > 0 && offset < packet_buffer_len) {
+                memmove(packet_buffer, packet_buffer + offset, packet_buffer_len - offset);
+                packet_buffer_len -= offset;
+            } else if (offset >= packet_buffer_len) {
+                packet_buffer_len = 0;
+            }
+            
+            // Periodic statistics logging
+            if (packets_received_ > 0 && packets_received_ % stats_interval == 0) {
+                std::cout << "[" << name_ << "] Stats: Bytes: " << bytes_received_.load()
+                          << ", TS packets: " << packets_received_.load()
+                          << ", Dropped: " << packets_dropped_.load()
+                          << ", Reconnects: " << reconnect_attempts_.load() << std::endl;
+            }
+        }
+        
+        // Clean up FFmpeg for reconnection
+        if (need_reconnect && !should_stop_.load()) {
+            stopFFmpeg();
         }
     }
     
     running_ = false;
     connected_ = false;
-    std::cout << "[" << name_ << "] Receive loop ended" << std::endl;
+    std::cout << "[" << name_ << "] Receive loop ended (total reconnect attempts: "
+              << reconnect_attempts_.load() << ")" << std::endl;
 }

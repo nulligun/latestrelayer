@@ -81,10 +81,16 @@ bool Multiplexer::initialize() {
         camera_receiver_ = std::make_unique<UDPReceiver>(
             "Camera", config_.getLiveUdpPort(), *live_queue_, udp_buffer);
     } else {
-        // Drone mode: Use RTMP receiver
+        // Drone mode: Use RTMP receiver with auto-reconnect
         std::cout << "[Multiplexer] Creating Drone RTMP receiver for URL: " << config_.getDroneRtmpUrl() << std::endl;
+        std::cout << "[Multiplexer] Drone reconnect config: initial=" << config_.getDroneReconnectInitialMs()
+                  << "ms, max=" << config_.getDroneReconnectMaxMs()
+                  << "ms, backoff=" << config_.getDroneReconnectBackoff() << "x" << std::endl;
         drone_receiver_ = std::make_unique<RTMPReceiver>(
-            "Drone", config_.getDroneRtmpUrl(), *live_queue_);
+            "Drone", config_.getDroneRtmpUrl(), *live_queue_,
+            config_.getDroneReconnectInitialMs(),
+            config_.getDroneReconnectMaxMs(),
+            config_.getDroneReconnectBackoff());
     }
     
     // Fallback receiver (always UDP)
