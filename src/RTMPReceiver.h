@@ -10,11 +10,15 @@
 
 /**
  * RTMPReceiver - Pulls RTMP stream using FFmpeg subprocess and outputs TS packets to a queue.
- * 
+ *
  * This class spawns an FFmpeg process that connects to an RTMP URL and outputs
  * MPEG-TS data to stdout. The receiver reads this data and extracts TS packets
  * into the provided queue.
- * 
+ *
+ * The receiver includes auto-reconnect logic with exponential backoff. When the
+ * RTMP source disconnects (FFmpeg exits or gets EOF), the receiver will automatically
+ * attempt to reconnect, similar to how UDPReceiver keeps listening for packets.
+ *
  * Usage:
  *   RTMPReceiver receiver("Drone", "rtmp://nginx-rtmp:1935/publish/drone", queue);
  *   receiver.start();
@@ -24,12 +28,18 @@
 class RTMPReceiver {
 public:
     /**
-     * Constructor
+     * Constructor with default reconnect parameters
      * @param name Display name for logging
      * @param rtmp_url RTMP URL to pull from (e.g., "rtmp://nginx-rtmp:1935/publish/drone")
      * @param queue Reference to TSPacketQueue to push packets into
+     * @param initial_reconnect_delay_ms Initial delay between reconnection attempts (default 1000ms)
+     * @param max_reconnect_delay_ms Maximum delay between reconnection attempts (default 30000ms)
+     * @param backoff_multiplier Multiplier for exponential backoff (default 2.0)
      */
-    RTMPReceiver(const std::string& name, const std::string& rtmp_url, TSPacketQueue& queue);
+    RTMPReceiver(const std::string& name, const std::string& rtmp_url, TSPacketQueue& queue,
+                 uint32_t initial_reconnect_delay_ms = 1000,
+                 uint32_t max_reconnect_delay_ms = 30000,
+                 double backoff_multiplier = 2.0);
     ~RTMPReceiver();
     
     // Prevent copying
@@ -96,4 +106,10 @@ private:
     std::atomic<uint64_t> packets_received_;
     std::atomic<uint64_t> packets_dropped_;
     std::atomic<uint64_t> bytes_received_;
+    std::atomic<uint64_t> reconnect_attempts_;
+    
+    // Reconnect configuration
+    uint32_t initial_reconnect_delay_ms_;
+    uint32_t max_reconnect_delay_ms_;
+    double backoff_multiplier_;
 };

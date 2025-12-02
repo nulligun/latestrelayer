@@ -20,6 +20,9 @@ public:
     // Drone input configuration
     std::string getDroneRtmpUrl() const { return drone_rtmp_url_; }
     std::string getInputSourceFile() const { return input_source_file_; }
+    uint32_t getDroneReconnectInitialMs() const { return drone_reconnect_initial_ms_; }
+    uint32_t getDroneReconnectMaxMs() const { return drone_reconnect_max_ms_; }
+    double getDroneReconnectBackoff() const { return drone_reconnect_backoff_; }
     
     // Buffer and latency configuration values
     // These can be overridden via environment variables
@@ -47,6 +50,9 @@ private:
     // Drone input settings
     std::string drone_rtmp_url_ = "rtmp://nginx-rtmp:1935/publish/drone";
     std::string input_source_file_ = "/app/shared/input_source.json";
+    uint32_t drone_reconnect_initial_ms_ = 1000;   // DRONE_RECONNECT_INITIAL_MS: 1 second
+    uint32_t drone_reconnect_max_ms_ = 30000;      // DRONE_RECONNECT_MAX_MS: 30 seconds
+    double drone_reconnect_backoff_ = 2.0;         // DRONE_RECONNECT_BACKOFF: 2x multiplier
     
     // Buffer and latency settings (with defaults matching .env documentation)
     uint32_t udp_rcvbuf_size_ = 262144;          // UDP_RCVBUF_SIZE: 256KB default

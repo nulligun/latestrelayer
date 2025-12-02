@@ -1,8 +1,10 @@
-# FFmpeg Mock Camera - Generates H.264 test pattern with audio
+# FFmpeg Mock Camera - Generates H.264 test pattern with audio and CAMERA overlay
 FROM jrottenberg/ffmpeg:4.4-ubuntu
 
-# Install network debugging tools
-RUN apt-get update && apt-get install -y \
+# Install network debugging tools and fonts for drawtext filter
+# Note: We skip fontconfig since we use explicit fontfile= path in FFmpeg
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    fonts-dejavu-core \
     iputils-ping \
     iproute2 \
     tcpdump \

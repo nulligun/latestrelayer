@@ -26,6 +26,7 @@ const SRT_DOMAIN = process.env.SRT_DOMAIN || 'localhost';
 const RTMP_PORT = process.env.RTMP_PORT || '1935';
 const KICK_CHANNEL = process.env.KICK_CHANNEL || '';
 const NGINX_RTMP_HLS = process.env.NGINX_RTMP_HLS || 'http://nginx-rtmp:8080';
+const MUXER_API = process.env.MUXER_API || 'http://multiplexer:8091';
 const SHARED_DIR = '/app/shared';
 const FALLBACK_CONFIG_PATH = path.join(SHARED_DIR, 'fallback_config.json');
 const KICK_CONFIG_PATH = path.join(SHARED_DIR, 'kick_config.json');
@@ -747,6 +748,27 @@ app.post('/api/fallback/config', async (req, res) => {
       // Only activeInput or browserUrl was updated, no container changes needed
       await fs.writeFile(FALLBACK_CONFIG_PATH, JSON.stringify(config, null, 2));
       console.log(`[fallback] Configuration saved: activeInput=${config.activeInput}`);
+      
+      // Call multiplexer API to persist the input source setting
+      if (activeInput !== undefined) {
+        try {
+          const muxerResponse = await fetch(`${MUXER_API}/input`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: activeInput })
+          });
+          
+          if (muxerResponse.ok) {
+            console.log(`[fallback] Notified multiplexer of input source: ${activeInput}`);
+          } else {
+            const errorText = await muxerResponse.text();
+            console.error(`[fallback] Multiplexer returned error: ${muxerResponse.status} - ${errorText}`);
+          }
+        } catch (muxerError) {
+          console.error('[fallback] Failed to notify multiplexer:', muxerError.message);
+          // Continue anyway - local config was saved
+        }
+      }
       
       res.json({
         success: true,

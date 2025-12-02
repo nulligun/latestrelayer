@@ -27,8 +27,8 @@ echo "[Wrapper] Starting mock camera stream..."
 ffmpeg -re \
   -f lavfi -i "testsrc2=size=1280x720:rate=30" \
   -f lavfi -i "sine=frequency=440:sample_rate=48000" \
-  -filter_complex "[1:a]aformat=channel_layouts=stereo[aout]" \
-  -map 0:v -map "[aout]" \
+  -filter_complex "[0:v]drawtext=text='CAMERA':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=72:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=50[vout];[1:a]aformat=channel_layouts=stereo[aout]" \
+  -map "[vout]" -map "[aout]" \
   -c:v libx264 -tune zerolatency -preset veryfast -pix_fmt yuv420p \
   -c:a aac -b:a 128k \
   -f mpegts "srt://ffmpeg-srt-live:1937?mode=caller" &

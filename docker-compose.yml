@@ -52,6 +52,7 @@ services:
     environment:
       - PORT=3000
       - CONTROLLER_API=http://controller:8089
+      - MUXER_API=http://multiplexer:8091
       - NGINX_STATS=http://nginx-rtmp:8080/stat
       - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
       - SRT_PORT=${SRT_PORT:-1937}
