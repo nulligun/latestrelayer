@@ -32,7 +32,6 @@ public:
     uint32_t getMinConsecutiveForSwitch() const { return min_consecutive_for_switch_; }
     uint32_t getLiveIdrTimeoutMs() const { return live_idr_timeout_ms_; }
     uint32_t getFallbackIdrTimeoutMs() const { return fallback_idr_timeout_ms_; }
-    uint32_t getInputSwitchIdrTimeoutMs() const { return input_switch_idr_timeout_ms_; }
     
     // Print configuration
     void print() const;
@@ -62,5 +61,4 @@ private:
     uint32_t min_consecutive_for_switch_ = 10;  // MIN_CONSECUTIVE_FOR_SWITCH: 10 packets
     uint32_t live_idr_timeout_ms_ = 10000;      // LIVE_IDR_TIMEOUT_MS: 10 seconds
     uint32_t fallback_idr_timeout_ms_ = 2000;   // FALLBACK_IDR_TIMEOUT_MS: 2 seconds
-    uint32_t input_switch_idr_timeout_ms_ = 5000; // INPUT_SWITCH_IDR_TIMEOUT_MS: 5 seconds for camera<->drone switch
 };

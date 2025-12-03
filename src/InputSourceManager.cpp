@@ -124,45 +124,25 @@ InputSource InputSourceManager::getInputSource() const {
 }
 
 bool InputSourceManager::setInputSource(InputSource source) {
-    InputSource old_source;
+    std::lock_guard<std::mutex> lock(file_mutex_);
     
-    {
-        std::lock_guard<std::mutex> lock(file_mutex_);
-        
-        old_source = current_source_.load();
-        current_source_ = source;
-        
-        if (!save()) {
-            // Revert on save failure
-            current_source_ = old_source;
-            return false;
-        }
+    InputSource old_source = current_source_.load();
+    current_source_ = source;
+    
+    if (!save()) {
+        // Revert on save failure
+        current_source_ = old_source;
+        return false;
     }
     
     if (old_source != source) {
         std::cout << "[InputSourceManager] Input source changed: " << toString(old_source)
                   << " -> " << toString(source) << std::endl;
-        
-        // Invoke callback if registered (outside file_mutex_ to avoid deadlock)
-        InputSourceChangeCallback callback_copy;
-        {
-            std::lock_guard<std::mutex> lock(callback_mutex_);
-            callback_copy = change_callback_;
-        }
-        
-        if (callback_copy) {
-            std::cout << "[InputSourceManager] Triggering input source change callback" << std::endl;
-            callback_copy(old_source, source);
-        }
+        std::cout << "[InputSourceManager] Note: Change will take effect after multiplexer restart"
+                  << std::endl;
     }
     
     return true;
-}
-
-void InputSourceManager::setInputSourceChangeCallback(InputSourceChangeCallback callback) {
-    std::lock_guard<std::mutex> lock(callback_mutex_);
-    change_callback_ = std::move(callback);
-    std::cout << "[InputSourceManager] Input source change callback registered" << std::endl;
 }
 
 std::string InputSourceManager::getInputSourceString() const {
