@@ -50,8 +50,8 @@ void StreamSwitcher::updateLiveTimestamp() {
     } else if (new_count == min_consecutive_for_switch_) {
         std::cout << "[StreamSwitcher] DEBUG: Reached min_consecutive_for_switch ("
                   << min_consecutive_for_switch_ << ")" << std::endl;
-    } else if (new_count % 100 == 0) {
-        std::cout << "[StreamSwitcher] DEBUG: consecutive_live_packets_ = " << new_count << std::endl;
+    // } else if (new_count % 100 == 0) {
+    //     std::cout << "[StreamSwitcher] DEBUG: consecutive_live_packets_ = " << new_count << std::endl;
     }
 }
 
