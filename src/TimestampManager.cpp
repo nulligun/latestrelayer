@@ -170,67 +170,6 @@ bool TimestampManager::adjustPacket(ts::TSPacket& packet, Source source, const T
     return true;
 }
 
-void TimestampManager::onLiveSourceSwitch(const TimestampInfo& first_packet_ts) {
-    // LIVE→LIVE transition (e.g., drone→camera or camera→drone)
-    // This method handles switching between two live sources with seamless timestamp continuity
-    // Key difference from onSourceSwitch(Source::LIVE): we use last_output_pts_ directly
-    // since we're coming from another LIVE source, not FALLBACK
-    
-    std::cout << "[TimestampManager] ========================================" << std::endl;
-    std::cout << "[TimestampManager] LIVE→LIVE source switch" << std::endl;
-    std::cout << "[TimestampManager] ========================================" << std::endl;
-    
-    // Calculate PTS offset for seamless continuity
-    // The target PTS should be last_output_pts + one frame duration
-    if (!first_packet_ts.pts.has_value()) {
-        std::cout << "[TimestampManager] WARNING: Cannot calculate live PTS offset without PTS - using zero offset" << std::endl;
-        live_pts_offset_ = 0;
-    } else {
-        uint64_t first_new_pts = first_packet_ts.pts.value();
-        
-        // Target PTS = last output PTS + one frame duration (for smooth continuity)
-        uint64_t target_pts = (last_output_pts_ + DEFAULT_FRAME_DURATION) & MAX_TIMESTAMP;
-        
-        // Calculate offset: new_pts + offset = target_pts
-        live_pts_offset_ = static_cast<int64_t>(target_pts) - static_cast<int64_t>(first_new_pts);
-        
-        std::cout << "[TimestampManager] LIVE→LIVE PTS offset calculation:" << std::endl;
-        std::cout << "  Last output PTS: " << last_output_pts_ << std::endl;
-        std::cout << "  Target PTS: " << target_pts << std::endl;
-        std::cout << "  First new source PTS: " << first_new_pts << std::endl;
-        std::cout << "  Calculated live_pts_offset: " << live_pts_offset_ << std::endl;
-        
-        // Sanity check: warn if offset is huge (indicates potential problem)
-        if (std::abs(live_pts_offset_) > 90000 * 60) { // More than 60 seconds of offset
-            std::cout << "[TimestampManager] WARNING: Large PTS offset detected ("
-                      << (live_pts_offset_ / 90000) << " seconds)" << std::endl;
-            std::cout << "  This may indicate stale packets in the queue" << std::endl;
-        }
-    }
-    
-    // Calculate PCR offset SEPARATELY to ensure PCR continuity
-    if (!first_packet_ts.pcr.has_value()) {
-        std::cout << "[TimestampManager] WARNING: Cannot calculate live PCR offset without PCR - using PTS offset" << std::endl;
-        live_pcr_offset_ = live_pts_offset_;  // Fallback to PTS offset
-    } else {
-        uint64_t first_new_pcr = first_packet_ts.pcr.value();
-        
-        // Target PCR = last output PCR + one frame duration (for smooth continuity)
-        uint64_t target_pcr = (last_output_pcr_ + DEFAULT_FRAME_DURATION) & MAX_TIMESTAMP;
-        
-        // Calculate offset: new_pcr + offset = target_pcr
-        live_pcr_offset_ = static_cast<int64_t>(target_pcr) - static_cast<int64_t>(first_new_pcr);
-        
-        std::cout << "[TimestampManager] LIVE→LIVE PCR offset calculation:" << std::endl;
-        std::cout << "  Last output PCR: " << last_output_pcr_ << std::endl;
-        std::cout << "  Target PCR: " << target_pcr << std::endl;
-        std::cout << "  First new source PCR: " << first_new_pcr << std::endl;
-        std::cout << "  Calculated live_pcr_offset: " << live_pcr_offset_ << std::endl;
-    }
-    
-    std::cout << "[TimestampManager] LIVE→LIVE switch complete with separate PTS/PCR offsets" << std::endl;
-}
-
 void TimestampManager::onSourceSwitch(Source new_source, const TimestampInfo& first_packet_ts) {
     if (new_source == Source::LIVE) {
         // FALLBACK→LIVE: Calculate SEPARATE offsets for PTS/DTS and PCR

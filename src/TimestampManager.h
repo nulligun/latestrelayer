@@ -32,11 +32,6 @@ public:
     // For FALLBACK: Calculates offset based on last live PTS + elapsed gap time
     void onSourceSwitch(Source new_source, const TimestampInfo& first_packet_ts);
     
-    // Called when switching between LIVE sources (camera <-> drone)
-    // This handles LIVE-to-LIVE transitions with seamless timestamp continuity
-    // Unlike onSourceSwitch(Source::LIVE), this doesn't assume we're coming from FALLBACK
-    void onLiveSourceSwitch(const TimestampInfo& first_packet_ts);
-    
     // Get current output timestamps
     uint64_t getLastOutputPTS() const { return last_output_pts_; }
     uint64_t getLastOutputDTS() const { return last_output_dts_; }
