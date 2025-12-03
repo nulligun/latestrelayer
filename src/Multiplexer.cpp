@@ -565,30 +565,6 @@ void Multiplexer::processLoop() {
     while (running_.load()) {
         Mode current_mode = switcher_->getMode();
         
-        // Periodically check for live stream if not yet detected
-        if (!live_stream_ready_.load() && packets_processed_ % live_check_interval == 0) {
-            std::cout << "[Multiplexer] DEBUG: Periodic live check triggered (packets_processed_="
-                      << packets_processed_.load() << ", live_stream_ready_="
-                      << live_stream_ready_.load() << ", live_queue empty="
-                      << live_queue_->empty() << ", queue size=" << live_queue_->size() << ")" << std::endl;
-            if (!live_queue_->empty()) {
-                std::cout << "[Multiplexer] Live packets detected in queue, attempting analysis..." << std::endl;
-                if (analyzeLiveStreamDynamically()) {
-                    std::cout << "[Multiplexer] Live stream successfully initialized!" << std::endl;
-                    std::cout << "[Multiplexer] Attempting IDR-aware switch to LIVE mode..." << std::endl;
-                    
-                    // Use IDR-aware switch to live
-                    if (switchToLiveAtIDR()) {
-                        std::cout << "[Multiplexer] Successfully switched to LIVE at IDR!" << std::endl;
-                    } else {
-                        std::cout << "[Multiplexer] Failed to find IDR in live stream - staying on FALLBACK" << std::endl;
-                        live_stream_ready_ = false;  // Reset so we can try again
-                    }
-                    continue;
-                }
-            }
-        }
-        
         // Select queue based on current mode
         TSPacketQueue* queue = (current_mode == Mode::LIVE) ? live_queue_.get() : fallback_queue_.get();
         Source source = (current_mode == Mode::LIVE) ? Source::LIVE : Source::FALLBACK;

@@ -149,28 +149,102 @@ void HttpServer::serverLoop() {
             continue;
         }
         
-        // Read request with timeout
+        // Read request with timeout - need to handle body arriving separately
+        std::string request;
         char buffer[4096];
-        memset(buffer, 0, sizeof(buffer));
         
         struct pollfd read_pfd;
         read_pfd.fd = client_fd;
         read_pfd.events = POLLIN;
         
+        // First read - get headers (and possibly part of body)
         if (poll(&read_pfd, 1, 1000) > 0) {
+            memset(buffer, 0, sizeof(buffer));
             ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
             if (bytes_read > 0) {
-                std::string request(buffer, bytes_read);
-                std::string method, path, body;
-                
-                if (parseRequest(request, method, path, body)) {
-                    std::string response = handleRequest(method, path, body);
-                    write(client_fd, response.c_str(), response.length());
-                } else {
-                    std::string response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
-                    write(client_fd, response.c_str(), response.length());
+                request.append(buffer, bytes_read);
+            }
+        }
+        
+        if (request.empty()) {
+            close(client_fd);
+            continue;
+        }
+        
+        // Check if we have complete headers
+        size_t header_end = request.find("\r\n\r\n");
+        if (header_end == std::string::npos) {
+            // Didn't get complete headers, try reading more
+            if (poll(&read_pfd, 1, 500) > 0) {
+                memset(buffer, 0, sizeof(buffer));
+                ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
+                if (bytes_read > 0) {
+                    request.append(buffer, bytes_read);
+                    header_end = request.find("\r\n\r\n");
                 }
             }
+        }
+        
+        if (header_end == std::string::npos) {
+            std::string response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+            write(client_fd, response.c_str(), response.length());
+            close(client_fd);
+            continue;
+        }
+        
+        // Parse Content-Length from headers
+        size_t content_length = 0;
+        std::string headers_str = request.substr(0, header_end);
+        size_t cl_pos = headers_str.find("Content-Length:");
+        if (cl_pos == std::string::npos) {
+            cl_pos = headers_str.find("content-length:");
+        }
+        if (cl_pos != std::string::npos) {
+            size_t value_start = cl_pos + 15; // length of "Content-Length:"
+            size_t value_end = headers_str.find("\r\n", value_start);
+            if (value_end != std::string::npos) {
+                std::string cl_value = headers_str.substr(value_start, value_end - value_start);
+                // Trim whitespace
+                size_t first = cl_value.find_first_not_of(" \t");
+                if (first != std::string::npos) {
+                    cl_value = cl_value.substr(first);
+                }
+                try {
+                    content_length = std::stoul(cl_value);
+                } catch (...) {
+                    content_length = 0;
+                }
+            }
+        }
+        
+        // Calculate how much body we already have
+        size_t body_start = header_end + 4;
+        size_t body_received = (request.size() > body_start) ? (request.size() - body_start) : 0;
+        
+        // Read remaining body if needed
+        while (body_received < content_length && running_.load()) {
+            if (poll(&read_pfd, 1, 500) > 0) {
+                memset(buffer, 0, sizeof(buffer));
+                ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
+                if (bytes_read > 0) {
+                    request.append(buffer, bytes_read);
+                    body_received += bytes_read;
+                } else if (bytes_read <= 0) {
+                    break; // Connection closed or error
+                }
+            } else {
+                break; // Timeout waiting for body
+            }
+        }
+        
+        // Now parse and handle the complete request
+        std::string method, path, body;
+        if (parseRequest(request, method, path, body)) {
+            std::string response = handleRequest(method, path, body);
+            write(client_fd, response.c_str(), response.length());
+        } else {
+            std::string response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+            write(client_fd, response.c_str(), response.length());
         }
         
         close(client_fd);
