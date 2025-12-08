@@ -1,0 +1,13 @@
+services:
+  ts_loop_to_rtmp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DIR: /opt/tsduck-build
+    image: ts_loop_to_rtmp:latest
+    container_name: ts_loop_rtmp
+    volumes:
+      - ./videos:/app/videos:ro
+    # Network mode host for easy RTMP server access
+    network_mode: host

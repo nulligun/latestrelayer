@@ -2,7 +2,7 @@
 
 #include "Config.h"
 #include "TSPacketQueue.h"
-#include "UDPReceiver.h"
+#include "TCPReceiver.h"
 #include "RTMPReceiver.h"
 #include "InputSourceManager.h"
 #include "TSAnalyzer.h"
@@ -90,16 +90,13 @@ private:
     // Input source manager
     std::shared_ptr<InputSourceManager> input_source_manager_;
     
-    // Packet queues
+    // TCP Receivers (TCPReceiver has internal rolling buffer)
+    std::unique_ptr<TCPReceiver> camera_tcp_receiver_;      // Camera input via TCP (from ffmpeg-srt-live)
+    std::unique_ptr<RTMPReceiver> drone_receiver_;          // Drone input via RTMP pull (kept for dual-source)
+    std::unique_ptr<TCPReceiver> fallback_tcp_receiver_;    // Fallback input via TCP
+    
+    // Queue only needed for drone RTMP input (camera uses TCP with internal buffer)
     std::unique_ptr<TSPacketQueue> live_queue_;
-    std::unique_ptr<TSPacketQueue> fallback_queue_;
-    
-    // Live input receivers (only one is active based on input source)
-    std::unique_ptr<UDPReceiver> camera_receiver_;      // Camera input via UDP (from ffmpeg-srt-live)
-    std::unique_ptr<RTMPReceiver> drone_receiver_;      // Drone input via RTMP pull
-    
-    // Fallback receiver (always UDP)
-    std::unique_ptr<UDPReceiver> fallback_receiver_;
     
     // Stream analyzers
     std::unique_ptr<TSAnalyzer> live_analyzer_;
@@ -126,15 +123,10 @@ private:
     std::atomic<uint64_t> packets_processed_;
     std::chrono::steady_clock::time_point start_time_;
     
-    // IDR switch state
-    enum class SwitchState {
-        NONE,               // No switch pending
-        WAITING_LIVE_IDR,   // Waiting for IDR on live stream to switch to live
-        WAITING_FB_IDR      // Waiting for IDR on fallback stream to switch to fallback
-    };
-    std::atomic<SwitchState> switch_state_{SwitchState::NONE};
-    std::chrono::steady_clock::time_point switch_wait_start_;
-    std::vector<ts::TSPacket> switch_buffer_;  // Buffer packets while waiting for IDR
+    // Timestamp tracking for tcp_main.cpp-style rebasing
+    uint64_t current_pts_base_ = 0;
+    uint64_t current_pcr_base_ = 0;
+    int64_t current_pcr_pts_alignment_ = 0;
     
     // Controller URL
     static constexpr const char* CONTROLLER_URL = "http://controller:8089";

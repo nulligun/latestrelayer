@@ -7,11 +7,11 @@
 # Network Configuration
 # =============================================================================
 
-# UDP port for live TS input from FFmpeg SRT container
-live_udp_port: 10000
+# TCP port for live TS input from FFmpeg SRT container
+live_tcp_port: 10000
 
-# UDP port for fallback TS input from FFmpeg fallback container
-fallback_udp_port: 10001
+# TCP port for fallback TS input from FFmpeg fallback container
+fallback_tcp_port: 10001
 
 # RTMP output URL (internal Docker network address)
 # External playback: rtmp://localhost:1935/live/stream (RTMP) or http://localhost:8080/hls/stream.m3u8 (HLS)
@@ -49,7 +49,7 @@ min_consecutive_for_switch: 10
 # Lower values = lower latency but potentially less stability.
 # All can be overridden via environment variables.
 
-# UDP socket receive buffer size in bytes
+# TCP socket receive buffer size in bytes (kept for backward compat, not used for TCP)
 # Higher values prevent packet loss on bursty networks
 # Env var: UDP_RCVBUF_SIZE (default: 262144 = 256KB)
 udp_rcvbuf_size: 262144

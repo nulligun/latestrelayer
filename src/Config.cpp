@@ -46,17 +46,17 @@ bool Config::loadFromFile(const std::string& filename) {
         YAML::Node config = YAML::LoadFile(filename);
         
         // Load required fields
-        if (config["live_udp_port"]) {
-            live_udp_port_ = config["live_udp_port"].as<uint16_t>();
+        if (config["live_tcp_port"]) {
+            live_tcp_port_ = config["live_tcp_port"].as<uint16_t>();
         } else {
-            std::cerr << "Missing required field: live_udp_port" << std::endl;
+            std::cerr << "Missing required field: live_tcp_port" << std::endl;
             return false;
         }
         
-        if (config["fallback_udp_port"]) {
-            fallback_udp_port_ = config["fallback_udp_port"].as<uint16_t>();
+        if (config["fallback_tcp_port"]) {
+            fallback_tcp_port_ = config["fallback_tcp_port"].as<uint16_t>();
         } else {
-            std::cerr << "Missing required field: fallback_udp_port" << std::endl;
+            std::cerr << "Missing required field: fallback_tcp_port" << std::endl;
             return false;
         }
         
@@ -141,8 +141,8 @@ bool Config::loadFromFile(const std::string& filename) {
 
 void Config::print() const {
     std::cout << "=== Configuration ===" << std::endl;
-    std::cout << "Live UDP Port:     " << live_udp_port_ << std::endl;
-    std::cout << "Fallback UDP Port: " << fallback_udp_port_ << std::endl;
+    std::cout << "Live TCP Port:     " << live_tcp_port_ << std::endl;
+    std::cout << "Fallback TCP Port: " << fallback_tcp_port_ << std::endl;
     std::cout << "RTMP URL:          " << rtmp_url_ << std::endl;
     std::cout << "Max Live Gap (ms): " << max_live_gap_ms_ << std::endl;
     std::cout << "Log Level:         " << log_level_ << std::endl;
