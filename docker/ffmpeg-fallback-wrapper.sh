@@ -66,7 +66,7 @@ fi
 echo "[Wrapper] Using fallback file: $FALLBACK_FILE"
 
 # Start ffmpeg in background
-echo "[Wrapper] Starting ffmpeg fallback stream..."
+echo "[Wrapper] Starting ffmpeg fallback stream (TCP output)..."
 ffmpeg -nostdin \
     -loglevel info \
     -stats \
@@ -75,7 +75,7 @@ ffmpeg -nostdin \
     -fflags +genpts \
     -i "$FALLBACK_FILE" \
     -c copy \
-    -f mpegts 'udp://multiplexer:10001?pkt_size=1316' &
+    -f mpegts 'tcp://0.0.0.0:10001?listen=1' &
 
 FFMPEG_PID=$!
 echo "[Wrapper] FFmpeg started with PID $FFMPEG_PID"

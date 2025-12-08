@@ -11,8 +11,8 @@ public:
     bool loadFromFile(const std::string& filename);
     
     // Core configuration values
-    uint16_t getLiveUdpPort() const { return live_udp_port_; }
-    uint16_t getFallbackUdpPort() const { return fallback_udp_port_; }
+    uint16_t getLiveTcpPort() const { return live_tcp_port_; }
+    uint16_t getFallbackTcpPort() const { return fallback_tcp_port_; }
     std::string getRtmpUrl() const { return rtmp_url_; }
     uint32_t getMaxLiveGapMs() const { return max_live_gap_ms_; }
     std::string getLogLevel() const { return log_level_; }
@@ -41,8 +41,8 @@ private:
     static uint32_t getEnvUint32(const char* name, uint32_t default_value);
     
     // Core settings
-    uint16_t live_udp_port_ = 10000;
-    uint16_t fallback_udp_port_ = 10001;
+    uint16_t live_tcp_port_ = 10000;
+    uint16_t fallback_tcp_port_ = 10001;
     std::string rtmp_url_;
     uint32_t max_live_gap_ms_ = 2000;
     std::string log_level_ = "INFO";

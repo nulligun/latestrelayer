@@ -28,12 +28,12 @@ SRT_LATENCY_US=$((SRT_LATENCY_MS * 1000))
 echo "[Wrapper] Using SRT latency: ${SRT_LATENCY_MS}ms (${SRT_LATENCY_US}µs)"
 
 # Start ffmpeg in background
-echo "[Wrapper] Starting ffmpeg SRT live stream..."
+echo "[Wrapper] Starting ffmpeg SRT live stream (TCP output)..."
 ffmpeg -nostdin \
     -loglevel info \
     -i "srt://0.0.0.0:1937?mode=listener&latency=${SRT_LATENCY_US}&transtype=live&payload_size=1316" \
     -c copy \
-    -f mpegts 'udp://multiplexer:10000?pkt_size=1316' &
+    -f mpegts 'tcp://0.0.0.0:10000?listen=1' &
 
 FFMPEG_PID=$!
 echo "[Wrapper] FFmpeg started with PID $FFMPEG_PID"

@@ -65,27 +65,21 @@ bool Multiplexer::initialize() {
     // Query initial privacy mode from controller
     queryInitialPrivacyMode();
     
-    // Create packet queues with configurable size
-    uint32_t queue_size = config_.getTsQueueSize();
-    std::cout << "[Multiplexer] Creating packet queues with size=" << queue_size << std::endl;
-    live_queue_ = std::make_unique<TSPacketQueue>(queue_size);
-    fallback_queue_ = std::make_unique<TSPacketQueue>(queue_size);
-    
-    // Create live input receiver based on configured input source
-    uint32_t udp_buffer = config_.getUdpRcvbufSize();
+    // Create TCP receivers (no queues needed - TCPReceiver has internal rolling buffer)
     
     if (input_source_manager_->isCamera()) {
-        // Camera mode: Use UDP receiver (from ffmpeg-srt-live)
-        std::cout << "[Multiplexer] Creating Camera UDP receiver on port " << config_.getLiveUdpPort()
-                  << " with buffer=" << udp_buffer << " bytes" << std::endl;
-        camera_receiver_ = std::make_unique<UDPReceiver>(
-            "Camera", config_.getLiveUdpPort(), *live_queue_, udp_buffer);
+        // Camera mode: Use TCP receiver (from ffmpeg-srt-live)
+        std::cout << "[Multiplexer] Creating Camera TCP receiver for port " << config_.getLiveTcpPort() << std::endl;
+        camera_tcp_receiver_ = std::make_unique<TCPReceiver>(
+            "Camera", "ffmpeg-srt-live", config_.getLiveTcpPort());
     } else {
-        // Drone mode: Use RTMP receiver with auto-reconnect
+        // Drone mode: Use RTMP receiver with auto-reconnect (kept for dual-source support)
         std::cout << "[Multiplexer] Creating Drone RTMP receiver for URL: " << config_.getDroneRtmpUrl() << std::endl;
         std::cout << "[Multiplexer] Drone reconnect config: initial=" << config_.getDroneReconnectInitialMs()
                   << "ms, max=" << config_.getDroneReconnectMaxMs()
                   << "ms, backoff=" << config_.getDroneReconnectBackoff() << "x" << std::endl;
+        // Note: Drone still needs a queue - create one
+        live_queue_ = std::make_unique<TSPacketQueue>(config_.getTsQueueSize());
         drone_receiver_ = std::make_unique<RTMPReceiver>(
             "Drone", config_.getDroneRtmpUrl(), *live_queue_,
             config_.getDroneReconnectInitialMs(),
@@ -93,11 +87,10 @@ bool Multiplexer::initialize() {
             config_.getDroneReconnectBackoff());
     }
     
-    // Fallback receiver (always UDP)
-    std::cout << "[Multiplexer] Creating Fallback UDP receiver on port " << config_.getFallbackUdpPort()
-              << " with buffer=" << udp_buffer << " bytes" << std::endl;
-    fallback_receiver_ = std::make_unique<UDPReceiver>(
-        "Fallback", config_.getFallbackUdpPort(), *fallback_queue_, udp_buffer);
+    // Fallback receiver (always TCP)
+    std::cout << "[Multiplexer] Creating Fallback TCP receiver for port " << config_.getFallbackTcpPort() << std::endl;
+    fallback_tcp_receiver_ = std::make_unique<TCPReceiver>(
+        "Fallback", "ffmpeg-fallback", config_.getFallbackTcpPort());
     
     // Create analyzers
     live_analyzer_ = std::make_unique<TSAnalyzer>();
@@ -134,10 +127,10 @@ bool Multiplexer::initialize() {
     // Create SPS/PPS injector for splice points
     sps_pps_injector_ = std::make_unique<SPSPPSInjector>();
     
-    // Start live input receiver (camera or drone depending on configuration)
-    if (camera_receiver_) {
-        if (!camera_receiver_->start()) {
-            std::cerr << "[Multiplexer] Failed to start camera receiver" << std::endl;
+    // Start live input receiver (camera TCP or drone RTMP depending on configuration)
+    if (camera_tcp_receiver_) {
+        if (!camera_tcp_receiver_->start()) {
+            std::cerr << "[Multiplexer] Failed to start camera TCP receiver" << std::endl;
             return false;
         }
     } else if (drone_receiver_) {
@@ -147,9 +140,9 @@ bool Multiplexer::initialize() {
         }
     }
     
-    // Start fallback receiver
-    if (!fallback_receiver_->start()) {
-        std::cerr << "[Multiplexer] Failed to start fallback receiver" << std::endl;
+    // Start fallback TCP receiver
+    if (!fallback_tcp_receiver_->start()) {
+        std::cerr << "[Multiplexer] Failed to start fallback TCP receiver" << std::endl;
         return false;
     }
     
@@ -263,9 +256,9 @@ void Multiplexer::stop() {
     
     // Stop receivers
     std::cout << "[Multiplexer] Stopping input receivers..." << std::endl;
-    if (camera_receiver_) camera_receiver_->stop();
+    if (camera_tcp_receiver_) camera_tcp_receiver_->stop();
     if (drone_receiver_) drone_receiver_->stop();
-    if (fallback_receiver_) fallback_receiver_->stop();
+    if (fallback_tcp_receiver_) fallback_tcp_receiver_->stop();
     
     // Stop RTMP output
     std::cout << "[Multiplexer] Stopping RTMP output..." << std::endl;
@@ -281,13 +274,13 @@ void Multiplexer::stop() {
     std::cout << "  Runtime: " << elapsed.count() << "s" << std::endl;
     std::cout << "  Input source: " << (input_source_manager_ ? input_source_manager_->getInputSourceString() : "unknown") << std::endl;
     std::cout << "  Packets processed: " << packets_processed_.load() << std::endl;
-    if (camera_receiver_) {
-        std::cout << "  Camera packets received: " << camera_receiver_->getPacketsReceived() << std::endl;
+    if (camera_tcp_receiver_) {
+        std::cout << "  Camera packets received: " << camera_tcp_receiver_->getPacketsReceived() << std::endl;
     }
     if (drone_receiver_) {
         std::cout << "  Drone packets received: " << drone_receiver_->getPacketsReceived() << std::endl;
     }
-    std::cout << "  Fallback packets received: " << fallback_receiver_->getPacketsReceived() << std::endl;
+    std::cout << "  Fallback packets received: " << fallback_tcp_receiver_->getPacketsReceived() << std::endl;
     std::cout << "  RTMP packets written: " << rtmp_output_->getPacketsWritten() << std::endl;
     
     auto shutdown_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -299,109 +292,63 @@ void Multiplexer::stop() {
 }
 
 bool Multiplexer::analyzeStreams() {
-    std::cout << "[Multiplexer] Analyzing streams..." << std::endl;
+    std::cout << "[Multiplexer] Analyzing streams using TCP receivers..." << std::endl;
     
-    ts::TSPacket packet;
-    auto last_status_log = std::chrono::steady_clock::now();
+    // Wait for fallback stream (required)
+    std::cout << "[Multiplexer] Waiting for fallback TCP stream..." << std::endl;
+    fallback_tcp_receiver_->waitForStreamInfo();
+    fallback_tcp_receiver_->waitForIDR();
     
-    // Try to analyze live stream packets (optional)
-    std::cout << "[Multiplexer] Checking for live stream..." << std::endl;
-    int live_packets_analyzed = 0;
-    while (live_packets_analyzed < 100 && live_queue_->pop(packet, std::chrono::milliseconds(100))) {
-        live_analyzer_->analyzePacket(packet);
-        live_packets_analyzed++;
-        
-        if (live_analyzer_->isInitialized()) {
-            break;
-        }
-    }
-    
-    const auto& live_info = live_analyzer_->getStreamInfo();
-    if (live_info.initialized) {
-        std::cout << "[Multiplexer] Live stream detected during initialization" << std::endl;
-    } else {
-        std::cout << "[Multiplexer] Live stream not available - will be detected dynamically later" << std::endl;
-    }
-    
-    // Wait for fallback stream packets (required) - but allow graceful shutdown
-    std::cout << "[Multiplexer] Waiting for fallback stream..." << std::endl;
-    bool fallback_initialized = false;
-    int total_wait_seconds = 0;
-    
-    while (!fallback_initialized && running_.load()) {
-        int fallback_packets_analyzed = 0;
-        
-        // Try to analyze up to 100 packets
-        while (fallback_packets_analyzed < 100 && running_.load() &&
-               fallback_queue_->pop(packet, std::chrono::milliseconds(100))) {
-            fallback_packets_analyzed++;
-            fallback_analyzer_->analyzePacket(packet);
-            
-            if (fallback_analyzer_->isInitialized()) {
-                fallback_initialized = true;
-                break;
-            }
-        }
-        
-        // Check for shutdown signal
-        if (!running_.load()) {
-            std::cout << "[Multiplexer] Shutdown requested during initialization" << std::endl;
-            return false;
-        }
-        
-        // Check if we should log status
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_status_log);
-        
-        if (!fallback_initialized && elapsed.count() >= 5) {
-            total_wait_seconds += elapsed.count();
-            std::cout << "[Multiplexer] Still waiting for fallback stream... ("
-                      << total_wait_seconds << "s elapsed)" << std::endl;
-            last_status_log = now;
-        }
-        
-        // If we got some packets but not initialized yet, wait a bit before retry
-        // Use shorter sleeps with periodic shutdown checks
-        if (!fallback_initialized && fallback_packets_analyzed > 0) {
-            // Sleep in 100ms increments to allow faster shutdown response
-            for (int i = 0; i < 5 && running_.load(); i++) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-        } else if (!fallback_initialized) {
-            // No packets received, wait but check shutdown every 100ms
-            for (int i = 0; i < 10 && running_.load(); i++) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-        }
-    }
-    
-    // Check if we exited due to shutdown
-    if (!running_.load()) {
-        std::cout << "[Multiplexer] Initialization aborted due to shutdown signal" << std::endl;
-        return false;
-    }
-    
-    const auto& fallback_info = fallback_analyzer_->getStreamInfo();
-    
+    StreamInfo fallback_info = fallback_tcp_receiver_->getStreamInfo();
     std::cout << "[Multiplexer] Fallback stream ready!" << std::endl;
     std::cout << "  Video PID: " << fallback_info.video_pid << std::endl;
     std::cout << "  Audio PID: " << fallback_info.audio_pid << std::endl;
     std::cout << "  PMT PID: " << fallback_info.pmt_pid << std::endl;
     
-    // Check live stream status and initialize PID mapper if available
-    if (live_info.initialized) {
-        std::cout << "[Multiplexer] Live stream:" << std::endl;
-        std::cout << "  Video PID: " << live_info.video_pid << std::endl;
-        std::cout << "  Audio PID: " << live_info.audio_pid << std::endl;
-        std::cout << "  PMT PID: " << live_info.pmt_pid << std::endl;
+    // Extract timestamp bases from fallback
+    if (!fallback_tcp_receiver_->extractTimestampBases()) {
+        std::cerr << "[Multiplexer] Warning: Could not extract fallback timestamp bases" << std::endl;
+    }
+    
+    // Try to get live stream if using camera (optional)
+    StreamInfo live_info;
+    if (camera_tcp_receiver_) {
+        std::cout << "[Multiplexer] Checking for live TCP stream..." << std::endl;
         
-        // Initialize PID mapper with both streams
-        pid_mapper_->initialize(live_info, fallback_info);
-        live_stream_ready_ = true;
-        std::cout << "[Multiplexer] Both streams ready" << std::endl;
-    } else {
-        std::cout << "[Multiplexer] Starting in fallback-only mode" << std::endl;
-        std::cout << "[Multiplexer] Live stream will be detected dynamically when SRT connects" << std::endl;
+        // Try to wait for stream info with short timeout approach
+        // Use a simple check: is receiver connected and has stream info?
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        
+        if (camera_tcp_receiver_->isConnected()) {
+            camera_tcp_receiver_->waitForStreamInfo();
+            camera_tcp_receiver_->waitForIDR();
+            
+            live_info = camera_tcp_receiver_->getStreamInfo();
+            if (live_info.initialized) {
+                std::cout << "[Multiplexer] Live stream detected during initialization" << std::endl;
+                std::cout << "  Video PID: " << live_info.video_pid << std::endl;
+                std::cout << "  Audio PID: " << live_info.audio_pid << std::endl;
+                std::cout << "  PMT PID: " << live_info.pmt_pid << std::endl;
+                
+                // Extract timestamp bases from live
+                if (!camera_tcp_receiver_->extractTimestampBases()) {
+                    std::cerr << "[Multiplexer] Warning: Could not extract live timestamp bases" << std::endl;
+                }
+                
+                // Initialize PID mapper with both streams
+                pid_mapper_->initialize(live_info, fallback_info);
+                live_stream_ready_ = true;
+                std::cout << "[Multiplexer] Both streams ready" << std::endl;
+            }
+        }
+        
+        if (!live_info.initialized) {
+            std::cout << "[Multiplexer] Live stream not available - will be detected dynamically later" << std::endl;
+            live_stream_ready_ = false;
+        }
+    } else if (drone_receiver_) {
+        // Drone mode - try to analyze from queue
+        std::cout << "[Multiplexer] Live stream will be detected dynamically when drone connects" << std::endl;
         live_stream_ready_ = false;
     }
     
@@ -409,277 +356,145 @@ bool Multiplexer::analyzeStreams() {
 }
 
 bool Multiplexer::analyzeLiveStreamDynamically() {
+    // This method is only used for drone RTMP mode
+    // For camera TCP, stream discovery happens automatically in TCPReceiver background thread
+    if (!drone_receiver_ || !live_queue_) {
+        std::cout << "[Multiplexer] analyzeLiveStreamDynamically() not supported in TCP camera mode" << std::endl;
+        return false;
+    }
+    
     static int analysis_attempt_count = 0;
     analysis_attempt_count++;
     
     std::cout << "[Multiplexer] ================================================" << std::endl;
-    std::cout << "[Multiplexer] Attempting to detect live stream (attempt #"
+    std::cout << "[Multiplexer] Attempting to detect drone stream (attempt #"
               << analysis_attempt_count << ")" << std::endl;
     std::cout << "[Multiplexer] ================================================" << std::endl;
     
-    // Get the current queue size - we'll analyze accumulated packets instead of clearing them
-    // This is more efficient as accumulated packets contain PAT, PMT, and media data we need
     size_t queue_size = live_queue_->size();
-    
-    // Use adaptive packet budget: analyze at least 500 packets, or queue size if larger
-    // This ensures we have enough packets to find PAT/PMT and validate media
     size_t max_packets_to_analyze = std::max(queue_size, static_cast<size_t>(500));
     
-    std::cout << "[Multiplexer] DEBUG: Queue size before analysis: " << queue_size << std::endl;
-    std::cout << "[Multiplexer] DEBUG: Max packets to analyze: " << max_packets_to_analyze << std::endl;
-    std::cout << "[Multiplexer] DEBUG: live_stream_ready_ before: " << live_stream_ready_.load() << std::endl;
-    
-    // Log analyzer state BEFORE reset
-    const auto& pre_reset_info = live_analyzer_->getStreamInfo();
-    std::cout << "[Multiplexer] DEBUG: Pre-reset analyzer state:" << std::endl;
-    std::cout << "[Multiplexer]   initialized: " << pre_reset_info.initialized << std::endl;
-    std::cout << "[Multiplexer]   video_pid: " << pre_reset_info.video_pid << std::endl;
-    std::cout << "[Multiplexer]   audio_pid: " << pre_reset_info.audio_pid << std::endl;
-    std::cout << "[Multiplexer]   valid_video_packets: " << pre_reset_info.valid_video_packets << std::endl;
-    std::cout << "[Multiplexer]   valid_audio_packets: " << pre_reset_info.valid_audio_packets << std::endl;
-    
-    // Reset the analyzer to start fresh (clears old PID state from previous connection)
-    // Note: reset() now re-registers PID_PAT for continued PAT parsing
-    std::cout << "[Multiplexer] DEBUG: Calling live_analyzer_->reset()..." << std::endl;
     live_analyzer_->reset();
-    
-    // Log analyzer state AFTER reset
-    const auto& post_reset_info = live_analyzer_->getStreamInfo();
-    std::cout << "[Multiplexer] DEBUG: Post-reset analyzer state:" << std::endl;
-    std::cout << "[Multiplexer]   initialized: " << post_reset_info.initialized << std::endl;
-    std::cout << "[Multiplexer]   video_pid: " << post_reset_info.video_pid << std::endl;
-    std::cout << "[Multiplexer]   audio_pid: " << post_reset_info.audio_pid << std::endl;
     
     // Analyze accumulated packets from the queue
     size_t live_packets_analyzed = 0;
     ts::TSPacket packet;
-    int pop_failures = 0;
     
-    std::cout << "[Multiplexer] DEBUG: Starting packet analysis loop..." << std::endl;
-    
-    // Use a longer timeout (50ms) to allow real-time packets to arrive
     while (live_packets_analyzed < max_packets_to_analyze && running_.load()) {
-        bool got_packet = live_queue_->pop(packet, std::chrono::milliseconds(50));
-        
-        if (!got_packet) {
-            pop_failures++;
-            if (pop_failures <= 3) {
-                std::cout << "[Multiplexer] DEBUG: pop() returned false (timeout), pop_failures="
-                          << pop_failures << ", queue size=" << live_queue_->size() << std::endl;
-            }
-            if (pop_failures >= 10) {
-                std::cout << "[Multiplexer] DEBUG: Too many pop failures (" << pop_failures
-                          << "), breaking out of analysis loop" << std::endl;
-                break;
-            }
-            continue;
+        if (!live_queue_->pop(packet, std::chrono::milliseconds(50))) {
+            break;
         }
         
-        pop_failures = 0; // Reset on success
         live_analyzer_->analyzePacket(packet);
         live_packets_analyzed++;
         
-        // Log progress periodically (every 50 packets for more granularity)
-        if (live_packets_analyzed % 50 == 0) {
-            const auto& info = live_analyzer_->getStreamInfo();
-            std::cout << "[Multiplexer] Analysis progress: " << live_packets_analyzed << " packets"
-                      << ", initialized=" << (info.initialized ? "yes" : "no")
-                      << ", video=" << info.valid_video_packets
-                      << "/" << StreamInfo::MIN_VALID_VIDEO_PACKETS
-                      << ", audio=" << info.valid_audio_packets
-                      << "/" << StreamInfo::MIN_VALID_AUDIO_PACKETS
-                      << ", hasValidMediaData=" << (live_analyzer_->hasValidMediaData() ? "yes" : "no")
-                      << std::endl;
-        }
-        
-        // Check if we have valid media data (not just PSI tables)
         if (live_analyzer_->hasValidMediaData()) {
-            std::cout << "[Multiplexer] Valid media data found after "
-                      << live_packets_analyzed << " packets" << std::endl;
             break;
         }
     }
     
-    std::cout << "[Multiplexer] DEBUG: Analysis loop ended. Packets analyzed: "
-              << live_packets_analyzed << ", pop_failures: " << pop_failures << std::endl;
-    
-    // Check for shutdown signal
-    if (!running_.load()) {
-        std::cout << "[Multiplexer] DEBUG: Shutdown detected, returning false" << std::endl;
+    if (!live_analyzer_->hasValidMediaData()) {
         return false;
     }
     
     const auto& live_info = live_analyzer_->getStreamInfo();
-    
-    std::cout << "[Multiplexer] DEBUG: Final analyzer state after analysis:" << std::endl;
-    std::cout << "[Multiplexer]   initialized: " << live_info.initialized << std::endl;
-    std::cout << "[Multiplexer]   video_pid: " << live_info.video_pid << std::endl;
-    std::cout << "[Multiplexer]   audio_pid: " << live_info.audio_pid << std::endl;
-    std::cout << "[Multiplexer]   pmt_pid: " << live_info.pmt_pid << std::endl;
-    std::cout << "[Multiplexer]   pcr_pid: " << live_info.pcr_pid << std::endl;
-    std::cout << "[Multiplexer]   valid_video_packets: " << live_info.valid_video_packets << std::endl;
-    std::cout << "[Multiplexer]   valid_audio_packets: " << live_info.valid_audio_packets << std::endl;
-    std::cout << "[Multiplexer]   hasValidMediaData(): " << (live_analyzer_->hasValidMediaData() ? "true" : "false") << std::endl;
-    
-    // Check for valid media data instead of just initialization
-    if (!live_analyzer_->hasValidMediaData()) {
-        // Log current validation status
-        if (live_info.initialized) {
-            std::cout << "[Multiplexer] RESULT: Live stream PSI detected but waiting for valid media packets..." << std::endl;
-            std::cout << "  Analyzed: " << live_packets_analyzed << " packets" << std::endl;
-            std::cout << "  Video packets: " << live_info.valid_video_packets
-                      << "/" << StreamInfo::MIN_VALID_VIDEO_PACKETS << std::endl;
-            std::cout << "  Audio packets: " << live_info.valid_audio_packets
-                      << "/" << StreamInfo::MIN_VALID_AUDIO_PACKETS << std::endl;
-        } else {
-            std::cout << "[Multiplexer] RESULT: No PSI tables found after "
-                      << live_packets_analyzed << " packets" << std::endl;
-        }
-        std::cout << "[Multiplexer] DEBUG: Returning false from analyzeLiveStreamDynamically()" << std::endl;
-        return false;
-    }
-    
-    std::cout << "[Multiplexer] RESULT: Live stream detected!" << std::endl;
-    std::cout << "  Video PID: " << live_info.video_pid << std::endl;
-    std::cout << "  Audio PID: " << live_info.audio_pid << std::endl;
-    std::cout << "  PMT PID: " << live_info.pmt_pid << std::endl;
-    std::cout << "  Valid video packets: " << live_info.valid_video_packets << std::endl;
-    std::cout << "  Valid audio packets: " << live_info.valid_audio_packets << std::endl;
-    
-    // Reinitialize PID mapper with live stream info
-    const auto& fallback_info = fallback_analyzer_->getStreamInfo();
+    const auto& fallback_info = fallback_tcp_receiver_->getStreamInfo();
     pid_mapper_->initialize(live_info, fallback_info);
     
-    std::cout << "[Multiplexer] DEBUG: Setting live_stream_ready_ = true" << std::endl;
     live_stream_ready_ = true;
+    std::cout << "[Multiplexer] Drone stream detected and ready!" << std::endl;
     
-    std::cout << "[Multiplexer] DEBUG: Returning true from analyzeLiveStreamDynamically()" << std::endl;
     return true;
 }
 
 void Multiplexer::processLoop() {
-    ts::TSPacket packet;
-    uint64_t log_interval = 1000; // Log every 1000 packets
-    uint64_t live_check_interval = 100; // Check for live stream every 100 packets
+    std::cout << "[Multiplexer] Starting TCP-based processing loop" << std::endl;
+    
+    uint64_t log_interval = 1000;
+    
+    // Initialize with fallback stream (already connected and ready from analyzeStreams)
+    current_pts_base_ = fallback_tcp_receiver_->getPTSBase();
+    current_pcr_base_ = fallback_tcp_receiver_->getPCRBase();
+    current_pcr_pts_alignment_ = fallback_tcp_receiver_->getPCRPTSAlignmentOffset();
+    
+    std::cout << "[Multiplexer] Initial fallback bases: PTS=" << current_pts_base_
+              << ", PCR=" << current_pcr_base_
+              << ", alignment=" << current_pcr_pts_alignment_ << std::endl;
+    
+    // Start consuming from the IDR point in fallback
+    fallback_tcp_receiver_->initConsumptionFromIndex(0);
+    
+    Mode current_mode = switcher_->getMode();
+    TCPReceiver* active_receiver = fallback_tcp_receiver_.get();
+    Source active_source = Source::FALLBACK;
+    
+    // If we start in LIVE mode (privacy disabled and live ready), switch to live
+    if (current_mode == Mode::LIVE && live_stream_ready_.load()) {
+        std::cout << "[Multiplexer] Starting in LIVE mode - switching to camera receiver" << std::endl;
+        active_receiver = camera_tcp_receiver_.get();
+        active_source = Source::LIVE;
+        current_pts_base_ = camera_tcp_receiver_->getPTSBase();
+        current_pcr_base_ = camera_tcp_receiver_->getPCRBase();
+        current_pcr_pts_alignment_ = camera_tcp_receiver_->getPCRPTSAlignmentOffset();
+        camera_tcp_receiver_->initConsumptionFromIndex(0);
+    }
     
     while (running_.load()) {
-        Mode current_mode = switcher_->getMode();
+        // Receive packets from active receiver
+        auto packets = active_receiver->receivePackets(100, 100);
         
-        // Periodically check for live stream if not yet detected
-        if (!live_stream_ready_.load() && packets_processed_ % live_check_interval == 0) {
-            std::cout << "[Multiplexer] DEBUG: Periodic live check triggered (packets_processed_="
-                      << packets_processed_.load() << ", live_stream_ready_="
-                      << live_stream_ready_.load() << ", live_queue empty="
-                      << live_queue_->empty() << ", queue size=" << live_queue_->size() << ")" << std::endl;
-            if (!live_queue_->empty()) {
-                std::cout << "[Multiplexer] Live packets detected in queue, attempting analysis..." << std::endl;
-                if (analyzeLiveStreamDynamically()) {
-                    std::cout << "[Multiplexer] Live stream successfully initialized!" << std::endl;
-                    std::cout << "[Multiplexer] Attempting IDR-aware switch to LIVE mode..." << std::endl;
-                    
-                    // Use IDR-aware switch to live
-                    if (switchToLiveAtIDR()) {
-                        std::cout << "[Multiplexer] Successfully switched to LIVE at IDR!" << std::endl;
-                    } else {
-                        std::cout << "[Multiplexer] Failed to find IDR in live stream - staying on FALLBACK" << std::endl;
-                        live_stream_ready_ = false;  // Reset so we can try again
-                    }
-                    continue;
+        if (packets.empty()) {
+            // Check for timeout in LIVE mode
+            if (current_mode == Mode::LIVE && switcher_->checkLiveTimeout()) {
+                std::cout << "[Multiplexer] Live timeout - switching to FALLBACK" << std::endl;
+                if (switchToFallbackAtIDR()) {
+                    current_mode = Mode::FALLBACK;
+                    active_receiver = fallback_tcp_receiver_.get();
+                    active_source = Source::FALLBACK;
                 }
             }
+            continue;
         }
         
-        // Select queue based on current mode
-        TSPacketQueue* queue = (current_mode == Mode::LIVE) ? live_queue_.get() : fallback_queue_.get();
-        Source source = (current_mode == Mode::LIVE) ? Source::LIVE : Source::FALLBACK;
-        
-        // Try to get a packet (with short timeout for responsive shutdown)
-        if (queue->pop(packet, std::chrono::milliseconds(1))) {
-            // Update live timestamp if from live source
+        // Process received packets
+        for (auto& packet : packets) {
+            // Update live timestamp tracking
             if (current_mode == Mode::LIVE) {
                 switcher_->updateLiveTimestamp();
             }
             
-            // Process the packet
-            processPacket(packet, source);
-            
+            processPacket(packet, active_source);
             packets_processed_++;
-            
-            // Periodic logging
-            if (packets_processed_ % log_interval == 0) {
-                std::cout << "[Multiplexer] Processed " << packets_processed_.load()
-                          << " packets. Mode: " << (current_mode == Mode::LIVE ? "LIVE" : "FALLBACK")
-                          << ", Queue size: " << queue->size()
-                          << ", Live ready: " << (live_stream_ready_.load() ? "Yes" : "No") << std::endl;
-            }
-            
-            // Check for mode switch after processing
-            if (current_mode == Mode::LIVE) {
-                // Check if we need to switch to fallback
-                if (switcher_->checkLiveTimeout()) {
-                    std::cout << "[Multiplexer] Live timeout detected - initiating IDR-aware switch to FALLBACK" << std::endl;
-                    
-                    // Use IDR-aware switch to fallback
-                    switchToFallbackAtIDR();
-                    
-                    // DEBUG: Log switcher state
-                    std::cout << "[Multiplexer] DEBUG: Switcher state after fallback switch:" << std::endl;
-                    std::cout << "[Multiplexer]   mode: " << (switcher_->getMode() == Mode::LIVE ? "LIVE" : "FALLBACK") << std::endl;
-                    std::cout << "[Multiplexer]   privacy_mode: " << switcher_->isPrivacyMode() << std::endl;
-                    std::cout << "[Multiplexer]   live_stream_ready_: " << live_stream_ready_.load() << std::endl;
-                }
-            } else {
-                // In FALLBACK mode, check if live packets are arriving
-                // If so, increment the counter to track consecutive live packets
-                if (!live_queue_->empty()) {
-                    switcher_->updateLiveTimestamp();
-                    
-                    // DEBUG: Occasionally log fallback mode state
-                    static uint64_t fallback_log_counter = 0;
-                    fallback_log_counter++;
-                    if (fallback_log_counter % 1000 == 0) {
-                        std::cout << "[Multiplexer] DEBUG: In FALLBACK mode, live_queue not empty"
-                                  << ", live_stream_ready_=" << live_stream_ready_.load()
-                                  << ", queue size=" << live_queue_->size()
-                                  << ", time_since_last_live=" << switcher_->getTimeSinceLastLive().count() << "ms"
-                                  << std::endl;
-                    }
-                }
-                
-                // Try to return to live if packets are available and live is ready
-                // Use IDR-aware switching for clean splice
-                if (live_stream_ready_.load() && !live_queue_->empty() && switcher_->tryReturnToLive()) {
-                    std::cout << "[Multiplexer] tryReturnToLive() triggered - initiating IDR-aware switch to LIVE" << std::endl;
-                    
-                    // Reset the mode back to fallback temporarily - switchToLiveAtIDR will set it to LIVE
-                    switcher_->setMode(Mode::FALLBACK);
-                    
-                    // Use IDR-aware switch to live
-                    if (switchToLiveAtIDR()) {
-                        std::cout << "[Multiplexer] Successfully switched to LIVE at IDR!" << std::endl;
-                    } else {
-                        std::cout << "[Multiplexer] Failed to find IDR in live stream - staying on FALLBACK" << std::endl;
-                        live_stream_ready_ = false;  // Reset so we can re-detect
-                    }
+        }
+        
+        // Periodic logging
+        if (packets_processed_ % log_interval == 0) {
+            std::cout << "[Multiplexer] Processed " << packets_processed_.load()
+                      << " packets. Mode: " << (current_mode == Mode::LIVE ? "LIVE" : "FALLBACK")
+                      << ", Live ready: " << (live_stream_ready_.load() ? "Yes" : "No") << std::endl;
+        }
+        
+        // Check for mode switch
+        if (current_mode == Mode::FALLBACK && live_stream_ready_.load()) {
+            // Check if we should return to live
+            if (camera_tcp_receiver_ && camera_tcp_receiver_->isConnected() && switcher_->tryReturnToLive()) {
+                std::cout << "[Multiplexer] Returning to LIVE mode" << std::endl;
+                if (switchToLiveAtIDR()) {
+                    current_mode = Mode::LIVE;
+                    active_receiver = camera_tcp_receiver_.get();
+                    active_source = Source::LIVE;
                 }
             }
-        } else {
-            // No packet available, check for timeout
-            switcher_->checkLiveTimeout();
         }
     }
+    
+    std::cout << "[Multiplexer] Processing loop ended" << std::endl;
 }
 
 void Multiplexer::processPacket(ts::TSPacket& packet, Source source) {
-    // Extract timestamps
-    TimestampInfo ts_info = (source == Source::LIVE)
-        ? live_analyzer_->extractTimestamps(packet)
-        : fallback_analyzer_->extractTimestamps(packet);
-    
-    // adjustPacket() handles both LIVE and FALLBACK:
-    // - LIVE: Applies live_offset_ if non-zero (for FALLBACK→LIVE continuity), otherwise passthrough
-    // - FALLBACK: Applies fallback_offset_ (for LIVE→FALLBACK continuity)
-    timestamp_mgr_->adjustPacket(packet, source, ts_info);
+    // Rebase timestamps using tcp_main.cpp approach
+    // Use current stream's bases and global offsets from TimestampManager
+    timestamp_mgr_->rebasePacket(packet, current_pts_base_, current_pcr_base_, current_pcr_pts_alignment_);
     
     if (source == Source::FALLBACK) {
         // Remap PIDs to match live stream PIDs (only needed for fallback)
@@ -730,196 +545,128 @@ void Multiplexer::onPrivacyModeChange(bool enabled) {
 }
 
 bool Multiplexer::switchToLiveAtIDR() {
-    std::cout << "[Multiplexer] ========================================" << std::endl;
-    std::cout << "[Multiplexer] IDR-AWARE SWITCH: Waiting for live IDR frame..." << std::endl;
-    std::cout << "[Multiplexer] ========================================" << std::endl;
-    
-    switch_buffer_.clear();
-    switch_wait_start_ = std::chrono::steady_clock::now();
-    
-    ts::TSPacket packet;
-    size_t idr_packet_index = 0;
-    bool found_idr = false;
-    bool needs_sps_pps_injection = false;  // Track if we need to inject SPS/PPS
-    
-    while (running_.load()) {
-        // Check timeout
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - switch_wait_start_
-        );
-        
-        if (elapsed.count() >= static_cast<int64_t>(live_idr_timeout_ms_)) {
-            std::cout << "[Multiplexer] IDR TIMEOUT: No IDR found in live stream after "
-                      << elapsed.count() << "ms (timeout=" << live_idr_timeout_ms_ << "ms) - staying on FALLBACK" << std::endl;
-            switch_buffer_.clear();
-            return false;
-        }
-        
-        // Try to get a live packet
-        if (!live_queue_->pop(packet, std::chrono::milliseconds(10))) {
-            continue;
-        }
-        
-        // Store packet in buffer
-        switch_buffer_.push_back(packet);
-        
-        // Check if this is a video packet with PUSI (potential IDR)
-        if (live_analyzer_->isVideoPacket(packet) && packet.getPUSI()) {
-            FrameInfo frame_info = live_analyzer_->extractFrameInfo(packet);
-            
-            if (frame_info.isCleanSwitchPoint()) {
-                found_idr = true;
-                needs_sps_pps_injection = false;  // IDR has inline SPS/PPS
-                idr_packet_index = switch_buffer_.size() - 1;
-                
-                std::cout << "[Multiplexer] IDR FOUND! Clean switch point at buffer index "
-                          << idr_packet_index << " (after " << elapsed.count() << "ms)"
-                          << " - has_sps=" << frame_info.has_sps
-                          << ", has_pps=" << frame_info.has_pps
-                          << " (no injection needed)" << std::endl;
-                break;
-            } else if (frame_info.is_idr) {
-                // IDR found but missing SPS/PPS - check if we have them stored
-                if (live_analyzer_->getNALParser().hasParameterSets()) {
-                    found_idr = true;
-                    needs_sps_pps_injection = true;  // Need to inject stored SPS/PPS
-                    idr_packet_index = switch_buffer_.size() - 1;
-                    
-                    std::cout << "[Multiplexer] IDR FOUND (will inject stored SPS/PPS) at buffer index "
-                              << idr_packet_index << " (after " << elapsed.count() << "ms)" << std::endl;
-                    break;
-                } else {
-                    std::cout << "[Multiplexer] IDR found but no SPS/PPS available - continuing to search..." << std::endl;
-                }
-            }
-        }
-        
-        // Log progress periodically
-        if (switch_buffer_.size() % 100 == 0) {
-            std::cout << "[Multiplexer] IDR search: buffered " << switch_buffer_.size()
-                      << " packets, elapsed=" << elapsed.count() << "ms" << std::endl;
-        }
-    }
-    
-    if (!found_idr) {
-        std::cout << "[Multiplexer] IDR search aborted (shutdown)" << std::endl;
-        switch_buffer_.clear();
+    if (!camera_tcp_receiver_) {
+        std::cerr << "[Multiplexer] No camera receiver available for switch to live" << std::endl;
         return false;
     }
     
-    // We found an IDR! Switch to live mode and drain buffer from IDR
-    std::cout << "[Multiplexer] Switching to LIVE mode at IDR boundary!" << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    std::cout << "[Multiplexer] IDR-AWARE SWITCH TO LIVE: Using TCP approach" << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    
+    // Reset camera receiver for new loop - triggers new IDR detection
+    camera_tcp_receiver_->resetForNewLoop();
+    
+    // Wait for fresh IDR
+    std::cout << "[Multiplexer] Waiting for fresh IDR frame..." << std::endl;
+    camera_tcp_receiver_->waitForIDR();
+    std::cout << "[Multiplexer] Fresh IDR frame detected" << std::endl;
+    
+    // Re-extract timestamp bases from current stream position
+    if (!camera_tcp_receiver_->extractTimestampBases()) {
+        std::cerr << "[Multiplexer] Warning: Could not extract timestamp bases" << std::endl;
+    }
+    
+    // Update current bases for timestamp rebasing
+    current_pts_base_ = camera_tcp_receiver_->getPTSBase();
+    current_pcr_base_ = camera_tcp_receiver_->getPCRBase();
+    current_pcr_pts_alignment_ = camera_tcp_receiver_->getPCRPTSAlignmentOffset();
+    
+    std::cout << "[Multiplexer] Updated bases: PTS=" << current_pts_base_
+              << ", PCR=" << current_pcr_base_
+              << ", alignment=" << current_pcr_pts_alignment_ << std::endl;
+    
+    // Get buffered packets from IDR
+    auto buffered = camera_tcp_receiver_->getBufferedPacketsFromIDR();
+    std::cout << "[Multiplexer] Processing " << buffered.size() << " buffered packets from IDR" << std::endl;
+    
+    // Inject PAT/PMT before processing buffered packets
+    // TODO: Need to create PAT/PMT from StreamInfo
+    
+    // Inject SPS/PPS if available
+    std::vector<uint8_t> sps = camera_tcp_receiver_->getSPSData();
+    std::vector<uint8_t> pps = camera_tcp_receiver_->getPPSData();
+    if (!sps.empty() && !pps.empty()) {
+        std::cout << "[Multiplexer] Injecting SPS/PPS before IDR" << std::endl;
+        // TODO: Use createSPSPPSPackets
+    }
+    
+    // Switch to LIVE mode
     switcher_->setMode(Mode::LIVE);
     switcher_->updateLiveTimestamp();
     
-    // Set up timestamp offset from the IDR packet
-    TimestampInfo ts_info = live_analyzer_->extractTimestamps(switch_buffer_[idr_packet_index]);
-    timestamp_mgr_->onSourceSwitch(Source::LIVE, ts_info);
+    // Process buffered packets
+    for (auto& pkt : buffered) {
+        processPacket(pkt, Source::LIVE);
+        packets_processed_++;
+    }
     
-    // Drain buffer starting from IDR (with SPS/PPS injection if needed)
-    drainBufferFromIDR(switch_buffer_, idr_packet_index, Source::LIVE, needs_sps_pps_injection);
+    // Initialize consumption from end of snapshot
+    camera_tcp_receiver_->initConsumptionFromIndex(camera_tcp_receiver_->getLastSnapshotEnd());
     
-    switch_buffer_.clear();
+    std::cout << "[Multiplexer] Switch to LIVE complete" << std::endl;
     return true;
 }
 
 bool Multiplexer::switchToFallbackAtIDR() {
     std::cout << "[Multiplexer] ========================================" << std::endl;
-    std::cout << "[Multiplexer] IDR-AWARE SWITCH: Waiting for fallback IDR frame..." << std::endl;
+    std::cout << "[Multiplexer] IDR-AWARE SWITCH TO FALLBACK: Using TCP approach" << std::endl;
     std::cout << "[Multiplexer] ========================================" << std::endl;
     
-    switch_buffer_.clear();
-    switch_wait_start_ = std::chrono::steady_clock::now();
+    // Reset fallback receiver for new loop - triggers new IDR detection
+    fallback_tcp_receiver_->resetForNewLoop();
     
-    ts::TSPacket packet;
-    size_t idr_packet_index = 0;
-    bool found_idr = false;
-    bool needs_sps_pps_injection = false;  // Track if we need to inject SPS/PPS
+    // Wait for fresh IDR
+    std::cout << "[Multiplexer] Waiting for fresh fallback IDR frame..." << std::endl;
+    fallback_tcp_receiver_->waitForIDR();
+    std::cout << "[Multiplexer] Fresh fallback IDR frame detected" << std::endl;
     
-    while (running_.load()) {
-        // Check timeout
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - switch_wait_start_
-        );
-        
-        if (elapsed.count() >= static_cast<int64_t>(fallback_idr_timeout_ms_)) {
-            std::cout << "[Multiplexer] IDR TIMEOUT: No IDR found in fallback stream after "
-                      << elapsed.count() << "ms (timeout=" << fallback_idr_timeout_ms_ << "ms) - forcing switch anyway (fallback should have regular IDRs)" << std::endl;
-            // For fallback, we force switch even without IDR since it loops and should have IDRs
-            // This is a safety fallback - shouldn't normally happen
-            break;
-        }
-        
-        // Try to get a fallback packet
-        if (!fallback_queue_->pop(packet, std::chrono::milliseconds(10))) {
-            continue;
-        }
-        
-        // Store packet in buffer
-        switch_buffer_.push_back(packet);
-        
-        // Check if this is a video packet with PUSI (potential IDR)
-        if (fallback_analyzer_->isVideoPacket(packet) && packet.getPUSI()) {
-            FrameInfo frame_info = fallback_analyzer_->extractFrameInfo(packet);
-            
-            if (frame_info.isCleanSwitchPoint()) {
-                found_idr = true;
-                needs_sps_pps_injection = false;  // IDR has inline SPS/PPS
-                idr_packet_index = switch_buffer_.size() - 1;
-                
-                std::cout << "[Multiplexer] FALLBACK IDR FOUND! Clean switch point at buffer index "
-                          << idr_packet_index << " (after " << elapsed.count() << "ms)"
-                          << " - has_sps=" << frame_info.has_sps
-                          << ", has_pps=" << frame_info.has_pps
-                          << " (no injection needed)" << std::endl;
-                break;
-            } else if (frame_info.is_idr) {
-                // IDR found but missing SPS/PPS - check if we have them stored
-                if (fallback_analyzer_->getNALParser().hasParameterSets()) {
-                    found_idr = true;
-                    needs_sps_pps_injection = true;  // Need to inject stored SPS/PPS
-                    idr_packet_index = switch_buffer_.size() - 1;
-                    
-                    std::cout << "[Multiplexer] FALLBACK IDR FOUND (will inject stored SPS/PPS) at buffer index "
-                              << idr_packet_index << " (after " << elapsed.count() << "ms)" << std::endl;
-                    break;
-                }
-            }
-        }
-        
-        // Log progress periodically
-        if (switch_buffer_.size() % 50 == 0) {
-            std::cout << "[Multiplexer] Fallback IDR search: buffered " << switch_buffer_.size()
-                      << " packets, elapsed=" << elapsed.count() << "ms" << std::endl;
-        }
+    // Re-extract timestamp bases from current stream position
+    if (!fallback_tcp_receiver_->extractTimestampBases()) {
+        std::cerr << "[Multiplexer] Warning: Could not extract fallback timestamp bases" << std::endl;
     }
     
-    // Switch to fallback mode
-    std::cout << "[Multiplexer] Switching to FALLBACK mode" << (found_idr ? " at IDR boundary!" : " (timeout)") << std::endl;
+    // Update current bases for timestamp rebasing
+    current_pts_base_ = fallback_tcp_receiver_->getPTSBase();
+    current_pcr_base_ = fallback_tcp_receiver_->getPCRBase();
+    current_pcr_pts_alignment_ = fallback_tcp_receiver_->getPCRPTSAlignmentOffset();
+    
+    std::cout << "[Multiplexer] Updated fallback bases: PTS=" << current_pts_base_
+              << ", PCR=" << current_pcr_base_
+              << ", alignment=" << current_pcr_pts_alignment_ << std::endl;
+    
+    // Get buffered packets from IDR
+    auto buffered = fallback_tcp_receiver_->getBufferedPacketsFromIDR();
+    std::cout << "[Multiplexer] Processing " << buffered.size() << " buffered packets from fallback IDR" << std::endl;
+    
+    // Inject PAT/PMT before processing buffered packets
+    // TODO: Need to create PAT/PMT from StreamInfo
+    
+    // Inject SPS/PPS if available
+    std::vector<uint8_t> sps = fallback_tcp_receiver_->getSPSData();
+    std::vector<uint8_t> pps = fallback_tcp_receiver_->getPPSData();
+    if (!sps.empty() && !pps.empty()) {
+        std::cout << "[Multiplexer] Injecting SPS/PPS before fallback IDR" << std::endl;
+        // TODO: Use createSPSPPSPackets
+    }
+    
+    // Switch to FALLBACK mode
     switcher_->setMode(Mode::FALLBACK);
     
-    if (found_idr && !switch_buffer_.empty()) {
-        // Set up timestamp offset from the IDR packet
-        TimestampInfo ts_info = fallback_analyzer_->extractTimestamps(switch_buffer_[idr_packet_index]);
-        timestamp_mgr_->onSourceSwitch(Source::FALLBACK, ts_info);
-        
-        // Drain buffer starting from IDR (with SPS/PPS injection if needed)
-        drainBufferFromIDR(switch_buffer_, idr_packet_index, Source::FALLBACK, needs_sps_pps_injection);
-    } else if (!switch_buffer_.empty()) {
-        // Timeout case - process from beginning of buffer
-        // Try to inject SPS/PPS if available since we don't have a clean switch point
-        bool timeout_injection_needed = fallback_analyzer_->getNALParser().hasParameterSets();
-        TimestampInfo ts_info = fallback_analyzer_->extractTimestamps(switch_buffer_[0]);
-        timestamp_mgr_->onSourceSwitch(Source::FALLBACK, ts_info);
-        drainBufferFromIDR(switch_buffer_, 0, Source::FALLBACK, timeout_injection_needed);
+    // Process buffered packets
+    for (auto& pkt : buffered) {
+        processPacket(pkt, Source::FALLBACK);
+        packets_processed_++;
     }
     
-    switch_buffer_.clear();
+    // Initialize consumption from end of snapshot
+    fallback_tcp_receiver_->initConsumptionFromIndex(fallback_tcp_receiver_->getLastSnapshotEnd());
     
     // Reset live stream ready flag so we re-analyze when live comes back
     live_stream_ready_ = false;
     
-    return found_idr;
+    std::cout << "[Multiplexer] Switch to FALLBACK complete" << std::endl;
+    return true;
 }
 
 void Multiplexer::drainBufferFromIDR(std::vector<ts::TSPacket>& buffer, size_t idr_index,
