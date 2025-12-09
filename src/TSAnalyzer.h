@@ -12,6 +12,9 @@ struct StreamInfo {
     uint16_t audio_pid = ts::PID_NULL;
     uint16_t pcr_pid = ts::PID_NULL;
     uint16_t pmt_pid = ts::PID_NULL;
+    uint16_t program_number = 0;
+    uint8_t video_stream_type = 0;
+    uint8_t audio_stream_type = 0;
     bool initialized = false;
     
     // Media packet validation counters

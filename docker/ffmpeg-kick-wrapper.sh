@@ -104,6 +104,8 @@ fi
 # -fflags +genpts+igndts: Generate presentation timestamps, ignore decode timestamps
 # -c copy: Pass-through (no re-encoding)
 echo "[Wrapper] Starting ffmpeg stream to Kick..."
+echo "[Wrapper] Full command:"
+echo "ffmpeg -nostdin -loglevel info -rtmp_buffer 3000 -probesize 10M -analyzeduration 10M -fflags +genpts+igndts -i \"$RTMP_SOURCE\" -c copy -f flv -flvflags no_duration_filesize \"$KICK_OUTPUT\""
 ffmpeg -nostdin \
     -loglevel info \
     -rtmp_buffer 3000 \

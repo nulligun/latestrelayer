@@ -17,5 +17,8 @@ RUN chmod +x /usr/local/bin/ffmpeg-srt-live-wrapper.sh
 COPY docker/ffmpeg-srt-live-health-check.sh /usr/local/bin/health-check.sh
 RUN chmod +x /usr/local/bin/health-check.sh
 
+# Expose TCP port for multiplexer to connect
+EXPOSE 10000
+
 # Use wrapper script as entrypoint
 ENTRYPOINT ["/usr/local/bin/ffmpeg-srt-live-wrapper.sh"]

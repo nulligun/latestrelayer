@@ -13,6 +13,9 @@ enum class Mode {
     FALLBACK
 };
 
+// Type alias for backward compatibility with Multiplexer code
+using Source = Mode;
+
 class StreamSwitcher {
 public:
     // Constructor with configurable min consecutive packets threshold
