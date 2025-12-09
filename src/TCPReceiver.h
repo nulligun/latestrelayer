@@ -49,6 +49,9 @@ public:
     // Check if TCP connected
     bool isConnected() const { return connected_.load(); }
     
+    // Check if stream is ready (PAT/PMT discovered AND IDR detected)
+    bool isStreamReady() const { return pids_ready_.load() && idr_ready_.load(); }
+    
     // Wait for stream info (PAT/PMT) discovery - blocks until ready
     void waitForStreamInfo();
     

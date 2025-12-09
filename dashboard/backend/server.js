@@ -202,15 +202,22 @@ controllerWs.on('disconnected', () => {
 controllerWs.on('initial_state', (message) => {
   console.log(`[main] Received initial state from controller`);
   console.log(`[main] Initial scene: ${message.current_scene}, privacy: ${message.privacy_enabled}`);
+  
+  // Store containers with their timestamps for persistence
   latestContainerState = {
-    containers: message.containers,
+    containers: message.containers.map(c => ({
+      ...c,
+      // Preserve timestamps from initial state
+      startedAt: c.startedAt,
+      finishedAt: c.finishedAt
+    })),
     timestamp: message.timestamp
   };
   
   // Broadcast to all connected frontend clients with scene info
   broadcast({
     type: 'container_update',
-    containers: message.containers,
+    containers: latestContainerState.containers,
     timestamp: message.timestamp,
     currentScene: message.current_scene,
     privacyEnabled: message.privacy_enabled
@@ -223,16 +230,20 @@ controllerWs.on('status_change', (message) => {
     console.log(`[main] Status includes scene: ${message.current_scene}, privacy: ${message.privacy_enabled}`);
   }
   
-  // Update our state with the changes
+  // Update our state with the changes while preserving timestamps
   message.changes.forEach(change => {
     const idx = latestContainerState.containers.findIndex(c => c.name === change.name);
     if (idx !== -1) {
+      const existingContainer = latestContainerState.containers[idx];
       latestContainerState.containers[idx] = {
-        ...latestContainerState.containers[idx],
+        ...existingContainer,
         status: change.currentStatus,
         health: change.currentHealth,
         running: change.running,
-        statusDetail: change.statusDetail
+        statusDetail: change.statusDetail,
+        // Preserve timestamps from existing state (they came from initial_state)
+        startedAt: existingContainer.startedAt,
+        finishedAt: existingContainer.finishedAt
       };
     }
   });

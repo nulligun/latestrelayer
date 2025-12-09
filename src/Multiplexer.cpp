@@ -474,6 +474,56 @@ void Multiplexer::processLoop() {
                       << ", Live ready: " << (live_stream_ready_.load() ? "Yes" : "No") << std::endl;
         }
         
+        // Check if camera stream became ready dynamically (if not already ready)
+        if (current_mode == Mode::FALLBACK && !live_stream_ready_.load() && camera_tcp_receiver_) {
+            if (camera_tcp_receiver_->isConnected() && camera_tcp_receiver_->isStreamReady()) {
+                std::cout << "[Multiplexer] ================================================" << std::endl;
+                std::cout << "[Multiplexer] Camera stream became ready dynamically!" << std::endl;
+                std::cout << "[Multiplexer] ================================================" << std::endl;
+                
+                // Extract stream info and timestamp bases
+                StreamInfo camera_info = camera_tcp_receiver_->getStreamInfo();
+                std::cout << "[Multiplexer] Camera stream info:" << std::endl;
+                std::cout << "  Video PID: " << camera_info.video_pid << std::endl;
+                std::cout << "  Audio PID: " << camera_info.audio_pid << std::endl;
+                std::cout << "  PMT PID: " << camera_info.pmt_pid << std::endl;
+                
+                // Extract timestamp bases from camera
+                if (!camera_tcp_receiver_->extractTimestampBases()) {
+                    std::cerr << "[Multiplexer] Warning: Could not extract camera timestamp bases" << std::endl;
+                } else {
+                    std::cout << "[Multiplexer] Camera timestamp bases extracted:" << std::endl;
+                    std::cout << "  PTS base: " << camera_tcp_receiver_->getPTSBase() << std::endl;
+                    std::cout << "  PCR base: " << camera_tcp_receiver_->getPCRBase() << std::endl;
+                }
+                
+                // Initialize PID mapper with both streams
+                StreamInfo fallback_info = fallback_tcp_receiver_->getStreamInfo();
+                pid_mapper_->initialize(camera_info, fallback_info);
+                std::cout << "[Multiplexer] PID mapper initialized with camera and fallback streams" << std::endl;
+                
+                // Mark camera stream as ready
+                live_stream_ready_ = true;
+                std::cout << "[Multiplexer] Camera stream is now ready for switching!" << std::endl;
+                
+                // Auto-switch to LIVE mode if not in privacy mode
+                if (!switcher_->isPrivacyMode()) {
+                    std::cout << "[Multiplexer] Auto-switching to LIVE mode..." << std::endl;
+                    if (switchToLiveAtIDR()) {
+                        current_mode = Mode::LIVE;
+                        active_receiver = camera_tcp_receiver_.get();
+                        active_source = Source::LIVE;
+                        std::cout << "[Multiplexer] Auto-switch to LIVE complete!" << std::endl;
+                    } else {
+                        std::cout << "[Multiplexer] Auto-switch to LIVE failed" << std::endl;
+                    }
+                } else {
+                    std::cout << "[Multiplexer] Privacy mode enabled - staying in FALLBACK" << std::endl;
+                }
+                std::cout << "[Multiplexer] ================================================" << std::endl;
+            }
+        }
+        
         // Check for mode switch
         if (current_mode == Mode::FALLBACK && live_stream_ready_.load()) {
             // Check if we should return to live

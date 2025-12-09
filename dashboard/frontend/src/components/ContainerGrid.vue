@@ -17,8 +17,8 @@
         
         <div class="container-description">{{ getContainerDescription(container.name) }}</div>
         
-        <div v-if="container.statusDetail" class="container-status-detail">
-          {{ container.statusDetail }}
+        <div v-if="getStatusDetail(container)" class="container-status-detail">
+          {{ getStatusDetail(container) }}
         </div>
         
         <div class="container-actions">
@@ -68,6 +68,8 @@
 </template>
 
 <script>
+import { ref, onMounted, onUnmounted } from 'vue';
+
 export default {
   name: 'ContainerGrid',
   props: {
@@ -76,40 +78,161 @@ export default {
       default: () => []
     }
   },
-  data() {
-    return {
-      loading: false,
-      actionPending: {},
-      actionError: {},
-      containerDescriptions: {
-        'multiplexer': 'Auto switch between Camera and BRB',
-        'ffmpeg-kick': 'Stream to kick',
-        'muxer': 'Mux BRB and Cam to Program',
-        'dashboard': 'This control panel',
-        'ffmpeg-fallback': 'A looping video of the BRB screen',
-        'mock-camera': 'A looping video for testing the camera feed',
-        'nginx-rtmp': 'RTMP Relay server',
-        'ffmpeg-srt-live': 'SRT to RTMP relay',
-        'controller': 'API for container management',
-        'nginx-proxy': 'Nginx reverse proxy - provides HTTPS access to dashboard'
+  setup(props, { emit }) {
+    const loading = ref(false);
+    const actionPending = ref({});
+    const actionError = ref({});
+    const currentTime = ref(Date.now());
+    let timerInterval = null;
+
+    const containerDescriptions = {
+      'multiplexer': 'Auto switch between Camera and BRB',
+      'ffmpeg-kick': 'Stream to kick',
+      'muxer': 'Mux BRB and Cam to Program',
+      'dashboard': 'This control panel',
+      'ffmpeg-fallback': 'A looping video of the BRB screen',
+      'mock-camera': 'A looping video for testing the camera feed',
+      'nginx-rtmp': 'RTMP Relay server',
+      'ffmpeg-srt-live': 'SRT to RTMP relay',
+      'controller': 'API for container management',
+      'nginx-proxy': 'Nginx reverse proxy - provides HTTPS access to dashboard'
+    };
+
+    // Start the timer that updates every second
+    onMounted(() => {
+      timerInterval = setInterval(() => {
+        currentTime.value = Date.now();
+      }, 1000);
+    });
+
+    // Clean up the timer when component is unmounted
+    onUnmounted(() => {
+      if (timerInterval) {
+        clearInterval(timerInterval);
+      }
+    });
+
+    const formatTimeDelta = (milliseconds) => {
+      const totalSeconds = Math.floor(milliseconds / 1000);
+      
+      if (totalSeconds < 60) {
+        return `${totalSeconds}s`;
+      } else if (totalSeconds < 3600) {
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        return `${minutes}m ${seconds}s`;
+      } else if (totalSeconds < 86400) {
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return `${hours}h ${minutes}m ${seconds}s`;
+      } else {
+        const days = Math.floor(totalSeconds / 86400);
+        const hours = Math.floor((totalSeconds % 86400) / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        return `${days}d ${hours}h ${minutes}m`;
       }
     };
-  },
-  methods: {
-    isCriticalContainer(container) {
+
+    const getStatusDetail = (container) => {
+      try {
+        const status = container.status;
+        const health = container.health;
+
+        // Debug logging for all containers
+        console.log(`[ContainerGrid] getStatusDetail for ${container.name}:`, {
+          status,
+          health,
+          startedAt: container.startedAt,
+          finishedAt: container.finishedAt,
+          currentTime: currentTime.value
+        });
+
+        // For exited containers - only use timestamp if valid
+        if (status === 'exited') {
+          if (container.finishedAt && container.finishedAt !== null) {
+            // Validate timestamp
+            const finishedAt = new Date(container.finishedAt);
+            const timestampYear = finishedAt.getFullYear();
+            
+            // Check if timestamp is valid and reasonable (after year 2000, before 2100)
+            if (!isNaN(finishedAt.getTime()) && timestampYear >= 2000 && timestampYear < 2100) {
+              const elapsed = currentTime.value - finishedAt.getTime();
+              
+              // Only use calculated time if elapsed is positive and reasonable (less than 10 years)
+              if (elapsed >= 0 && elapsed < 315360000000) { // 10 years in milliseconds
+                const timeAgo = formatTimeDelta(elapsed);
+                
+                // Extract exit code from statusDetail if available
+                const exitCodeMatch = container.statusDetail?.match(/Exited \((\d+)\)/);
+                const exitCode = exitCodeMatch ? exitCodeMatch[1] : '0';
+                
+                return `Exited (${exitCode}) ${timeAgo} ago`;
+              }
+            }
+          }
+          
+          // Fall back to static statusDetail for invalid timestamps
+          return container.statusDetail;
+        }
+
+        // For running containers - only use timestamp if valid
+        if (status === 'running') {
+          if (container.startedAt && container.startedAt !== null) {
+            // Validate timestamp
+            const startedAt = new Date(container.startedAt);
+            const timestampYear = startedAt.getFullYear();
+            
+            // Check if timestamp is valid and reasonable (after year 2000, before 2100)
+            if (!isNaN(startedAt.getTime()) && timestampYear >= 2000 && timestampYear < 2100) {
+              const elapsed = currentTime.value - startedAt.getTime();
+              
+              // Only use calculated time if elapsed is positive and reasonable (less than 10 years)
+              if (elapsed >= 0 && elapsed < 315360000000) { // 10 years in milliseconds
+                const uptime = formatTimeDelta(elapsed);
+
+                if (health === 'healthy') {
+                  return `Up ${uptime} (healthy)`;
+                } else if (health === 'unhealthy') {
+                  return `Up ${uptime} (unhealthy)`;
+                } else if (health === 'starting') {
+                  return `Up ${uptime} (health: starting)`;
+                } else {
+                  return `Up ${uptime}`;
+                }
+              }
+            }
+          }
+          
+          // Fall back to static statusDetail for invalid timestamps
+          return container.statusDetail;
+        }
+
+        // For other statuses, always use the static statusDetail
+        return container.statusDetail;
+      } catch (error) {
+        console.error('[ContainerGrid] Error formatting status detail:', error, container);
+        return container.statusDetail;
+      }
+    };
+
+    const isCriticalContainer = (container) => {
       const criticalNames = ['nginx-proxy', 'dashboard', 'controller'];
       return criticalNames.includes(container.name) || container.isCritical === true;
-    },
-    getContainerDescription(name) {
-      return this.containerDescriptions[name] || 'No description available';
-    },
-    isTransitional(container) {
+    };
+
+    const getContainerDescription = (name) => {
+      return containerDescriptions[name] || 'No description available';
+    };
+
+    const isTransitional = (container) => {
       const transitionalStates = ['stopping', 'starting', 'restarting', 'creating'];
       return transitionalStates.includes(container.status);
-    },
-    getStatusClass(container) {
+    };
+
+    const getStatusClass = (container) => {
       // Check for transitional states
-      if (this.isTransitional(container)) {
+      if (isTransitional(container)) {
         return 'status-transitional';
       }
       // Check for unknown status (controller API unavailable)
@@ -124,8 +247,9 @@ export default {
       if (container.status === 'exited') return 'status-not-running';
       if (container.status === 'not-created') return 'status-not-created';
       return 'status-unknown';
-    },
-    getStatusDisplay(container) {
+    };
+
+    const getStatusDisplay = (container) => {
       // Handle transitional states
       if (container.status === 'stopping') return 'STOPPING';
       if (container.status === 'starting') return 'STARTING';
@@ -140,12 +264,12 @@ export default {
       if (container.status === 'exited') return 'NOT-RUNNING';
       if (container.status === 'not-created') return 'NOT-CREATED';
       return container.status.toUpperCase();
-    },
-    
-    async performAction(containerName, action) {
+    };
+
+    const performAction = async (containerName, action) => {
       console.log(`[container] ACTION STARTED: ${action} on ${containerName}`);
-      this.actionPending = { ...this.actionPending, [containerName]: action };
-      this.actionError = { ...this.actionError, [containerName]: null };
+      actionPending.value = { ...actionPending.value, [containerName]: action };
+      actionError.value = { ...actionError.value, [containerName]: null };
       
       try {
         const response = await fetch(`/api/container/${containerName}/${action}`, {
@@ -168,34 +292,52 @@ export default {
         console.log(`[container] ${action} success - transitional status:`, data.status);
         
         // DIAGNOSTIC: Emit event to parent to immediately update container status
-        this.$emit('container-status-changed', {
+        emit('container-status-changed', {
           name: containerName,
           status: data.status
         });
       } catch (error) {
         console.error(`[container] ${action} error:`, error);
-        this.actionError = { ...this.actionError, [containerName]: error.message };
+        actionError.value = { ...actionError.value, [containerName]: error.message };
       } finally {
-        this.actionPending = { ...this.actionPending, [containerName]: null };
+        actionPending.value = { ...actionPending.value, [containerName]: null };
         console.log(`[container] ACTION COMPLETED: actionPending cleared for ${containerName}`);
       }
-    },
-    
-    startContainer(name) {
-      this.performAction(name, 'start');
-    },
-    
-    stopContainer(name) {
-      this.performAction(name, 'stop');
-    },
-    
-    restartContainer(name) {
-      this.performAction(name, 'restart');
-    },
-    
-    createAndStartContainer(name) {
-      this.performAction(name, 'create-and-start');
-    }
+    };
+
+    const startContainer = (name) => {
+      performAction(name, 'start');
+    };
+
+    const stopContainer = (name) => {
+      performAction(name, 'stop');
+    };
+
+    const restartContainer = (name) => {
+      performAction(name, 'restart');
+    };
+
+    const createAndStartContainer = (name) => {
+      performAction(name, 'create-and-start');
+    };
+
+    return {
+      loading,
+      actionPending,
+      actionError,
+      currentTime,
+      isCriticalContainer,
+      getContainerDescription,
+      isTransitional,
+      getStatusClass,
+      getStatusDisplay,
+      getStatusDetail,
+      performAction,
+      startContainer,
+      stopContainer,
+      restartContainer,
+      createAndStartContainer
+    };
   }
 };
 </script>

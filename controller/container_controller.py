@@ -330,15 +330,30 @@ class ContainerController:
             return None
     
     def _format_detailed_status(self, container):
-        """Format detailed status string from container attributes."""
+        """Format detailed status string from container attributes.
+        Returns tuple: (status_detail_string, started_at_iso, finished_at_iso)
+        """
         try:
             state = container.attrs['State']
             status = state.get('Status', 'unknown')
+            started_at_raw = state.get('StartedAt', '')
+            finished_at_raw = state.get('FinishedAt', '')
+            
+            # Filter out invalid/zero timestamps (Docker returns 0001-01-01T00:00:00Z for unset times)
+            def is_valid_timestamp(ts):
+                if not ts or ts == '':
+                    return False
+                # Check if timestamp is the zero time (year 0001 or 1970 epoch)
+                if ts.startswith('0001-') or ts.startswith('0000-'):
+                    return False
+                return True
+            
+            started_at = started_at_raw if is_valid_timestamp(started_at_raw) else None
+            finished_at = finished_at_raw if is_valid_timestamp(finished_at_raw) else None
             
             # For not-running containers
             if status == 'exited':
                 exit_code = state.get('ExitCode', 0)
-                finished_at = state.get('FinishedAt', '')
                 if finished_at:
                     from datetime import datetime
                     try:
@@ -346,14 +361,13 @@ class ContainerController:
                         now = datetime.now(finished.tzinfo)
                         delta = now - finished
                         time_ago = self._format_time_delta(delta)
-                        return f"Exited ({exit_code}) {time_ago} ago"
+                        return (f"Exited ({exit_code}) {time_ago} ago", started_at, finished_at)
                     except:
-                        return f"Exited ({exit_code})"
-                return f"Exited ({exit_code})"
+                        return (f"Exited ({exit_code})", started_at, finished_at)
+                return (f"Exited ({exit_code})", started_at, finished_at)
             
             # For running containers
             elif status == 'running':
-                started_at = state.get('StartedAt', '')
                 if started_at:
                     from datetime import datetime
                     try:
@@ -367,30 +381,30 @@ class ContainerController:
                         health_status = health.get('Status', '')
                         
                         if health_status == 'healthy':
-                            return f"Up {uptime} (healthy)"
+                            return (f"Up {uptime} (healthy)", started_at, finished_at)
                         elif health_status == 'unhealthy':
-                            return f"Up {uptime} (unhealthy)"
+                            return (f"Up {uptime} (unhealthy)", started_at, finished_at)
                         elif health_status == 'starting':
-                            return f"Up {uptime} (health: starting)"
+                            return (f"Up {uptime} (health: starting)", started_at, finished_at)
                         else:
-                            return f"Up {uptime}"
+                            return (f"Up {uptime}", started_at, finished_at)
                     except:
-                        return "Up"
-                return "Up"
+                        return ("Up", started_at, finished_at)
+                return ("Up", started_at, finished_at)
             
             # For other statuses
             elif status == 'created':
-                return "Created"
+                return ("Created", started_at, finished_at)
             elif status == 'paused':
-                return "Paused"
+                return ("Paused", started_at, finished_at)
             elif status == 'restarting':
-                return "Restarting"
+                return ("Restarting", started_at, finished_at)
             else:
-                return status.capitalize()
+                return (status.capitalize(), started_at, finished_at)
                 
         except Exception as e:
             print(f"[controller] WARNING: Failed to format detailed status: {e}", file=sys.stderr)
-            return "Unknown"
+            return ("Unknown", None, None)
     
     def _format_time_delta(self, delta):
         """Format a time delta into human-readable string."""
@@ -742,7 +756,7 @@ class ContainerController:
             container = self.client.containers.get(container_name)
             container.reload()
             
-            detailed_status = self._format_detailed_status(container)
+            detailed_status, started_at, finished_at = self._format_detailed_status(container)
             health_status = self._get_health_status(container)
             
             status_info = {
@@ -751,7 +765,9 @@ class ContainerController:
                 "status_detail": detailed_status,
                 "running": container.status == "running",
                 "health": health_status,
-                "id": container.short_id
+                "id": container.short_id,
+                "startedAt": started_at,
+                "finishedAt": finished_at
             }
             
             print(f"[controller] Status for {container_name}: {container.status} ({detailed_status}) [health: {health_status}]")
@@ -813,8 +829,9 @@ class ContainerController:
                 # Match container by full name from compose services
                 if container.name in full_name_to_short:
                     short_name = full_name_to_short[container.name]
-                    detailed_status = self._format_detailed_status(container)
+                    detailed_status, started_at, finished_at = self._format_detailed_status(container)
                     health_status = self._get_health_status(container)
+                    
                     containers_by_name[short_name] = {
                         "name": short_name,
                         "full_name": container.name,
@@ -823,7 +840,9 @@ class ContainerController:
                         "running": container.status == "running",
                         "health": health_status,
                         "id": container.short_id,
-                        "created": True
+                        "created": True,
+                        "startedAt": started_at,
+                        "finishedAt": finished_at
                     }
             
             # Get all services from compose file
@@ -847,7 +866,9 @@ class ContainerController:
                         "health": None,
                         "id": None,
                         "created": False,
-                        "is_manual": service_info.get('is_manual', False)
+                        "is_manual": service_info.get('is_manual', False),
+                        "startedAt": None,
+                        "finishedAt": None
                     })
             
             total_duration = time.time() - start_time
