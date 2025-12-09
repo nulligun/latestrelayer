@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <errno.h>
 
@@ -107,20 +108,34 @@ bool TCPReceiver::attemptConnection() {
     int flag = 1;
     setsockopt(sockfd_, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
     
-    // Connect to server
-    sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port_);
+    // Resolve hostname/IP using getaddrinfo (supports both DNS names and IP addresses)
+    struct addrinfo hints, *result, *rp;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;        // IPv4
+    hints.ai_socktype = SOCK_STREAM;  // TCP
     
-    if (inet_pton(AF_INET, host_.c_str(), &addr.sin_addr) <= 0) {
-        std::cerr << "[" << name_ << "] Invalid address: " << host_ << std::endl;
+    std::string port_str = std::to_string(port_);
+    int ret = getaddrinfo(host_.c_str(), port_str.c_str(), &hints, &result);
+    if (ret != 0) {
+        std::cerr << "[" << name_ << "] Failed to resolve hostname '" << host_ << "': "
+                  << gai_strerror(ret) << std::endl;
         close(sockfd_);
         sockfd_ = -1;
         return false;
     }
     
-    if (::connect(sockfd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    // Try each address until we successfully connect
+    bool connected = false;
+    for (rp = result; rp != nullptr; rp = rp->ai_next) {
+        if (::connect(sockfd_, rp->ai_addr, rp->ai_addrlen) == 0) {
+            connected = true;
+            break;
+        }
+    }
+    
+    freeaddrinfo(result);
+    
+    if (!connected) {
         std::cerr << "[" << name_ << "] Connection failed: " << strerror(errno) << std::endl;
         close(sockfd_);
         sockfd_ = -1;
@@ -185,7 +200,8 @@ void TCPReceiver::backgroundThreadFunc() {
 }
 
 void TCPReceiver::processTCPStream() {
-    ts::SectionDemux demux(ts::DuckContext::Instance());
+    ts::DuckContext duck;
+    ts::SectionDemux demux(duck);
     std::vector<uint8_t> pes_buffer;
     bool foundPAT = false;
     bool foundPMT = false;
@@ -199,13 +215,14 @@ void TCPReceiver::processTCPStream() {
         StreamInfo& info;
         bool& foundPAT;
         bool& foundPMT;
+        ts::DuckContext& duck;
         
-        StreamAnalyzer(StreamInfo& si, bool& pat, bool& pmt) 
-            : info(si), foundPAT(pat), foundPMT(pmt) {}
+        StreamAnalyzer(StreamInfo& si, bool& pat, bool& pmt, ts::DuckContext& d)
+            : info(si), foundPAT(pat), foundPMT(pmt), duck(d) {}
         
         virtual void handleTable(ts::SectionDemux&, const ts::BinaryTable& table) override {
             if (table.tableId() == ts::TID_PAT && !foundPAT) {
-                ts::PAT pat(ts::DuckContext::Instance(), table);
+                ts::PAT pat(duck, table);
                 if (pat.isValid() && !pat.pmts.empty()) {
                     auto it = pat.pmts.begin();
                     info.program_number = it->first;
@@ -214,7 +231,7 @@ void TCPReceiver::processTCPStream() {
                 }
             }
             else if (table.tableId() == ts::TID_PMT && !foundPMT) {
-                ts::PMT pmt(ts::DuckContext::Instance(), table);
+                ts::PMT pmt(duck, table);
                 if (pmt.isValid()) {
                     info.pcr_pid = pmt.pcr_pid;
                     for (const auto& stream : pmt.streams) {
@@ -234,7 +251,7 @@ void TCPReceiver::processTCPStream() {
         }
     };
     
-    StreamAnalyzer analyzer(discovered_info_, foundPAT, foundPMT);
+    StreamAnalyzer analyzer(discovered_info_, foundPAT, foundPMT, duck);
     demux.setTableHandler(&analyzer);
     demux.addPID(ts::PID_PAT);
     
@@ -428,11 +445,17 @@ bool TCPReceiver::extractTimestampBases() {
     NALParser nal_parser;
     for (const auto& pkt : packets) {
         if (pkt.getPID() == discovered_info_.video_pid && pkt.hasPayload()) {
-            nal_parser.parsePacket(pkt);
-            if (nal_parser.hasParameterSets()) {
-                sps_data_ = nal_parser.getLastSPS();
-                pps_data_ = nal_parser.getLastPPS();
-                break;
+            size_t header_size = pkt.getHeaderSize();
+            const uint8_t* payload = pkt.b + header_size;
+            size_t payload_size = ts::PKT_SIZE - header_size;
+            
+            if (payload_size > 0) {
+                FrameInfo frame_info = nal_parser.parseVideoPayload(payload, payload_size);
+                if (nal_parser.hasParameterSets()) {
+                    sps_data_ = nal_parser.getLastSPS();
+                    pps_data_ = nal_parser.getLastPPS();
+                    break;
+                }
             }
         }
     }

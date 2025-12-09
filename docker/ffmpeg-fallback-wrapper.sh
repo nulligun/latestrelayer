@@ -67,6 +67,8 @@ echo "[Wrapper] Using fallback file: $FALLBACK_FILE"
 
 # Start ffmpeg in background
 echo "[Wrapper] Starting ffmpeg fallback stream (TCP output)..."
+echo "[Wrapper] Full command:"
+echo "ffmpeg -nostdin -loglevel info -stats -re -stream_loop -1 -fflags +genpts -i \"$FALLBACK_FILE\" -c copy -f mpegts 'tcp://0.0.0.0:10001?listen=1'"
 ffmpeg -nostdin \
     -loglevel info \
     -stats \

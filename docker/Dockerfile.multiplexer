@@ -64,9 +64,6 @@ COPY config.yaml /app/config.yaml
 # These will be overridden by volume mounts but ensure they exist
 RUN mkdir -p /app/build /opt/tsduck-src /opt/tsduck-build /opt/tsduck
 
-# Expose UDP ports for TS inputs
-EXPOSE 10000/udp 10001/udp
-
 # Set working directory
 WORKDIR /app
 
