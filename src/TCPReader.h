@@ -133,7 +133,8 @@ private:
     std::mutex buffer_mutex_;
     std::condition_variable cv_;
     std::vector<ts::TSPacket> rolling_buffer_;
-    size_t idr_index_;
+    size_t idr_index_;              // Initial IDR index for first connection
+    size_t latest_idr_index_;       // Most recent IDR index (continuously updated)
     size_t audio_sync_index_;
     size_t consume_index_;
     size_t last_snapshot_end_;

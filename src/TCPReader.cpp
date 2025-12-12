@@ -63,6 +63,7 @@ TCPReader::TCPReader(const std::string& name, const std::string& host, uint16_t 
       audio_sync_ready_(false),
       first_packet_received_(false),
       idr_index_(0),
+      latest_idr_index_(0),
       audio_sync_index_(0),
       consume_index_(0),
       last_snapshot_end_(0),
@@ -194,6 +195,7 @@ void TCPReader::backgroundThreadFunc() {
             std::lock_guard<std::mutex> lock(buffer_mutex_);
             rolling_buffer_.clear();
             idr_index_ = 0;
+            latest_idr_index_ = 0;
             audio_sync_index_ = 0;
             consume_index_ = 0;
         }
@@ -352,22 +354,29 @@ void TCPReader::processTCPStream() {
                 }
             }
             
-            // Phase 2: Detect IDR and wait for audio
-            if (pids_ready_.load() && !idr_ready_.load()) {
+            // Phase 2: Detect IDR (runs continuously to track latest IDR)
+            if (pids_ready_.load()) {
                 if (pkt.getPID() == discovered_info_.video_pid && pkt.hasPayload()) {
                     if (pkt.getPUSI()) {
                         if (!pes_buffer.empty() && findIDRInPES(pes_buffer.data(), pes_buffer.size())) {
                             std::lock_guard<std::mutex> lock(buffer_mutex_);
-                            idr_index_ = pes_start_index;
-                            std::cout << "[" << name_ << "] IDR frame detected at index " << idr_index_ << std::endl;
                             
-                            // If no audio, mark ready immediately
-                            if (discovered_info_.audio_pid == ts::PID_NULL) {
-                                std::cout << "[" << name_ << "] No audio stream, marking ready" << std::endl;
-                                idr_ready_ = true;
-                                cv_.notify_all();
-                            } else {
-                                std::cout << "[" << name_ << "] Waiting for first audio PES..." << std::endl;
+                            // Update latest IDR index (always track most recent IDR)
+                            latest_idr_index_ = pes_start_index;
+                            
+                            // Set initial IDR only once
+                            if (!idr_ready_.load()) {
+                                idr_index_ = pes_start_index;
+                                std::cout << "[" << name_ << "] Initial IDR frame detected at index " << idr_index_ << std::endl;
+                                
+                                // If no audio, mark ready immediately
+                                if (discovered_info_.audio_pid == ts::PID_NULL) {
+                                    std::cout << "[" << name_ << "] No audio stream, marking ready" << std::endl;
+                                    idr_ready_ = true;
+                                    cv_.notify_all();
+                                } else {
+                                    std::cout << "[" << name_ << "] Waiting for first audio PES..." << std::endl;
+                                }
                             }
                         }
                         pes_buffer.clear();
@@ -421,6 +430,8 @@ void TCPReader::processTCPStream() {
                     rolling_buffer_.erase(rolling_buffer_.begin(), rolling_buffer_.begin() + to_remove);
                     if (idr_index_ >= to_remove) idr_index_ -= to_remove;
                     else idr_index_ = 0;
+                    if (latest_idr_index_ >= to_remove) latest_idr_index_ -= to_remove;
+                    else latest_idr_index_ = 0;
                     if (consume_index_ >= to_remove) consume_index_ -= to_remove;
                     else consume_index_ = 0;
                     if (last_snapshot_end_ >= to_remove) last_snapshot_end_ -= to_remove;
@@ -525,6 +536,8 @@ std::vector<ts::TSPacket> TCPReader::receivePackets(size_t maxPackets, int timeo
                     rolling_buffer_.erase(rolling_buffer_.begin(), rolling_buffer_.begin() + consume_index_);
                     if (idr_index_ >= consume_index_) idr_index_ -= consume_index_;
                     else idr_index_ = 0;
+                    if (latest_idr_index_ >= consume_index_) latest_idr_index_ -= consume_index_;
+                    else latest_idr_index_ = 0;
                     consume_index_ = 0;
                 }
             }
