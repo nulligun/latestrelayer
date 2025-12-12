@@ -285,6 +285,21 @@ The statistics page shows:
 - Stream uptime
 - Bytes transmitted
 
+### Testing TCP Streams Directly
+
+If you need to test the fallback TCP stream directly (for debugging or verification), use VLC with increased network caching to handle TCP timing variations:
+
+```bash
+# TCP fallback stream (port 10001) - use increased cache
+vlc tcp://localhost:10001 --network-caching=3000
+
+# This sets a 3-second buffer to smooth out TCP delivery bursts
+```
+
+**Why the extra caching is needed:** TCP delivers data as a byte stream with variable timing due to network buffering and congestion control. Unlike file playback which has consistent I/O timing, TCP streams can arrive in bursts. The increased cache (3000ms vs default 300ms) allows VLC to buffer more data and provides smoother playback.
+
+**Note:** The multiplexer's internal TCP receiver already handles buffering and timing for RTMP output, so this is only needed for direct TCP playback testing.
+
 ### Monitoring
 
 The multiplexer logs show:

@@ -1,6 +1,7 @@
 #include "Multiplexer.h"
 #include "SPSPPSInjector.h"
 #include <iostream>
+#include <iomanip>
 #include <thread>
 #include <csignal>
 
@@ -50,6 +51,9 @@ bool Multiplexer::initialize() {
     http_server_->setPrivacyCallback([this](bool enabled) {
         onPrivacyModeChange(enabled);
     });
+    http_server_->setInputSourceCallback([this](InputSource source) {
+        requestInputSourceSwitch(source);
+    });
     http_server_->setInputSourceManager(input_source_manager_);
     
     // Note: Health callback will be set after rtmp_output_ is created
@@ -65,27 +69,14 @@ bool Multiplexer::initialize() {
     // Query initial privacy mode from controller
     queryInitialPrivacyMode();
     
-    // Create TCP receivers (no queues needed - TCPReceiver has internal rolling buffer)
+    // Create TCP receivers for both camera and drone (both always available for instant switching)
+    std::cout << "[Multiplexer] Creating Camera TCP receiver for port " << config_.getLiveTcpPort() << std::endl;
+    camera_tcp_receiver_ = std::make_unique<TCPReceiver>(
+        "Camera", "ffmpeg-srt-live", config_.getLiveTcpPort());
     
-    if (input_source_manager_->isCamera()) {
-        // Camera mode: Use TCP receiver (from ffmpeg-srt-live)
-        std::cout << "[Multiplexer] Creating Camera TCP receiver for port " << config_.getLiveTcpPort() << std::endl;
-        camera_tcp_receiver_ = std::make_unique<TCPReceiver>(
-            "Camera", "ffmpeg-srt-live", config_.getLiveTcpPort());
-    } else {
-        // Drone mode: Use RTMP receiver with auto-reconnect (kept for dual-source support)
-        std::cout << "[Multiplexer] Creating Drone RTMP receiver for URL: " << config_.getDroneRtmpUrl() << std::endl;
-        std::cout << "[Multiplexer] Drone reconnect config: initial=" << config_.getDroneReconnectInitialMs()
-                  << "ms, max=" << config_.getDroneReconnectMaxMs()
-                  << "ms, backoff=" << config_.getDroneReconnectBackoff() << "x" << std::endl;
-        // Note: Drone still needs a queue - create one
-        live_queue_ = std::make_unique<TSPacketQueue>(config_.getTsQueueSize());
-        drone_receiver_ = std::make_unique<RTMPReceiver>(
-            "Drone", config_.getDroneRtmpUrl(), *live_queue_,
-            config_.getDroneReconnectInitialMs(),
-            config_.getDroneReconnectMaxMs(),
-            config_.getDroneReconnectBackoff());
-    }
+    std::cout << "[Multiplexer] Creating Drone TCP receiver for port " << config_.getDroneTcpPort() << std::endl;
+    drone_tcp_receiver_ = std::make_unique<TCPReceiver>(
+        "Drone", "ffmpeg-rtmp-live", config_.getDroneTcpPort());
     
     // Fallback receiver (always TCP)
     std::cout << "[Multiplexer] Creating Fallback TCP receiver for port " << config_.getFallbackTcpPort() << std::endl;
@@ -127,14 +118,15 @@ bool Multiplexer::initialize() {
     // Create SPS/PPS injector for splice points
     sps_pps_injector_ = std::make_unique<SPSPPSInjector>();
     
-    // Start live input receiver (camera TCP or drone RTMP depending on configuration)
+    // Start live input receivers (both camera and drone for instant switching)
     if (camera_tcp_receiver_) {
         if (!camera_tcp_receiver_->start()) {
             std::cerr << "[Multiplexer] Failed to start camera TCP receiver" << std::endl;
             return false;
         }
-    } else if (drone_receiver_) {
-        if (!drone_receiver_->start()) {
+    }
+    if (drone_tcp_receiver_) {
+        if (!drone_tcp_receiver_->start()) {
             std::cerr << "[Multiplexer] Failed to start drone receiver" << std::endl;
             return false;
         }
@@ -169,6 +161,31 @@ bool Multiplexer::initialize() {
     if (!rtmp_output_->start()) {
         std::cerr << "[Multiplexer] Failed to start RTMP output" << std::endl;
         return false;
+    }
+    
+    // Configure timestamp monitoring with video/audio PIDs
+    if (live_stream_ready_.load()) {
+        // Use live stream PIDs (camera or drone, whichever is available)
+        TCPReceiver* primary_receiver = (current_input_source_ == InputSource::CAMERA &&
+                                         camera_tcp_receiver_ && camera_tcp_receiver_->isConnected()) ?
+                                        camera_tcp_receiver_.get() :
+                                        (drone_tcp_receiver_ && drone_tcp_receiver_->isConnected() ?
+                                         drone_tcp_receiver_.get() : nullptr);
+        
+        if (primary_receiver) {
+            StreamInfo primary_info = primary_receiver->getStreamInfo();
+            rtmp_output_->setVideoPID(primary_info.video_pid);
+            rtmp_output_->setAudioPID(primary_info.audio_pid);
+            std::cout << "[Multiplexer] Configured timestamp monitoring: Video PID="
+                      << primary_info.video_pid << ", Audio PID=" << primary_info.audio_pid << std::endl;
+        }
+    } else {
+        // Use fallback stream PIDs
+        StreamInfo fallback_info = fallback_tcp_receiver_->getStreamInfo();
+        rtmp_output_->setVideoPID(fallback_info.video_pid);
+        rtmp_output_->setAudioPID(fallback_info.audio_pid);
+        std::cout << "[Multiplexer] Configured timestamp monitoring (fallback): Video PID="
+                  << fallback_info.video_pid << ", Audio PID=" << fallback_info.audio_pid << std::endl;
     }
     
     // Now set health callback (rtmp_output_ is available)
@@ -257,7 +274,7 @@ void Multiplexer::stop() {
     // Stop receivers
     std::cout << "[Multiplexer] Stopping input receivers..." << std::endl;
     if (camera_tcp_receiver_) camera_tcp_receiver_->stop();
-    if (drone_receiver_) drone_receiver_->stop();
+    if (drone_tcp_receiver_) drone_tcp_receiver_->stop();
     if (fallback_tcp_receiver_) fallback_tcp_receiver_->stop();
     
     // Stop RTMP output
@@ -277,8 +294,8 @@ void Multiplexer::stop() {
     if (camera_tcp_receiver_) {
         std::cout << "  Camera packets received: " << camera_tcp_receiver_->getPacketsReceived() << std::endl;
     }
-    if (drone_receiver_) {
-        std::cout << "  Drone packets received: " << drone_receiver_->getPacketsReceived() << std::endl;
+    if (drone_tcp_receiver_) {
+        std::cout << "  Drone packets received: " << drone_tcp_receiver_->getPacketsReceived() << std::endl;
     }
     std::cout << "  Fallback packets received: " << fallback_tcp_receiver_->getPacketsReceived() << std::endl;
     std::cout << "  RTMP packets written: " << rtmp_output_->getPacketsWritten() << std::endl;
@@ -310,100 +327,165 @@ bool Multiplexer::analyzeStreams() {
         std::cerr << "[Multiplexer] Warning: Could not extract fallback timestamp bases" << std::endl;
     }
     
-    // Try to get live stream if using camera (optional)
-    StreamInfo live_info;
-    if (camera_tcp_receiver_) {
-        std::cout << "[Multiplexer] Checking for live TCP stream..." << std::endl;
+    // Wait for both camera and drone streams (non-blocking, they may connect later)
+    std::cout << "[Multiplexer] Checking for camera and drone TCP streams..." << std::endl;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    
+    StreamInfo camera_info;
+    StreamInfo drone_info;
+    bool camera_ready = false;
+    bool drone_ready = false;
+    
+    // Check camera stream
+    if (camera_tcp_receiver_->isConnected()) {
+        camera_tcp_receiver_->waitForStreamInfo();
+        camera_tcp_receiver_->waitForIDR();
+        camera_info = camera_tcp_receiver_->getStreamInfo();
         
-        // Try to wait for stream info with short timeout approach
-        // Use a simple check: is receiver connected and has stream info?
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-        
-        if (camera_tcp_receiver_->isConnected()) {
-            camera_tcp_receiver_->waitForStreamInfo();
-            camera_tcp_receiver_->waitForIDR();
+        if (camera_info.initialized) {
+            std::cout << "[Multiplexer] Camera stream detected" << std::endl;
+            std::cout << "  Video PID: " << camera_info.video_pid << std::endl;
+            std::cout << "  Audio PID: " << camera_info.audio_pid << std::endl;
             
-            live_info = camera_tcp_receiver_->getStreamInfo();
-            if (live_info.initialized) {
-                std::cout << "[Multiplexer] Live stream detected during initialization" << std::endl;
-                std::cout << "  Video PID: " << live_info.video_pid << std::endl;
-                std::cout << "  Audio PID: " << live_info.audio_pid << std::endl;
-                std::cout << "  PMT PID: " << live_info.pmt_pid << std::endl;
-                
-                // Extract timestamp bases from live
-                if (!camera_tcp_receiver_->extractTimestampBases()) {
-                    std::cerr << "[Multiplexer] Warning: Could not extract live timestamp bases" << std::endl;
-                }
-                
-                // Initialize PID mapper with both streams
-                pid_mapper_->initialize(live_info, fallback_info);
-                live_stream_ready_ = true;
-                std::cout << "[Multiplexer] Both streams ready" << std::endl;
+            if (!camera_tcp_receiver_->extractTimestampBases()) {
+                std::cerr << "[Multiplexer] Warning: Could not extract camera timestamp bases" << std::endl;
             }
+            camera_ready = true;
         }
+    }
+    
+    // Check drone stream
+    if (drone_tcp_receiver_->isConnected()) {
+        drone_tcp_receiver_->waitForStreamInfo();
+        drone_tcp_receiver_->waitForIDR();
+        drone_info = drone_tcp_receiver_->getStreamInfo();
         
-        if (!live_info.initialized) {
-            std::cout << "[Multiplexer] Live stream not available - will be detected dynamically later" << std::endl;
-            live_stream_ready_ = false;
+        if (drone_info.initialized) {
+            std::cout << "[Multiplexer] Drone stream detected" << std::endl;
+            std::cout << "  Video PID: " << drone_info.video_pid << std::endl;
+            std::cout << "  Audio PID: " << drone_info.audio_pid << std::endl;
+            
+            if (!drone_tcp_receiver_->extractTimestampBases()) {
+                std::cerr << "[Multiplexer] Warning: Could not extract drone timestamp bases" << std::endl;
+            }
+            drone_ready = true;
         }
-    } else if (drone_receiver_) {
-        // Drone mode - try to analyze from queue
-        std::cout << "[Multiplexer] Live stream will be detected dynamically when drone connects" << std::endl;
+    }
+    
+    // Initialize PID mapper based on what's available
+    if (camera_ready || drone_ready) {
+        // Use whichever stream is available, prefer current input source
+        StreamInfo primary_info = input_source_manager_->isCamera() ?
+            (camera_ready ? camera_info : drone_info) :
+            (drone_ready ? drone_info : camera_info);
+        
+        pid_mapper_->initialize(primary_info, fallback_info);
+        live_stream_ready_ = true;
+        std::cout << "[Multiplexer] Live stream(s) ready" << std::endl;
+    } else {
+        std::cout << "[Multiplexer] No live streams available yet - will detect dynamically" << std::endl;
         live_stream_ready_ = false;
     }
     
     return true;
 }
 
-bool Multiplexer::analyzeLiveStreamDynamically() {
-    // This method is only used for drone RTMP mode
-    // For camera TCP, stream discovery happens automatically in TCPReceiver background thread
-    if (!drone_receiver_ || !live_queue_) {
-        std::cout << "[Multiplexer] analyzeLiveStreamDynamically() not supported in TCP camera mode" << std::endl;
+void Multiplexer::requestInputSourceSwitch(InputSource new_source) {
+    std::cout << "[Multiplexer] Input source switch requested: "
+              << InputSourceManager::toString(new_source) << std::endl;
+    pending_input_source_ = new_source;
+    input_source_change_pending_ = true;
+}
+
+bool Multiplexer::switchInputSource(InputSource new_source) {
+    if (new_source == current_input_source_) {
+        std::cout << "[Multiplexer] Already using input source: "
+                  << InputSourceManager::toString(new_source) << std::endl;
+        return true;
+    }
+    
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    std::cout << "[Multiplexer] AUDIO-SAFE INPUT SWITCH: "
+              << InputSourceManager::toString(current_input_source_) << " → "
+              << InputSourceManager::toString(new_source) << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    
+    TCPReceiver* new_receiver = (new_source == InputSource::CAMERA) ?
+                                camera_tcp_receiver_.get() :
+                                drone_tcp_receiver_.get();
+    
+    if (!new_receiver->isConnected() || !new_receiver->isStreamReady()) {
+        std::cerr << "[Multiplexer] Target input source not ready yet" << std::endl;
         return false;
     }
     
-    static int analysis_attempt_count = 0;
-    analysis_attempt_count++;
+    // Reset for new loop - triggers new IDR AND audio sync detection
+    new_receiver->resetForNewLoop();
     
-    std::cout << "[Multiplexer] ================================================" << std::endl;
-    std::cout << "[Multiplexer] Attempting to detect drone stream (attempt #"
-              << analysis_attempt_count << ")" << std::endl;
-    std::cout << "[Multiplexer] ================================================" << std::endl;
+    // Wait for fresh video IDR frame
+    std::cout << "[Multiplexer] Waiting for fresh IDR frame on new input..." << std::endl;
+    new_receiver->waitForIDR();
+    std::cout << "[Multiplexer] Fresh IDR frame detected" << std::endl;
     
-    size_t queue_size = live_queue_->size();
-    size_t max_packets_to_analyze = std::max(queue_size, static_cast<size_t>(500));
+    // AUDIO-SAFE: Wait for audio sync point (first audio PUSI after IDR)
+    // This ensures we start from a clean audio PES boundary, preventing ADTS frame corruption
+    std::cout << "[Multiplexer] Waiting for audio sync point..." << std::endl;
+    new_receiver->waitForAudioSync();
+    std::cout << "[Multiplexer] Audio sync point acquired" << std::endl;
     
-    live_analyzer_->reset();
-    
-    // Analyze accumulated packets from the queue
-    size_t live_packets_analyzed = 0;
-    ts::TSPacket packet;
-    
-    while (live_packets_analyzed < max_packets_to_analyze && running_.load()) {
-        if (!live_queue_->pop(packet, std::chrono::milliseconds(50))) {
-            break;
-        }
-        
-        live_analyzer_->analyzePacket(packet);
-        live_packets_analyzed++;
-        
-        if (live_analyzer_->hasValidMediaData()) {
-            break;
-        }
+    // Re-extract timestamp bases from current stream position
+    if (!new_receiver->extractTimestampBases()) {
+        std::cerr << "[Multiplexer] Warning: Could not extract timestamp bases" << std::endl;
     }
     
-    if (!live_analyzer_->hasValidMediaData()) {
-        return false;
+    // Update current bases and source for timestamp rebasing
+    current_pts_base_ = new_receiver->getPTSBase();
+    current_pcr_base_ = new_receiver->getPCRBase();
+    current_pcr_pts_alignment_ = new_receiver->getPCRPTSAlignmentOffset();
+    current_input_source_ = new_source;
+    
+    std::cout << "[Multiplexer] Updated bases: PTS=" << current_pts_base_
+              << ", PCR=" << current_pcr_base_
+              << ", alignment=" << current_pcr_pts_alignment_ << std::endl;
+    
+    // AUDIO-SAFE: Get buffered packets from audio sync point (not just IDR)
+    // This ensures the first audio packet has a complete ADTS frame header
+    auto buffered = new_receiver->getBufferedPacketsFromAudioSync();
+    std::cout << "[Multiplexer] Processing " << buffered.size() << " packets from audio sync point" << std::endl;
+    
+    // Validate first audio packet has valid ADTS header
+    if (!new_receiver->validateFirstAudioADTS(buffered)) {
+        std::cerr << "[Multiplexer] Warning: First audio ADTS validation failed - may have audio glitch" << std::endl;
+        // Continue anyway - the stream will likely recover
+    } else {
+        std::cout << "[Multiplexer] Audio ADTS validation passed" << std::endl;
     }
     
-    const auto& live_info = live_analyzer_->getStreamInfo();
-    const auto& fallback_info = fallback_tcp_receiver_->getStreamInfo();
-    pid_mapper_->initialize(live_info, fallback_info);
+    // Inject SPS/PPS if available (before video IDR)
+    std::vector<uint8_t> sps = new_receiver->getSPSData();
+    std::vector<uint8_t> pps = new_receiver->getPPSData();
+    if (!sps.empty() && !pps.empty()) {
+        StreamInfo new_info = new_receiver->getStreamInfo();
+        size_t injected = injectSPSPPS(Source::LIVE, new_info.video_pid,
+                                       sps, pps, std::nullopt, std::nullopt);
+        std::cout << "[Multiplexer] Injected " << injected << " SPS/PPS packets before IDR" << std::endl;
+    } else {
+        std::cerr << "[Multiplexer] WARNING: No SPS/PPS available for injection at input switch!" << std::endl;
+    }
     
-    live_stream_ready_ = true;
-    std::cout << "[Multiplexer] Drone stream detected and ready!" << std::endl;
+    // Process buffered packets from new source
+    Source source = (new_source == InputSource::CAMERA) ? Source::LIVE : Source::LIVE;
+    for (auto& pkt : buffered) {
+        processPacket(pkt, source);
+        packets_processed_++;
+    }
     
+    // Initialize consumption from end of snapshot
+    new_receiver->initConsumptionFromIndex(new_receiver->getLastSnapshotEnd());
+    
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    std::cout << "[Multiplexer] Audio-safe input switch complete!" << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
     return true;
 }
 
@@ -411,6 +493,8 @@ void Multiplexer::processLoop() {
     std::cout << "[Multiplexer] Starting TCP-based processing loop" << std::endl;
     
     uint64_t log_interval = 1000;
+    auto last_jitter_log = std::chrono::steady_clock::now();
+    const int jitter_log_interval_sec = 5;  // Log jitter stats every 5 seconds
     
     // Initialize with fallback stream (already connected and ready from analyzeStreams)
     current_pts_base_ = fallback_tcp_receiver_->getPTSBase();
@@ -421,25 +505,299 @@ void Multiplexer::processLoop() {
               << ", PCR=" << current_pcr_base_
               << ", alignment=" << current_pcr_pts_alignment_ << std::endl;
     
-    // Start consuming from the IDR point in fallback
-    fallback_tcp_receiver_->initConsumptionFromIndex(0);
+    // CRITICAL: Initialize TimestampManager with the PCR/PTS alignment offset
+    // Per splice.md and multi2/tcp_main.cpp: PTS must start at the alignment offset (not 0)
+    // This preserves the decoder's buffer timing - the gap between PCR and PTS
+    // Without this, packets appear "corrupt" because DTS provides no buffer margin
+    timestamp_mgr_->initializeWithAlignmentOffset(current_pcr_pts_alignment_);
+    
+    // CRITICAL: Get buffered packets starting from audio sync point (which includes IDR)
+    // This avoids orphaned video continuation packets that cause "Packet corrupt" errors
+    // (Packets between PAT/PMT and first IDR have PUSI=0 and no PES headers)
+    auto initial_buffered = fallback_tcp_receiver_->getBufferedPacketsFromAudioSync();
+    std::cout << "[Multiplexer] Initial buffer has " << initial_buffered.size()
+              << " packets from audio sync point" << std::endl;
+    
+    // CRITICAL: Write PAT/PMT first, like multi2 does (line 1119-1129 of tcp_main.cpp)
+    // Without PAT/PMT at the start, FFmpeg may not properly initialize stream decoders
+    // which can cause "Packet corrupt" errors
+    StreamInfo fallback_info = fallback_tcp_receiver_->getStreamInfo();
+    
+    std::cout << "[Multiplexer] Injecting initial PAT/PMT..." << std::endl;
+    // Create and inject PAT
+    ts::DuckContext duck;
+    ts::PAT pat;
+    pat.pmts[fallback_info.program_number > 0 ? fallback_info.program_number : 1] = fallback_info.pmt_pid;
+    pat.setVersion(0);
+    ts::BinaryTable patTable;
+    pat.serialize(duck, patTable);
+    ts::TSPacketVector patPackets;
+    ts::OneShotPacketizer patPacketizer(duck, ts::PID_PAT);
+    patPacketizer.addTable(patTable);
+    patPacketizer.getPackets(patPackets);
+    
+    for (auto& patPkt : patPackets) {
+        pid_mapper_->fixContinuityCounter(patPkt);
+        rtmp_output_->writePacket(patPkt);
+    }
+    std::cout << "[Multiplexer] PAT injection: " << patPackets.size() << " packets" << std::endl;
+    
+    // Create and inject PMT
+    ts::PMT pmt;
+    pmt.service_id = fallback_info.program_number > 0 ? fallback_info.program_number : 1;
+    pmt.pcr_pid = fallback_info.video_pid;  // PCR usually on video PID
+    pmt.setVersion(0);
+    pmt.streams[fallback_info.video_pid].stream_type = fallback_info.video_stream_type;
+    if (fallback_info.audio_pid != ts::PID_NULL) {
+        pmt.streams[fallback_info.audio_pid].stream_type = fallback_info.audio_stream_type;
+    }
+    ts::BinaryTable pmtTable;
+    pmt.serialize(duck, pmtTable);
+    ts::TSPacketVector pmtPackets;
+    ts::OneShotPacketizer pmtPacketizer(duck, fallback_info.pmt_pid);
+    pmtPacketizer.addTable(pmtTable);
+    pmtPacketizer.getPackets(pmtPackets);
+    
+    for (auto& pmtPkt : pmtPackets) {
+        pid_mapper_->fixContinuityCounter(pmtPkt);
+        rtmp_output_->writePacket(pmtPkt);
+    }
+    std::cout << "[Multiplexer] PMT injection: " << pmtPackets.size() << " packets" << std::endl;
+    
+    // CRITICAL: Extract first video frame's timestamps BEFORE SPS/PPS injection
+    // Per multi2: SPS/PPS must have proper PTS to avoid "Packet corrupt" errors
+    std::optional<uint64_t> first_video_pts;
+    std::optional<uint64_t> first_video_dts;
+    // Note: fallback_info already declared above (line 524)
+    
+    for (const auto& pkt : initial_buffered) {
+        if (pkt.getPID() == fallback_info.video_pid && pkt.getPUSI() && pkt.hasPayload()) {
+            size_t header_size = pkt.getHeaderSize();
+            const uint8_t* payload = pkt.b + header_size;
+            size_t payload_size = ts::PKT_SIZE - header_size;
+            
+            // Check for PES start code and extract PTS/DTS
+            if (payload_size >= 14 && payload[0] == 0x00 && payload[1] == 0x00 && payload[2] == 0x01) {
+                uint8_t pts_dts_flags = (payload[7] >> 6) & 0x03;
+                
+                if (pts_dts_flags == 0x02 || pts_dts_flags == 0x03) {
+                    // Extract PTS
+                    uint64_t pts = ((uint64_t)(payload[9] & 0x0E) << 29) |
+                                  ((uint64_t)(payload[10]) << 22) |
+                                  ((uint64_t)(payload[11] & 0xFE) << 14) |
+                                  ((uint64_t)(payload[12]) << 7) |
+                                  ((uint64_t)(payload[13] >> 1));
+                    first_video_pts = pts;
+                    
+                    if (pts_dts_flags == 0x03 && payload_size >= 19) {
+                        // Extract DTS
+                        uint64_t dts = ((uint64_t)(payload[14] & 0x0E) << 29) |
+                                      ((uint64_t)(payload[15]) << 22) |
+                                      ((uint64_t)(payload[16] & 0xFE) << 14) |
+                                      ((uint64_t)(payload[17]) << 7) |
+                                      ((uint64_t)(payload[18] >> 1));
+                        first_video_dts = dts;
+                    }
+                    
+                    std::cout << "[Multiplexer] First video frame timestamps: PTS="
+                              << (first_video_pts.has_value() ? std::to_string(first_video_pts.value()) : "none")
+                              << ", DTS="
+                              << (first_video_dts.has_value() ? std::to_string(first_video_dts.value()) : "none")
+                              << std::endl;
+                    break;
+                }
+            }
+        }
+    }
+    
+    // CRITICAL: Inject SPS/PPS WITH proper PTS/DTS to avoid "Packet corrupt" errors
+    // FFmpeg requires strictly increasing DTS values. Additionally, with B-frames present,
+    // PTS can go backward (B-frames display before I/P frames but decode after).
+    //
+    // The issue: If SPS/PPS PTS is based on the IDR's PTS, subsequent B-frames may have
+    // PTS < SPS/PPS PTS, which FFmpeg interprets as corruption.
+    //
+    // Solution: Use DTS (decode order) as the base for BOTH SPS/PPS PTS and DTS.
+    // DTS is always monotonically increasing, so (first_video_DTS - one_frame) will be
+    // earlier than ALL video timestamps (both PTS and DTS).
+    std::vector<uint8_t> initial_sps = fallback_tcp_receiver_->getSPSData();
+    std::vector<uint8_t> initial_pps = fallback_tcp_receiver_->getPPSData();
+    if (!initial_sps.empty() && !initial_pps.empty()) {
+        // At 29.97fps, one frame duration is 3003 ticks (90kHz / 29.97 ≈ 3003)
+        const uint64_t ONE_FRAME_DURATION = 3003;
+        
+        std::optional<uint64_t> rebased_pts;
+        std::optional<uint64_t> rebased_dts;
+        
+        // Use DTS as the base for BOTH PTS and DTS of SPS/PPS
+        // This ensures SPS/PPS timestamps are earlier than ALL video frames (including B-frames)
+        if (first_video_dts.has_value()) {
+            uint64_t dts_rebased = (first_video_dts.value() - current_pts_base_ + timestamp_mgr_->getGlobalPTSOffset());
+            
+            // Subtract one frame duration so SPS/PPS is earlier than all video
+            if (dts_rebased >= ONE_FRAME_DURATION) {
+                dts_rebased -= ONE_FRAME_DURATION;
+            }
+            dts_rebased = dts_rebased & 0x1FFFFFFFFULL;
+            
+            // Use same value for both PTS and DTS (parameter sets don't have display timing issues)
+            rebased_dts = dts_rebased;
+            rebased_pts = dts_rebased;  // Use DTS-based value for PTS too
+        }
+        
+        std::cout << "[Multiplexer] SPS/PPS injection with DTS-based timestamps: PTS="
+                  << (rebased_pts.has_value() ? std::to_string(rebased_pts.value()) : "none")
+                  << ", DTS="
+                  << (rebased_dts.has_value() ? std::to_string(rebased_dts.value()) : "none")
+                  << " (one frame before first video DTS, safe for B-frames)" << std::endl;
+        
+        size_t injected = injectSPSPPS(Source::FALLBACK, fallback_info.video_pid,
+                                       initial_sps, initial_pps, rebased_pts, rebased_dts);
+        std::cout << "[Multiplexer] Initial SPS/PPS injection complete - " << injected << " packets" << std::endl;
+    } else {
+        std::cerr << "[Multiplexer] WARNING: No SPS/PPS available for initial injection!" << std::endl;
+    }
+    
+    // Process the initial buffered packets from audio sync point
+    for (auto& pkt : initial_buffered) {
+        processPacket(pkt, Source::FALLBACK);
+        packets_processed_++;
+    }
+    std::cout << "[Multiplexer] Processed " << initial_buffered.size() << " initial packets" << std::endl;
+    
+    // Start consuming from end of snapshot (continue from where buffered packets ended)
+    fallback_tcp_receiver_->initConsumptionFromIndex(fallback_tcp_receiver_->getLastSnapshotEnd());
     
     Mode current_mode = switcher_->getMode();
     TCPReceiver* active_receiver = fallback_tcp_receiver_.get();
     Source active_source = Source::FALLBACK;
     
-    // If we start in LIVE mode (privacy disabled and live ready), switch to live
+    // Set initial input source from InputSourceManager
+    current_input_source_ = input_source_manager_->getInputSource();
+    
+    // If we start in LIVE mode (privacy disabled and live ready), switch to appropriate live input
     if (current_mode == Mode::LIVE && live_stream_ready_.load()) {
-        std::cout << "[Multiplexer] Starting in LIVE mode - switching to camera receiver" << std::endl;
-        active_receiver = camera_tcp_receiver_.get();
-        active_source = Source::LIVE;
-        current_pts_base_ = camera_tcp_receiver_->getPTSBase();
-        current_pcr_base_ = camera_tcp_receiver_->getPCRBase();
-        current_pcr_pts_alignment_ = camera_tcp_receiver_->getPCRPTSAlignmentOffset();
-        camera_tcp_receiver_->initConsumptionFromIndex(0);
+        TCPReceiver* initial_receiver = (current_input_source_ == InputSource::CAMERA) ?
+                                        camera_tcp_receiver_.get() :
+                                        drone_tcp_receiver_.get();
+        
+        if (initial_receiver->isConnected() && initial_receiver->isStreamReady()) {
+            std::cout << "[Multiplexer] Starting in LIVE mode with "
+                      << InputSourceManager::toString(current_input_source_) << " input" << std::endl;
+            
+            // Get buffered packets from audio sync point (avoid orphaned packets)
+            auto live_buffered = initial_receiver->getBufferedPacketsFromAudioSync();
+            std::cout << "[Multiplexer] Initial LIVE buffer has " << live_buffered.size()
+                      << " packets from audio sync point" << std::endl;
+            
+            // Update bases for LIVE stream
+            current_pts_base_ = initial_receiver->getPTSBase();
+            current_pcr_base_ = initial_receiver->getPCRBase();
+            current_pcr_pts_alignment_ = initial_receiver->getPCRPTSAlignmentOffset();
+            
+            // Inject SPS/PPS for LIVE stream
+            std::vector<uint8_t> live_sps = initial_receiver->getSPSData();
+            std::vector<uint8_t> live_pps = initial_receiver->getPPSData();
+            if (!live_sps.empty() && !live_pps.empty()) {
+                StreamInfo live_info = initial_receiver->getStreamInfo();
+                size_t injected = injectSPSPPS(Source::LIVE, live_info.video_pid,
+                                               live_sps, live_pps, std::nullopt, std::nullopt);
+                std::cout << "[Multiplexer] Initial LIVE SPS/PPS injection - " << injected << " packets" << std::endl;
+            }
+            
+            // Process initial LIVE buffered packets
+            for (auto& pkt : live_buffered) {
+                processPacket(pkt, Source::LIVE);
+                packets_processed_++;
+            }
+            std::cout << "[Multiplexer] Processed " << live_buffered.size() << " initial LIVE packets" << std::endl;
+            
+            // Set active receiver and start consumption
+            active_receiver = initial_receiver;
+            active_source = Source::LIVE;
+            initial_receiver->initConsumptionFromIndex(initial_receiver->getLastSnapshotEnd());
+        }
     }
     
     while (running_.load()) {
+        // Check for pending input source switch request
+        if (input_source_change_pending_.load()) {
+            InputSource requested_source = pending_input_source_.load();
+            if (requested_source != current_input_source_) {
+                std::cout << "[Multiplexer] Processing pending input source switch to "
+                          << InputSourceManager::toString(requested_source) << std::endl;
+                
+                // Attempt the switch
+                if (switchInputSource(requested_source)) {
+                    // Switch succeeded - update local variables
+                    TCPReceiver* new_receiver = (requested_source == InputSource::CAMERA) ?
+                                                camera_tcp_receiver_.get() :
+                                                drone_tcp_receiver_.get();
+                    
+                    // Only update active receiver if we're in LIVE mode
+                    if (current_mode == Mode::LIVE) {
+                        active_receiver = new_receiver;
+                        active_source = Source::LIVE;
+                        std::cout << "[Multiplexer] Active receiver updated to "
+                                  << InputSourceManager::toString(requested_source) << std::endl;
+                    }
+                    
+                    // Clear the pending flag since switch succeeded
+                    input_source_change_pending_ = false;
+                    std::cout << "[Multiplexer] Input source switch completed successfully" << std::endl;
+                } else {
+                    // Switch failed (stream not ready) - keep pending flag set
+                    // The switch will be retried when the stream becomes available
+                    std::cout << "[Multiplexer] Input source switch deferred (stream not ready yet)" << std::endl;
+                }
+            } else {
+                // Already using the requested source
+                input_source_change_pending_ = false;
+            }
+        }
+        
+        // Check for pending privacy mode change request
+        if (privacy_mode_change_pending_.load()) {
+            bool privacy_enabled = pending_privacy_enabled_.load();
+            std::cout << "[Multiplexer] Processing pending privacy mode change: "
+                      << (privacy_enabled ? "ENABLE" : "DISABLE") << std::endl;
+            
+            if (privacy_enabled) {
+                // Privacy mode enabled - force switch to FALLBACK immediately
+                std::cout << "[Multiplexer] Privacy mode enabled - switching to FALLBACK" << std::endl;
+                if (switchToFallbackAtIDR()) {
+                    current_mode = Mode::FALLBACK;
+                    active_receiver = fallback_tcp_receiver_.get();
+                    active_source = Source::FALLBACK;
+                    std::cout << "[Multiplexer] Switched to FALLBACK mode due to privacy" << std::endl;
+                }
+            } else {
+                // Privacy mode disabled - check if we can return to LIVE
+                std::cout << "[Multiplexer] Privacy mode disabled - attempting to return to LIVE" << std::endl;
+                
+                // Determine which live receiver to use based on input source
+                TCPReceiver* live_receiver = (current_input_source_ == InputSource::CAMERA) ?
+                                             camera_tcp_receiver_.get() :
+                                             drone_tcp_receiver_.get();
+                
+                // Check if the live stream is available
+                if (live_receiver && live_receiver->isConnected() && live_receiver->isStreamReady()) {
+                    std::cout << "[Multiplexer] Live stream available - switching back to LIVE mode" << std::endl;
+                    if (switchToLiveAtIDR()) {
+                        current_mode = Mode::LIVE;
+                        active_receiver = live_receiver;
+                        active_source = Source::LIVE;
+                        std::cout << "[Multiplexer] Returned to LIVE mode" << std::endl;
+                    }
+                } else {
+                    std::cout << "[Multiplexer] Live stream not ready - staying in FALLBACK mode" << std::endl;
+                }
+            }
+            
+            // Clear the pending flag
+            privacy_mode_change_pending_ = false;
+        }
+        
         // Receive packets from active receiver
         auto packets = active_receiver->receivePackets(100, 100);
         
@@ -474,6 +832,101 @@ void Multiplexer::processLoop() {
                       << ", Live ready: " << (live_stream_ready_.load() ? "Yes" : "No") << std::endl;
         }
         
+        // Periodic jitter statistics logging
+        auto now = std::chrono::steady_clock::now();
+        auto jitter_elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_jitter_log).count();
+        if (jitter_elapsed >= jitter_log_interval_sec) {
+            std::cout << "\n[Jitter Stats] ========================================" << std::endl;
+            
+            // Camera stream stats
+            if (camera_tcp_receiver_ && camera_tcp_receiver_->isConnected()) {
+                JitterStats camera_stats = camera_tcp_receiver_->getJitterStats();
+                std::cout << "[Jitter] Camera:" << std::endl;
+                std::cout << "  Packet Arrival: avg=" << std::fixed << std::setprecision(2)
+                          << camera_stats.avg_packet_interval_ms << "ms, jitter="
+                          << camera_stats.packet_jitter_ms << "ms, range=["
+                          << camera_stats.min_packet_interval_ms << "-"
+                          << camera_stats.max_packet_interval_ms << "ms]" << std::endl;
+                std::cout << "  PTS: avg_delta=" << camera_stats.avg_pts_delta_ms
+                          << "ms, jitter=" << camera_stats.pts_jitter_ms
+                          << "ms, count=" << camera_stats.total_pts_packets << std::endl;
+                std::cout << "  PCR: avg_delta=" << camera_stats.avg_pcr_delta_ms
+                          << "ms, jitter=" << camera_stats.pcr_jitter_ms
+                          << "ms, count=" << camera_stats.total_pcr_packets << std::endl;
+                std::cout << "  Buffer: current=" << camera_stats.current_buffer_size
+                          << "/" << camera_stats.max_buffer_size
+                          << ", avg=" << camera_stats.avg_buffer_fill
+                          << ", range=[" << camera_stats.min_buffer_fill
+                          << "-" << camera_stats.max_buffer_fill << "]" << std::endl;
+                std::cout << "  IDR: avg_interval=" << camera_stats.avg_idr_interval_ms
+                          << "ms, jitter=" << camera_stats.idr_interval_jitter_ms
+                          << "ms, count=" << camera_stats.total_idr_frames << std::endl;
+                std::cout << "  Total: " << camera_stats.total_packets
+                          << " packets, uptime=" << (int)camera_stats.uptime_seconds << "s" << std::endl;
+            } else {
+                std::cout << "[Jitter] Camera: Not connected" << std::endl;
+            }
+            
+            // Drone stream stats
+            if (drone_tcp_receiver_ && drone_tcp_receiver_->isConnected()) {
+                JitterStats drone_stats = drone_tcp_receiver_->getJitterStats();
+                std::cout << "[Jitter] Drone:" << std::endl;
+                std::cout << "  Packet Arrival: avg=" << std::fixed << std::setprecision(2)
+                          << drone_stats.avg_packet_interval_ms << "ms, jitter="
+                          << drone_stats.packet_jitter_ms << "ms, range=["
+                          << drone_stats.min_packet_interval_ms << "-"
+                          << drone_stats.max_packet_interval_ms << "ms]" << std::endl;
+                std::cout << "  PTS: avg_delta=" << drone_stats.avg_pts_delta_ms
+                          << "ms, jitter=" << drone_stats.pts_jitter_ms
+                          << "ms, count=" << drone_stats.total_pts_packets << std::endl;
+                std::cout << "  PCR: avg_delta=" << drone_stats.avg_pcr_delta_ms
+                          << "ms, jitter=" << drone_stats.pcr_jitter_ms
+                          << "ms, count=" << drone_stats.total_pcr_packets << std::endl;
+                std::cout << "  Buffer: current=" << drone_stats.current_buffer_size
+                          << "/" << drone_stats.max_buffer_size
+                          << ", avg=" << drone_stats.avg_buffer_fill
+                          << ", range=[" << drone_stats.min_buffer_fill
+                          << "-" << drone_stats.max_buffer_fill << "]" << std::endl;
+                std::cout << "  IDR: avg_interval=" << drone_stats.avg_idr_interval_ms
+                          << "ms, jitter=" << drone_stats.idr_interval_jitter_ms
+                          << "ms, count=" << drone_stats.total_idr_frames << std::endl;
+                std::cout << "  Total: " << drone_stats.total_packets
+                          << " packets, uptime=" << (int)drone_stats.uptime_seconds << "s" << std::endl;
+            } else {
+                std::cout << "[Jitter] Drone: Not connected" << std::endl;
+            }
+            
+            // Fallback stream stats
+            if (fallback_tcp_receiver_ && fallback_tcp_receiver_->isConnected()) {
+                JitterStats fallback_stats = fallback_tcp_receiver_->getJitterStats();
+                std::cout << "[Jitter] Fallback:" << std::endl;
+                std::cout << "  Packet Arrival: avg=" << std::fixed << std::setprecision(2)
+                          << fallback_stats.avg_packet_interval_ms << "ms, jitter="
+                          << fallback_stats.packet_jitter_ms << "ms, range=["
+                          << fallback_stats.min_packet_interval_ms << "-"
+                          << fallback_stats.max_packet_interval_ms << "ms]" << std::endl;
+                std::cout << "  PTS: avg_delta=" << fallback_stats.avg_pts_delta_ms
+                          << "ms, jitter=" << fallback_stats.pts_jitter_ms
+                          << "ms, count=" << fallback_stats.total_pts_packets << std::endl;
+                std::cout << "  PCR: avg_delta=" << fallback_stats.avg_pcr_delta_ms
+                          << "ms, jitter=" << fallback_stats.pcr_jitter_ms
+                          << "ms, count=" << fallback_stats.total_pcr_packets << std::endl;
+                std::cout << "  Buffer: current=" << fallback_stats.current_buffer_size
+                          << "/" << fallback_stats.max_buffer_size
+                          << ", avg=" << fallback_stats.avg_buffer_fill
+                          << ", range=[" << fallback_stats.min_buffer_fill
+                          << "-" << fallback_stats.max_buffer_fill << "]" << std::endl;
+                std::cout << "  IDR: avg_interval=" << fallback_stats.avg_idr_interval_ms
+                          << "ms, jitter=" << fallback_stats.idr_interval_jitter_ms
+                          << "ms, count=" << fallback_stats.total_idr_frames << std::endl;
+                std::cout << "  Total: " << fallback_stats.total_packets
+                          << " packets, uptime=" << (int)fallback_stats.uptime_seconds << "s" << std::endl;
+            }
+            
+            std::cout << "[Jitter Stats] ========================================\n" << std::endl;
+            last_jitter_log = now;
+        }
+        
         // Check if camera stream became ready dynamically (if not already ready)
         if (current_mode == Mode::FALLBACK && !live_stream_ready_.load() && camera_tcp_receiver_) {
             if (camera_tcp_receiver_->isConnected() && camera_tcp_receiver_->isStreamReady()) {
@@ -505,6 +958,14 @@ void Multiplexer::processLoop() {
                 // Mark camera stream as ready
                 live_stream_ready_ = true;
                 std::cout << "[Multiplexer] Camera stream is now ready for switching!" << std::endl;
+                
+                // Update timestamp monitoring PIDs to use camera stream
+                if (rtmp_output_) {
+                    rtmp_output_->setVideoPID(camera_info.video_pid);
+                    rtmp_output_->setAudioPID(camera_info.audio_pid);
+                    std::cout << "[Multiplexer] Updated timestamp monitoring for camera: Video PID="
+                              << camera_info.video_pid << ", Audio PID=" << camera_info.audio_pid << std::endl;
+                }
                 
                 // Auto-switch to LIVE mode if not in privacy mode
                 if (!switcher_->isPrivacyMode()) {
@@ -584,61 +1045,82 @@ void Multiplexer::onPrivacyModeChange(bool enabled) {
     std::cout << "[Multiplexer] Received privacy mode change: " << (enabled ? "ENABLED" : "DISABLED") << std::endl;
     
     if (switcher_) {
+        // Update StreamSwitcher's privacy mode state
         switcher_->setPrivacyMode(enabled);
         
-        if (enabled && switcher_->getMode() == Mode::LIVE) {
-            // Force switch to fallback immediately - use IDR-aware switching
-            std::cout << "[Multiplexer] Forcing switch to FALLBACK mode due to privacy mode" << std::endl;
-            switchToFallbackAtIDR();
-        }
+        // Set pending flag for main loop to handle the actual switch
+        // This ensures local variables in processLoop are updated correctly
+        pending_privacy_enabled_ = enabled;
+        privacy_mode_change_pending_ = true;
+        
+        std::cout << "[Multiplexer] Privacy mode change pending - will be processed in main loop" << std::endl;
     }
 }
 
 bool Multiplexer::switchToLiveAtIDR() {
-    if (!camera_tcp_receiver_) {
-        std::cerr << "[Multiplexer] No camera receiver available for switch to live" << std::endl;
+    // Use the current input source to determine which receiver to use
+    TCPReceiver* live_receiver = (current_input_source_ == InputSource::CAMERA) ?
+                                 camera_tcp_receiver_.get() :
+                                 drone_tcp_receiver_.get();
+    
+    if (!live_receiver) {
+        std::cerr << "[Multiplexer] No live receiver available for switch" << std::endl;
         return false;
     }
     
     std::cout << "[Multiplexer] ========================================" << std::endl;
-    std::cout << "[Multiplexer] IDR-AWARE SWITCH TO LIVE: Using TCP approach" << std::endl;
+    std::cout << "[Multiplexer] AUDIO-SAFE SWITCH TO LIVE: "
+              << InputSourceManager::toString(current_input_source_) << std::endl;
     std::cout << "[Multiplexer] ========================================" << std::endl;
     
-    // Reset camera receiver for new loop - triggers new IDR detection
-    camera_tcp_receiver_->resetForNewLoop();
+    // Reset receiver for new loop - triggers new IDR AND audio sync detection
+    live_receiver->resetForNewLoop();
     
-    // Wait for fresh IDR
+    // Wait for fresh video IDR
     std::cout << "[Multiplexer] Waiting for fresh IDR frame..." << std::endl;
-    camera_tcp_receiver_->waitForIDR();
+    live_receiver->waitForIDR();
     std::cout << "[Multiplexer] Fresh IDR frame detected" << std::endl;
     
+    // AUDIO-SAFE: Wait for audio sync point
+    std::cout << "[Multiplexer] Waiting for audio sync point..." << std::endl;
+    live_receiver->waitForAudioSync();
+    std::cout << "[Multiplexer] Audio sync point acquired" << std::endl;
+    
     // Re-extract timestamp bases from current stream position
-    if (!camera_tcp_receiver_->extractTimestampBases()) {
+    if (!live_receiver->extractTimestampBases()) {
         std::cerr << "[Multiplexer] Warning: Could not extract timestamp bases" << std::endl;
     }
     
     // Update current bases for timestamp rebasing
-    current_pts_base_ = camera_tcp_receiver_->getPTSBase();
-    current_pcr_base_ = camera_tcp_receiver_->getPCRBase();
-    current_pcr_pts_alignment_ = camera_tcp_receiver_->getPCRPTSAlignmentOffset();
+    current_pts_base_ = live_receiver->getPTSBase();
+    current_pcr_base_ = live_receiver->getPCRBase();
+    current_pcr_pts_alignment_ = live_receiver->getPCRPTSAlignmentOffset();
     
     std::cout << "[Multiplexer] Updated bases: PTS=" << current_pts_base_
               << ", PCR=" << current_pcr_base_
               << ", alignment=" << current_pcr_pts_alignment_ << std::endl;
     
-    // Get buffered packets from IDR
-    auto buffered = camera_tcp_receiver_->getBufferedPacketsFromIDR();
-    std::cout << "[Multiplexer] Processing " << buffered.size() << " buffered packets from IDR" << std::endl;
+    // AUDIO-SAFE: Get buffered packets from audio sync point
+    auto buffered = live_receiver->getBufferedPacketsFromAudioSync();
+    std::cout << "[Multiplexer] Processing " << buffered.size() << " packets from audio sync point" << std::endl;
     
-    // Inject PAT/PMT before processing buffered packets
-    // TODO: Need to create PAT/PMT from StreamInfo
+    // Validate first audio packet
+    if (!live_receiver->validateFirstAudioADTS(buffered)) {
+        std::cerr << "[Multiplexer] Warning: First audio ADTS validation failed" << std::endl;
+    } else {
+        std::cout << "[Multiplexer] Audio ADTS validation passed" << std::endl;
+    }
     
     // Inject SPS/PPS if available
-    std::vector<uint8_t> sps = camera_tcp_receiver_->getSPSData();
-    std::vector<uint8_t> pps = camera_tcp_receiver_->getPPSData();
+    std::vector<uint8_t> sps = live_receiver->getSPSData();
+    std::vector<uint8_t> pps = live_receiver->getPPSData();
     if (!sps.empty() && !pps.empty()) {
-        std::cout << "[Multiplexer] Injecting SPS/PPS before IDR" << std::endl;
-        // TODO: Use createSPSPPSPackets
+        StreamInfo live_info = live_receiver->getStreamInfo();
+        size_t injected = injectSPSPPS(Source::LIVE, live_info.video_pid,
+                                       sps, pps, std::nullopt, std::nullopt);
+        std::cout << "[Multiplexer] Injected " << injected << " SPS/PPS packets before IDR" << std::endl;
+    } else {
+        std::cerr << "[Multiplexer] WARNING: No SPS/PPS available for injection at LIVE switch!" << std::endl;
     }
     
     // Switch to LIVE mode
@@ -652,24 +1134,31 @@ bool Multiplexer::switchToLiveAtIDR() {
     }
     
     // Initialize consumption from end of snapshot
-    camera_tcp_receiver_->initConsumptionFromIndex(camera_tcp_receiver_->getLastSnapshotEnd());
+    live_receiver->initConsumptionFromIndex(live_receiver->getLastSnapshotEnd());
     
-    std::cout << "[Multiplexer] Switch to LIVE complete" << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    std::cout << "[Multiplexer] Audio-safe switch to LIVE complete" << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
     return true;
 }
 
 bool Multiplexer::switchToFallbackAtIDR() {
     std::cout << "[Multiplexer] ========================================" << std::endl;
-    std::cout << "[Multiplexer] IDR-AWARE SWITCH TO FALLBACK: Using TCP approach" << std::endl;
+    std::cout << "[Multiplexer] AUDIO-SAFE SWITCH TO FALLBACK" << std::endl;
     std::cout << "[Multiplexer] ========================================" << std::endl;
     
-    // Reset fallback receiver for new loop - triggers new IDR detection
+    // Reset fallback receiver for new loop - triggers new IDR AND audio sync detection
     fallback_tcp_receiver_->resetForNewLoop();
     
-    // Wait for fresh IDR
+    // Wait for fresh video IDR
     std::cout << "[Multiplexer] Waiting for fresh fallback IDR frame..." << std::endl;
     fallback_tcp_receiver_->waitForIDR();
     std::cout << "[Multiplexer] Fresh fallback IDR frame detected" << std::endl;
+    
+    // AUDIO-SAFE: Wait for audio sync point
+    std::cout << "[Multiplexer] Waiting for fallback audio sync point..." << std::endl;
+    fallback_tcp_receiver_->waitForAudioSync();
+    std::cout << "[Multiplexer] Fallback audio sync point acquired" << std::endl;
     
     // Re-extract timestamp bases from current stream position
     if (!fallback_tcp_receiver_->extractTimestampBases()) {
@@ -685,9 +1174,16 @@ bool Multiplexer::switchToFallbackAtIDR() {
               << ", PCR=" << current_pcr_base_
               << ", alignment=" << current_pcr_pts_alignment_ << std::endl;
     
-    // Get buffered packets from IDR
-    auto buffered = fallback_tcp_receiver_->getBufferedPacketsFromIDR();
-    std::cout << "[Multiplexer] Processing " << buffered.size() << " buffered packets from fallback IDR" << std::endl;
+    // AUDIO-SAFE: Get buffered packets from audio sync point
+    auto buffered = fallback_tcp_receiver_->getBufferedPacketsFromAudioSync();
+    std::cout << "[Multiplexer] Processing " << buffered.size() << " packets from fallback audio sync point" << std::endl;
+    
+    // Validate first audio packet
+    if (!fallback_tcp_receiver_->validateFirstAudioADTS(buffered)) {
+        std::cerr << "[Multiplexer] Warning: Fallback first audio ADTS validation failed" << std::endl;
+    } else {
+        std::cout << "[Multiplexer] Fallback audio ADTS validation passed" << std::endl;
+    }
     
     // Inject PAT/PMT before processing buffered packets
     // TODO: Need to create PAT/PMT from StreamInfo
@@ -696,8 +1192,12 @@ bool Multiplexer::switchToFallbackAtIDR() {
     std::vector<uint8_t> sps = fallback_tcp_receiver_->getSPSData();
     std::vector<uint8_t> pps = fallback_tcp_receiver_->getPPSData();
     if (!sps.empty() && !pps.empty()) {
-        std::cout << "[Multiplexer] Injecting SPS/PPS before fallback IDR" << std::endl;
-        // TODO: Use createSPSPPSPackets
+        StreamInfo fallback_info = fallback_tcp_receiver_->getStreamInfo();
+        size_t injected = injectSPSPPS(Source::FALLBACK, fallback_info.video_pid,
+                                       sps, pps, std::nullopt, std::nullopt);
+        std::cout << "[Multiplexer] Injected " << injected << " SPS/PPS packets before fallback IDR" << std::endl;
+    } else {
+        std::cerr << "[Multiplexer] WARNING: No SPS/PPS available for injection at FALLBACK switch!" << std::endl;
     }
     
     // Switch to FALLBACK mode
@@ -715,7 +1215,9 @@ bool Multiplexer::switchToFallbackAtIDR() {
     // Reset live stream ready flag so we re-analyze when live comes back
     live_stream_ready_ = false;
     
-    std::cout << "[Multiplexer] Switch to FALLBACK complete" << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
+    std::cout << "[Multiplexer] Audio-safe switch to FALLBACK complete" << std::endl;
+    std::cout << "[Multiplexer] ========================================" << std::endl;
     return true;
 }
 
@@ -836,6 +1338,24 @@ size_t Multiplexer::injectSPSPPS(Source source, uint16_t video_pid,
     
     const std::vector<uint8_t>& sps = nal_parser.getLastSPS();
     const std::vector<uint8_t>& pps = nal_parser.getLastPPS();
+    
+    // Use the overload with SPS/PPS data
+    return injectSPSPPS(source, video_pid, sps, pps, pts, dts);
+}
+
+size_t Multiplexer::injectSPSPPS(Source source, uint16_t video_pid,
+                                  const std::vector<uint8_t>& sps,
+                                  const std::vector<uint8_t>& pps,
+                                  std::optional<uint64_t> pts, std::optional<uint64_t> dts) {
+    if (!sps_pps_injector_) {
+        std::cerr << "[Multiplexer] SPS/PPS injector not initialized!" << std::endl;
+        return 0;
+    }
+    
+    if (sps.empty() || pps.empty()) {
+        std::cerr << "[Multiplexer] SPS or PPS is empty - cannot inject" << std::endl;
+        return 0;
+    }
     
     std::cout << "[Multiplexer] Creating SPS/PPS injection packets for PID " << video_pid
               << " (SPS: " << sps.size() << " bytes, PPS: " << pps.size() << " bytes)"

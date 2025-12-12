@@ -7,6 +7,7 @@
 #include <optional>
 #include <thread>
 #include <mutex>
+#include "OutputTimestampMonitor.h"
 
 class RTMPOutput {
 public:
@@ -47,6 +48,13 @@ public:
     // Get milliseconds since last write (-1 if no write yet)
     int64_t getMsSinceLastWrite() const;
     
+    // Configure timestamp monitoring
+    void setVideoPID(uint16_t pid);
+    void setAudioPID(uint16_t pid);
+    
+    // Get timestamp monitoring statistics
+    OutputTimestampMonitor::DiscontinuityStats getTimestampStats() const;
+    
 private:
     // Spawn FFmpeg process with pipes for stdin and stderr
     bool spawnFFmpeg();
@@ -84,6 +92,7 @@ private:
     
     std::thread monitor_thread_;
     std::thread reconnection_thread_;
+    std::thread grace_period_thread_;  // For connection verification
     std::mutex reconnection_mutex_;
     
     // Reconnection state
@@ -104,4 +113,7 @@ private:
     // Pacing state
     std::optional<uint64_t> last_pts_;
     std::chrono::steady_clock::time_point last_write_wallclock_;
+    
+    // Output timestamp monitoring
+    std::unique_ptr<OutputTimestampMonitor> timestamp_monitor_;
 };

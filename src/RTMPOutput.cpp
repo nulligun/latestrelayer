@@ -26,7 +26,8 @@ RTMPOutput::RTMPOutput(const std::string& rtmp_url, uint32_t pacing_us)
       disconnect_time_(std::chrono::steady_clock::now()),
       last_reconnect_attempt_(std::chrono::steady_clock::now()),
       last_write_time_(std::chrono::steady_clock::now()),
-      last_write_wallclock_(std::chrono::steady_clock::now()) {
+      last_write_wallclock_(std::chrono::steady_clock::now()),
+      timestamp_monitor_(std::make_unique<OutputTimestampMonitor>()) {
     std::cout << "[RTMPOutput] Configured with pacing=" << pacing_us_ << "µs" << std::endl;
 }
 
@@ -65,6 +66,11 @@ void RTMPOutput::stop() {
     running_ = false;
     should_stop_monitor_ = true;
     should_stop_reconnect_ = true;
+    
+    // Wait for grace period thread to finish (prevents "terminate called without active exception")
+    if (grace_period_thread_.joinable()) {
+        grace_period_thread_.join();
+    }
     
     // Wait for reconnection thread to finish
     if (reconnection_thread_.joinable()) {
@@ -108,6 +114,14 @@ bool RTMPOutput::writePacket(const ts::TSPacket& packet) {
         handleDisconnection();
         packets_dropped_++;
         return false;
+    }
+    
+    // Monitor timestamp continuity before writing to FFmpeg
+    if (timestamp_monitor_) {
+        timestamp_monitor_->checkPacket(packet);
+        
+        // Periodic summary logging (every 10 seconds)
+        timestamp_monitor_->logSummaryIfNeeded();
     }
     
     // Write 188-byte TS packet to FFmpeg stdin
@@ -190,13 +204,16 @@ bool RTMPOutput::spawnFFmpeg() {
         
         // Execute FFmpeg with timestamp handling compatible with -c copy
         // Note: -f mpegts explicitly specifies input format for faster detection
+        // Using debug loglevel and -debug_ts to diagnose "Packet corrupt" errors
         execlp("ffmpeg",
                "ffmpeg",
-               "-loglevel", "info",                // Ensure we get connection status in logs
+               "-loglevel", "verbose",             // Verbose logging for packet diagnostics
+               "-debug_ts",                        // Print timestamp debug info for each packet
                "-f", "mpegts",                     // Explicit input format for faster detection
                "-i", "-",                          // Input from stdin
                "-c", "copy",                       // Copy codec (no re-encoding)
-               "-fflags", "+genpts",               // Generate PTS if missing (preserve DTS for B-frames)
+               "-fflags", "+genpts+discardcorrupt", // Generate PTS if missing, discard corrupt packets with logging
+               "-max_interleave_delta", "0",       // Disable interleave checking to see raw timestamps
                "-avoid_negative_ts", "make_zero",  // Shift timestamps to avoid negatives
                "-f", "flv",                        // Output format FLV
                rtmp_url_.c_str(),                  // RTMP URL
@@ -219,9 +236,20 @@ bool RTMPOutput::spawnFFmpeg() {
     should_stop_monitor_ = false;
     monitor_thread_ = std::thread(&RTMPOutput::monitorFFmpegOutput, this);
     
+    // Wait for any previous grace period thread to finish before starting new one
+    if (grace_period_thread_.joinable()) {
+        grace_period_thread_.join();
+    }
+    
     // Give FFmpeg 2 seconds to report connection, then verify process health
-    std::thread([this]() {
+    // FIXED: Using managed thread instead of detached to prevent "terminate called without active exception"
+    grace_period_thread_ = std::thread([this]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+        
+        // Check if we should stop before doing anything
+        if (!running_.load()) {
+            return;
+        }
         
         if (connection_state_.load() == ConnectionState::CONNECTING) {
             // CRITICAL FIX: Check if FFmpeg is still alive before assuming success
@@ -235,7 +263,7 @@ bool RTMPOutput::spawnFFmpeg() {
                 connection_state_ = ConnectionState::DISCONNECTED;
             }
         }
-    }).detach();
+    });
     
     return true;
 }
@@ -534,6 +562,25 @@ int64_t RTMPOutput::getMsSinceLastWrite() const {
         now - last_write_time_
     );
     return elapsed.count();
+}
+
+void RTMPOutput::setVideoPID(uint16_t pid) {
+    if (timestamp_monitor_) {
+        timestamp_monitor_->setVideoPID(pid);
+    }
+}
+
+void RTMPOutput::setAudioPID(uint16_t pid) {
+    if (timestamp_monitor_) {
+        timestamp_monitor_->setAudioPID(pid);
+    }
+}
+
+OutputTimestampMonitor::DiscontinuityStats RTMPOutput::getTimestampStats() const {
+    if (timestamp_monitor_) {
+        return timestamp_monitor_->getStats();
+    }
+    return OutputTimestampMonitor::DiscontinuityStats();
 }
 
 void RTMPOutput::attemptReconnection() {

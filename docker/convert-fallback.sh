@@ -27,12 +27,15 @@ echo "  - Add periodic PSI table retransmission"
 echo "  - Maintain video/audio quality (no re-encoding)"
 echo ""
 
-# Re-encode with more keyframes for better seeking and reliability
+# Re-encode with constrained bitrate for smooth TCP streaming
 # GOP size of 30 means keyframe every 1 second at 30fps
+# Using CBR (Constant Bitrate) instead of CRF for consistent streaming
 ffmpeg -i "$INPUT" \
   -c:v libx264 \
   -preset fast \
-  -crf 23 \
+  -b:v 3M \
+  -maxrate 3M \
+  -bufsize 6M \
   -g 30 \
   -keyint_min 30 \
   -sc_threshold 0 \
@@ -44,7 +47,7 @@ ffmpeg -i "$INPUT" \
   -mpegts_service_id 1 \
   -mpegts_pmt_start_pid 256 \
   -mpegts_start_pid 257 \
-  -muxrate 10000000 \
+  -muxrate 5000000 \
   -y \
   "$OUTPUT"
 

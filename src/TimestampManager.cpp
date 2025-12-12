@@ -10,6 +10,26 @@ TimestampManager::TimestampManager()
 TimestampManager::~TimestampManager() {
 }
 
+void TimestampManager::initializeWithAlignmentOffset(int64_t alignmentOffset) {
+    // Per splice.md and multi2/tcp_main.cpp:
+    // The alignment offset is in 27MHz PCR units, convert to 90kHz PTS units
+    // PTS should start at this offset (not 0) to preserve decoder buffer timing
+    // PCR starts at 0, so the gap between them gives the decoder buffering time
+    
+    if (alignmentOffset > 0) {
+        global_pts_offset_ = (uint64_t)(alignmentOffset / 300);  // 27MHz to 90kHz
+        global_pcr_offset_ = 0;  // PCR starts at 0, PTS starts ahead
+        
+        std::cout << "[TimestampManager] Initialized with alignment offset: "
+                  << alignmentOffset << " (27MHz) = " << global_pts_offset_
+                  << " (90kHz)" << std::endl;
+        std::cout << "[TimestampManager] globalPTSOffset=" << global_pts_offset_
+                  << ", globalPCROffset=" << global_pcr_offset_ << std::endl;
+    } else {
+        std::cout << "[TimestampManager] No alignment offset - starting at 0" << std::endl;
+    }
+}
+
 void TimestampManager::rebasePacket(ts::TSPacket& packet,
                                    uint64_t ptsBase,
                                    uint64_t pcrBase,
@@ -21,27 +41,26 @@ void TimestampManager::rebasePacket(ts::TSPacket& packet,
     }
     
     // Rebase PCR if present
+    // CRITICAL: Use TSDuck's setPCR() to correctly handle 27MHz format
+    // getPCR() returns 27MHz value, we must use setPCR() to write it back correctly
     if (packet.hasPCR()) {
         uint64_t orig_pcr = packet.getPCR();
-        uint64_t rebased_pcr = (orig_pcr - pcrBase + global_pcr_offset_) & MAX_TIMESTAMP_33BIT;
+        // PCR is in 27MHz units, so offset must also be 27MHz
+        uint64_t rebased_pcr = (orig_pcr - pcrBase + global_pcr_offset_);
         
-        // Set PCR in adaptation field
-        // PCR is stored as 42 bits: 33 bits base + 9 bits extension
-        // We only use base and set extension to 0
-        uint8_t* data = packet.b;
-        size_t af_length = data[4];
-        
-        if (af_length >= 6) {
-            uint8_t* pcr_bytes = data + 6;
-            uint64_t pcr_base = rebased_pcr & MAX_TIMESTAMP_33BIT;
-            
-            pcr_bytes[0] = (pcr_base >> 25) & 0xFF;
-            pcr_bytes[1] = (pcr_base >> 17) & 0xFF;
-            pcr_bytes[2] = (pcr_base >> 9) & 0xFF;
-            pcr_bytes[3] = (pcr_base >> 1) & 0xFF;
-            pcr_bytes[4] = ((pcr_base & 0x01) << 7) | 0x7E;
-            pcr_bytes[5] = 0x00;
+        // DEBUG: Log first few PCR rebases
+        static int pcr_debug_count = 0;
+        if (pcr_debug_count < 5) {
+            std::cout << "[TimestampManager-DEBUG] PCR rebase: orig=" << orig_pcr
+                      << " (27MHz), base=" << pcrBase
+                      << ", offset=" << global_pcr_offset_
+                      << ", rebased=" << rebased_pcr
+                      << " (" << (rebased_pcr / 27000.0) << "ms)" << std::endl;
+            pcr_debug_count++;
         }
+        
+        // Use TSDuck's setPCR for correct 27MHz handling
+        packet.setPCR(rebased_pcr);
     }
     
     // Rebase PTS/DTS if this is a PES packet start
@@ -68,6 +87,15 @@ void TimestampManager::rebasePacket(ts::TSPacket& packet,
                 // Rebase: new_pts = (orig_pts - ptsBase) + globalPTSOffset
                 uint64_t rebased_pts = (orig_pts - ptsBase + global_pts_offset_) & MAX_TIMESTAMP_33BIT;
                 
+                // DEBUG: Log first several PTS rebases
+                static int pts_debug_count = 0;
+                if (pts_debug_count < 30) {
+                    std::cout << "[TimestampManager-DEBUG] PTS: PID=" << pid
+                              << ", orig=" << orig_pts
+                              << ", rebased=" << rebased_pts
+                              << " (diff from base: " << (orig_pts - ptsBase) << ")" << std::endl;
+                }
+                
                 // Write rebased PTS
                 uint8_t marker = (pts_dts_flags == 0x03) ? 0x03 : 0x02;
                 writePTS(payload + 9, rebased_pts, marker);
@@ -82,13 +110,31 @@ void TimestampManager::rebasePacket(ts::TSPacket& packet,
                                    ((uint64_t)(payload[17]) << 7) |
                                    ((uint64_t)(payload[18] >> 1));
                 
-                // Rebase: new_dts = (orig_dts - ptsBase) + globalPTSOffset  
+                // Rebase: new_dts = (orig_dts - ptsBase) + globalPTSOffset
                 // Note: Use same base and offset as PTS (DTS is in same timeline)
                 uint64_t rebased_dts = (orig_dts - ptsBase + global_pts_offset_) & MAX_TIMESTAMP_33BIT;
+                
+                // DEBUG: Log DTS values including tracking for backwards detection
+                static int dts_debug_count = 0;
+                static uint64_t last_dts = 0;
+                if (dts_debug_count < 30) {
+                    bool backwards = (last_dts > 0 && rebased_dts < last_dts);
+                    std::cout << "[TimestampManager-DEBUG] DTS: PID=" << pid
+                              << ", orig=" << orig_dts
+                              << ", rebased=" << rebased_dts
+                              << ", last=" << last_dts
+                              << (backwards ? " *** BACKWARDS! ***" : "") << std::endl;
+                    dts_debug_count++;
+                }
+                last_dts = rebased_dts;
                 
                 // Write rebased DTS
                 writePTS(payload + 14, rebased_dts, 0x01);
             }
+            
+            // DEBUG: Increment counter for both paths
+            static int pts_debug_count_2 = 0;
+            pts_debug_count_2++;
         }
     }
 }

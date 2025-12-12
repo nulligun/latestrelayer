@@ -20,25 +20,13 @@ find_package(Threads REQUIRED)
 # Find CURL
 find_package(CURL REQUIRED)
 
-# Source files
+# Source files - Streamlined refactoring based on multi2 pattern
 set(SOURCES
-    src/main.cpp
-    src/Config.cpp
-    src/TSPacketQueue.cpp
-    src/UDPReceiver.cpp
-    src/TCPReceiver.cpp
-    src/RTMPReceiver.cpp
-    src/InputSourceManager.cpp
-    src/TSAnalyzer.cpp
+    src/main_new.cpp
+    src/TCPReader.cpp
+    src/TCPOutput.cpp
+    src/StreamSplicer.cpp
     src/NALParser.cpp
-    src/TimestampManager.cpp
-    src/PIDMapper.cpp
-    src/StreamSwitcher.cpp
-    src/RTMPOutput.cpp
-    src/Multiplexer.cpp
-    src/HttpClient.cpp
-    src/HttpServer.cpp
-    src/SPSPPSInjector.cpp
 )
 
 # Create executable
@@ -59,9 +47,7 @@ target_link_directories(ts-multiplexer PRIVATE
 # Link libraries
 target_link_libraries(ts-multiplexer PRIVATE
     ${TSDUCK_LIBRARIES}
-    yaml-cpp
     Threads::Threads
-    CURL::libcurl
 )
 
 # Compiler warnings

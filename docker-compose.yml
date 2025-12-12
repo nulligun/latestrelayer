@@ -189,6 +189,37 @@ services:
         max-file: "3"
 
   # ============================================================================
+  # Tier 3.5: FFmpeg RTMP Output (receives from multiplexer, publishes to RTMP)
+  # ============================================================================
+  
+  ffmpeg-rtmp-output:
+    stop_grace_period: 2s
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ffmpeg-rtmp-output
+    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-ffmpeg-rtmp-output
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
+    environment:
+      - TCP_RECV_BUFFER_SIZE=${TCP_RECV_BUFFER_SIZE:-2097152}
+      - RTMP_URL=${RTMP_URL:-rtmp://nginx-rtmp/live/stream}
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ============================================================================
   # Tier 4: Stream Sources (will restart until they connect)
   # ============================================================================
 
@@ -200,8 +231,42 @@ services:
     container_name: ffmpeg-srt-live
     ports:
       - "1937:1937/udp"
+      - "10000:10000/tcp"  # Expose TCP stream for host testing
     environment:
       - SRT_LATENCY_MS=${SRT_LATENCY_MS:-200}
+      - TCP_SEND_BUFFER_SIZE=${TCP_SEND_BUFFER_SIZE:-2097152}
+      - MPEGTS_MAX_DELAY=${MPEGTS_MAX_DELAY:-1000000}
+      - MPEGTS_MUXRATE=${MPEGTS_MUXRATE:-5M}
+    networks:
+      - tsnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ffmpeg-rtmp-live:
+    stop_grace_period: 2s
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ffmpeg-rtmp-live
+    container_name: ffmpeg-rtmp-live
+    depends_on:
+      nginx-rtmp:
+        condition: service_healthy
+    ports:
+      - "10002:10002/tcp"  # Expose TCP stream for host testing
+    environment:
+      - TCP_SEND_BUFFER_SIZE=${TCP_SEND_BUFFER_SIZE:-2097152}
+      - MPEGTS_MAX_DELAY=${MPEGTS_MAX_DELAY:-1000000}
+      - MPEGTS_MUXRATE=${MPEGTS_MUXRATE:-5M}
     networks:
       - tsnet
     restart: unless-stopped
@@ -223,8 +288,14 @@ services:
       context: .
       dockerfile: docker/Dockerfile.ffmpeg-fallback
     container_name: ffmpeg-fallback
+    ports:
+      - "10001:10001/tcp"  # Expose TCP stream for host testing
     volumes:
       - ${SHARED_FOLDER}:/media:rw
+    environment:
+      - TCP_SEND_BUFFER_SIZE=${TCP_SEND_BUFFER_SIZE:-2097152}
+      - MPEGTS_MAX_DELAY=${MPEGTS_MAX_DELAY:-1000000}
+      - MPEGTS_MUXRATE=${MPEGTS_MUXRATE:-5M}
     networks:
       - tsnet
     restart: unless-stopped

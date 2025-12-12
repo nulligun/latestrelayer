@@ -6,9 +6,7 @@
 #include <thread>
 #include <mutex>
 #include <memory>
-
-// Forward declaration
-class InputSourceManager;
+#include "InputSourceManager.h"
 
 /**
  * Health status structure returned by health callback
@@ -31,6 +29,7 @@ class HttpServer {
 public:
     using PrivacyCallback = std::function<void(bool enabled)>;
     using HealthCallback = std::function<HealthStatus()>;
+    using InputSourceCallback = std::function<void(InputSource source)>;
     
     explicit HttpServer(uint16_t port);
     ~HttpServer();
@@ -50,6 +49,9 @@ public:
     
     // Register callback for health status
     void setHealthCallback(HealthCallback callback);
+    
+    // Register callback for input source changes (real-time switching)
+    void setInputSourceCallback(InputSourceCallback callback);
     
     // Set input source manager for /input endpoints
     void setInputSourceManager(std::shared_ptr<InputSourceManager> manager);
@@ -75,5 +77,6 @@ private:
     std::mutex callback_mutex_;
     PrivacyCallback privacy_callback_;
     HealthCallback health_callback_;
+    InputSourceCallback input_source_callback_;
     std::shared_ptr<InputSourceManager> input_source_manager_;
 };

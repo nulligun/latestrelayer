@@ -65,19 +65,39 @@ fi
 
 echo "[Wrapper] Using fallback file: $FALLBACK_FILE"
 
+# Get TCP buffering parameters from environment variables
+TCP_SEND_BUFFER_SIZE=${TCP_SEND_BUFFER_SIZE:-2097152}
+MPEGTS_MAX_DELAY=${MPEGTS_MAX_DELAY:-1000000}
+MPEGTS_MUXRATE=${MPEGTS_MUXRATE:-5M}
+
+# Build muxrate parameter if set
+MUXRATE_PARAM=""
+if [ -n "$MPEGTS_MUXRATE" ]; then
+    MUXRATE_PARAM="-muxrate ${MPEGTS_MUXRATE}"
+    echo "[Wrapper] TCP buffer settings: send_buffer=${TCP_SEND_BUFFER_SIZE}, max_delay=${MPEGTS_MAX_DELAY}µs, muxrate=${MPEGTS_MUXRATE}"
+else
+    echo "[Wrapper] TCP buffer settings: send_buffer=${TCP_SEND_BUFFER_SIZE}, max_delay=${MPEGTS_MAX_DELAY}µs, muxrate=disabled (natural bitrate)"
+fi
+
 # Start ffmpeg in background
 echo "[Wrapper] Starting ffmpeg fallback stream (TCP output)..."
 echo "[Wrapper] Full command:"
-echo "ffmpeg -nostdin -loglevel info -stats -re -stream_loop -1 -fflags +genpts -i \"$FALLBACK_FILE\" -c copy -f mpegts 'tcp://0.0.0.0:10001?listen=1'"
+echo "ffmpeg -nostdin -loglevel info -stats -re -stream_loop -1 -fflags +genpts+nobuffer -i \"$FALLBACK_FILE\" -c copy -f mpegts -mpegts_flags +resend_headers -max_delay ${MPEGTS_MAX_DELAY} -flush_packets 1 -async 1 ${MUXRATE_PARAM} 'tcp://0.0.0.0:10001?listen=1&send_buffer_size=${TCP_SEND_BUFFER_SIZE}'"
 ffmpeg -nostdin \
     -loglevel info \
     -stats \
     -re \
     -stream_loop -1 \
-    -fflags +genpts \
+    -fflags +genpts+nobuffer \
     -i "$FALLBACK_FILE" \
     -c copy \
-    -f mpegts 'tcp://0.0.0.0:10001?listen=1' &
+    -f mpegts \
+    -mpegts_flags +resend_headers \
+    -max_delay ${MPEGTS_MAX_DELAY} \
+    -flush_packets 1 \
+    -async 1 \
+    ${MUXRATE_PARAM} \
+    "tcp://0.0.0.0:10001?listen=1&send_buffer_size=${TCP_SEND_BUFFER_SIZE}" &
 
 FFMPEG_PID=$!
 echo "[Wrapper] FFmpeg started with PID $FFMPEG_PID"

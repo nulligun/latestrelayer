@@ -1,8 +1,8 @@
-#include "TCPReceiver.h"
+#include "TCPReader.h"
+#include "TSStreamReassembler.h"
 #include "NALParser.h"
 #include <iostream>
 #include <cstring>
-#include <cmath>
 #include <algorithm>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -49,33 +49,50 @@ static bool findIDRInPES(const uint8_t* data, size_t size) {
     return false;
 }
 
-TCPReceiver::TCPReceiver(const std::string& name, const std::string& host, uint16_t port)
+TCPReader::TCPReader(const std::string& name, const std::string& host, uint16_t port)
     : name_(name),
       host_(host),
       port_(port),
       sockfd_(-1),
+      stop_thread_(false),
+      running_(false),
+      connected_(false),
+      pids_ready_(false),
+      idr_ready_(false),
+      audio_ready_(false),
+      audio_sync_ready_(false),
+      first_packet_received_(false),
+      idr_index_(0),
+      audio_sync_index_(0),
+      consume_index_(0),
+      last_snapshot_end_(0),
+      max_buffer_packets_(MAX_BUFFER_PACKETS),
+      pts_base_(0),
+      audio_pts_base_(0),
+      pcr_base_(0),
+      pcr_pts_alignment_offset_(0),
+      total_packets_received_(0),
       last_progress_report_(std::chrono::steady_clock::now()) {
 }
 
-TCPReceiver::~TCPReceiver() {
+TCPReader::~TCPReader() {
     stop();
 }
 
-bool TCPReceiver::start() {
+bool TCPReader::start() {
     if (running_.load()) {
         std::cerr << "[" << name_ << "] Already running" << std::endl;
         return false;
     }
     
-    // Start background thread
     stop_thread_ = false;
-    bg_thread_ = std::thread(&TCPReceiver::backgroundThreadFunc, this);
+    bg_thread_ = std::thread(&TCPReader::backgroundThreadFunc, this);
     
-    std::cout << "[" << name_ << "] Started TCP receiver for " << host_ << ":" << port_ << std::endl;
+    std::cout << "[" << name_ << "] Started TCP reader for " << host_ << ":" << port_ << std::endl;
     return true;
 }
 
-void TCPReceiver::stop() {
+void TCPReader::stop() {
     if (!running_.load() && !bg_thread_.joinable()) {
         return;
     }
@@ -92,8 +109,8 @@ void TCPReceiver::stop() {
     std::cout << "[" << name_ << "] Stopped. Total packets: " << total_packets_received_.load() << std::endl;
 }
 
-bool TCPReceiver::attemptConnection() {
-    std::cout << "[" << name_ << "] Attempting TCP connection to " << host_ << ":" << port_ << "..." << std::endl;
+bool TCPReader::attemptConnection() {
+    std::cout << "[" << name_ << "] Attempting connection to " << host_ << ":" << port_ << "..." << std::endl;
     
     // Create TCP socket
     sockfd_ = socket(AF_INET, SOCK_STREAM, 0);
@@ -102,42 +119,41 @@ bool TCPReceiver::attemptConnection() {
         return false;
     }
     
-    // Set receive buffer size
-    int bufsize = 2 * 1024 * 1024; // 2MB
+    // Set receive buffer size (2MB)
+    int bufsize = 2 * 1024 * 1024;
     setsockopt(sockfd_, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
     
     // Set TCP_NODELAY to reduce latency
     int flag = 1;
     setsockopt(sockfd_, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
     
-    // Resolve hostname/IP using getaddrinfo (supports both DNS names and IP addresses)
+    // Resolve hostname using getaddrinfo
     struct addrinfo hints, *result, *rp;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;        // IPv4
-    hints.ai_socktype = SOCK_STREAM;  // TCP
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
     
     std::string port_str = std::to_string(port_);
     int ret = getaddrinfo(host_.c_str(), port_str.c_str(), &hints, &result);
     if (ret != 0) {
-        std::cerr << "[" << name_ << "] Failed to resolve hostname '" << host_ << "': "
-                  << gai_strerror(ret) << std::endl;
+        std::cerr << "[" << name_ << "] Failed to resolve hostname: " << gai_strerror(ret) << std::endl;
         close(sockfd_);
         sockfd_ = -1;
         return false;
     }
     
-    // Try each address until we successfully connect
-    bool connected = false;
+    // Try each address until we connect
+    bool connection_success = false;
     for (rp = result; rp != nullptr; rp = rp->ai_next) {
         if (::connect(sockfd_, rp->ai_addr, rp->ai_addrlen) == 0) {
-            connected = true;
+            connection_success = true;
             break;
         }
     }
     
     freeaddrinfo(result);
     
-    if (!connected) {
+    if (!connection_success) {
         std::cerr << "[" << name_ << "] Connection failed: " << strerror(errno) << std::endl;
         close(sockfd_);
         sockfd_ = -1;
@@ -149,7 +165,7 @@ bool TCPReceiver::attemptConnection() {
     return true;
 }
 
-void TCPReceiver::closeSocket() {
+void TCPReader::closeSocket() {
     if (sockfd_ >= 0) {
         shutdown(sockfd_, SHUT_RDWR);
         close(sockfd_);
@@ -157,17 +173,17 @@ void TCPReceiver::closeSocket() {
     }
 }
 
-void TCPReceiver::backgroundThreadFunc() {
+void TCPReader::backgroundThreadFunc() {
     std::cout << "[" << name_ << "] Background thread started" << std::endl;
     running_ = true;
     
     while (!stop_thread_.load()) {
-        // Attempt connection with infinite retry
+        // Attempt connection with retry
         while (!connected_.load() && !stop_thread_.load()) {
             if (attemptConnection()) {
                 break;
             }
-            std::cout << "[" << name_ << "] Reconnecting in " << (TCP_RECONNECT_DELAY_MS / 1000.0) << " seconds..." << std::endl;
+            std::cout << "[" << name_ << "] Reconnecting in " << (TCP_RECONNECT_DELAY_MS / 1000.0) << "s..." << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(TCP_RECONNECT_DELAY_MS));
         }
         
@@ -178,11 +194,13 @@ void TCPReceiver::backgroundThreadFunc() {
             std::lock_guard<std::mutex> lock(buffer_mutex_);
             rolling_buffer_.clear();
             idr_index_ = 0;
+            audio_sync_index_ = 0;
             consume_index_ = 0;
         }
         pids_ready_ = false;
         idr_ready_ = false;
         audio_ready_ = false;
+        audio_sync_ready_ = false;
         first_packet_received_ = false;
         
         // Process TCP stream
@@ -201,7 +219,7 @@ void TCPReceiver::backgroundThreadFunc() {
     std::cout << "[" << name_ << "] Background thread stopped" << std::endl;
 }
 
-void TCPReceiver::processTCPStream() {
+void TCPReader::processTCPStream() {
     ts::DuckContext duck;
     ts::SectionDemux demux(duck);
     std::vector<uint8_t> pes_buffer;
@@ -209,24 +227,8 @@ void TCPReceiver::processTCPStream() {
     bool foundPMT = false;
     last_progress_report_ = std::chrono::steady_clock::now();
     connection_start_time_ = std::chrono::steady_clock::now();
-    last_packet_time_ = connection_start_time_;
-    last_idr_time_ = connection_start_time_;
     size_t total_packets_in_connection = 0;
     size_t pes_start_index = 0;
-    
-    // Reset jitter tracking for new connection
-    {
-        std::lock_guard<std::mutex> lock(jitter_mutex_);
-        packet_intervals_.clear();
-        pts_deltas_.clear();
-        pcr_deltas_.clear();
-        idr_intervals_.clear();
-        buffer_fills_.clear();
-        last_pts_ = 0;
-        last_pcr_ = 0;
-        min_buffer_observed_ = SIZE_MAX;
-        max_buffer_observed_ = 0;
-    }
     
     // PAT/PMT handler
     class StreamAnalyzer : public ts::TableHandlerInterface {
@@ -306,76 +308,21 @@ void TCPReceiver::processTCPStream() {
         for (auto& pkt : packets) {
             total_packets_in_connection++;
             
-            // Track packet arrival timing
-            auto now = std::chrono::steady_clock::now();
             if (!first_packet_received_.load()) {
                 first_packet_received_ = true;
                 std::cout << "[" << name_ << "] Receiving TCP data..." << std::endl;
-                last_packet_time_ = now;
-            } else {
-                // Calculate inter-packet interval
-                auto interval = std::chrono::duration<double, std::milli>(now - last_packet_time_).count();
-                {
-                    std::lock_guard<std::mutex> lock(jitter_mutex_);
-                    packet_intervals_.push_back(interval);
-                    if (packet_intervals_.size() > JITTER_WINDOW_SIZE) {
-                        packet_intervals_.pop_front();
-                    }
-                }
-                last_packet_time_ = now;
-            }
-            
-            // Track PTS timing
-            if (pkt.getPID() == discovered_info_.video_pid || pkt.getPID() == discovered_info_.audio_pid) {
-                uint64_t pts;
-                if (pkt.hasPayload() && pkt.getPUSI()) {
-                    size_t header_size = pkt.getHeaderSize();
-                    const uint8_t* payload = pkt.b + header_size;
-                    size_t payload_size = ts::PKT_SIZE - header_size;
-                    if (payload_size >= 14 && extractPTS(payload, payload_size, pts)) {
-                        std::lock_guard<std::mutex> lock(jitter_mutex_);
-                        if (last_pts_ > 0 && pts > last_pts_) {
-                            double pts_delta = (pts - last_pts_) / 90.0;  // Convert to ms (90kHz clock)
-                            pts_deltas_.push_back(pts_delta);
-                            if (pts_deltas_.size() > JITTER_WINDOW_SIZE) {
-                                pts_deltas_.pop_front();
-                            }
-                        }
-                        last_pts_ = pts;
-                    }
-                }
-            }
-            
-            // Track PCR timing
-            if (pkt.getPID() == discovered_info_.pcr_pid) {
-                uint64_t pcr;
-                if (extractPCR(pkt, pcr)) {
-                    std::lock_guard<std::mutex> lock(jitter_mutex_);
-                    if (last_pcr_ > 0 && pcr > last_pcr_) {
-                        double pcr_delta = (pcr - last_pcr_) / 27000.0;  // Convert to ms (27MHz clock)
-                        pcr_deltas_.push_back(pcr_delta);
-                        if (pcr_deltas_.size() > JITTER_WINDOW_SIZE) {
-                            pcr_deltas_.pop_front();
-                        }
-                    }
-                    last_pcr_ = pcr;
-                }
             }
             
             // Periodic progress reporting
-            auto progress_now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(progress_now - last_progress_report_).count();
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_progress_report_).count();
             if (elapsed >= 5) {
                 std::lock_guard<std::mutex> lock(buffer_mutex_);
                 std::string status;
                 if (!pids_ready_.load()) {
-                    if (!foundPAT) {
-                        status = "searching for PAT/PMT...";
-                    } else if (!foundPMT) {
-                        status = "PAT found, searching for PMT...";
-                    } else {
-                        status = "PMT found, waiting for signal...";
-                    }
+                    if (!foundPAT) status = "searching for PAT/PMT...";
+                    else if (!foundPMT) status = "PAT found, searching for PMT...";
+                    else status = "PMT found, waiting for signal...";
                 } else if (!idr_ready_.load()) {
                     status = "waiting for IDR frame...";
                 } else {
@@ -383,7 +330,7 @@ void TCPReceiver::processTCPStream() {
                 }
                 std::cout << "[" << name_ << "] Progress: " << rolling_buffer_.size()
                           << " packets buffered, " << status << std::endl;
-                last_progress_report_ = progress_now;
+                last_progress_report_ = now;
             }
             
             // Phase 1: Parse PAT/PMT
@@ -397,7 +344,7 @@ void TCPReceiver::processTCPStream() {
                 if (foundPAT && foundPMT) {
                     discovered_info_.initialized = true;
                     std::cout << "[" << name_ << "] PAT/PMT discovery complete!" << std::endl;
-                    std::cout << "[" << name_ << "] Discovered: Video PID=" << discovered_info_.video_pid
+                    std::cout << "[" << name_ << "] Video PID=" << discovered_info_.video_pid
                               << ", Audio PID=" << discovered_info_.audio_pid
                               << ", PCR PID=" << discovered_info_.pcr_pid << std::endl;
                     pids_ready_ = true;
@@ -414,26 +361,13 @@ void TCPReceiver::processTCPStream() {
                             idr_index_ = pes_start_index;
                             std::cout << "[" << name_ << "] IDR frame detected at index " << idr_index_ << std::endl;
                             
-                            // Track IDR interval
-                            auto now = std::chrono::steady_clock::now();
-                            if (last_idr_time_ != connection_start_time_) {
-                                auto idr_interval = std::chrono::duration<double, std::milli>(
-                                    now - last_idr_time_).count();
-                                std::lock_guard<std::mutex> jlock(jitter_mutex_);
-                                idr_intervals_.push_back(idr_interval);
-                                if (idr_intervals_.size() > JITTER_WINDOW_SIZE) {
-                                    idr_intervals_.pop_front();
-                                }
-                            }
-                            last_idr_time_ = now;
-                            
-                            // If no audio stream, mark ready immediately
+                            // If no audio, mark ready immediately
                             if (discovered_info_.audio_pid == ts::PID_NULL) {
                                 std::cout << "[" << name_ << "] No audio stream, marking ready" << std::endl;
                                 idr_ready_ = true;
                                 cv_.notify_all();
                             } else {
-                                std::cout << "[" << name_ << "] Waiting for first audio PES packet..." << std::endl;
+                                std::cout << "[" << name_ << "] Waiting for first audio PES..." << std::endl;
                             }
                         }
                         pes_buffer.clear();
@@ -455,10 +389,8 @@ void TCPReceiver::processTCPStream() {
                 discovered_info_.audio_pid != ts::PID_NULL && !audio_ready_.load()) {
                 if (pkt.getPID() == discovered_info_.audio_pid && pkt.getPUSI() && pkt.hasPayload()) {
                     std::lock_guard<std::mutex> lock(buffer_mutex_);
-                    // Record audio sync index for audio-safe switching
-                    // This is the first audio PUSI packet after video IDR
-                    audio_sync_index_ = rolling_buffer_.size();  // Current packet will be at this index
-                    std::cout << "[" << name_ << "] First audio PES packet detected at index " << audio_sync_index_ << std::endl;
+                    audio_sync_index_ = rolling_buffer_.size();
+                    std::cout << "[" << name_ << "] First audio PES at index " << audio_sync_index_ << std::endl;
                     audio_ready_ = true;
                     audio_sync_ready_ = true;
                     idr_ready_ = true;
@@ -466,15 +398,14 @@ void TCPReceiver::processTCPStream() {
                 }
             }
             
-            // Phase 3b: Continue tracking audio sync for subsequent switch requests
-            // Even after idr_ready_, track audio PUSI packets for potential switches
+            // Phase 3b: Continue tracking audio sync for subsequent switches
             if (pids_ready_.load() && idr_ready_.load() && !audio_sync_ready_.load() &&
                 discovered_info_.audio_pid != ts::PID_NULL) {
                 if (pkt.getPID() == discovered_info_.audio_pid && pkt.getPUSI() && pkt.hasPayload()) {
                     std::lock_guard<std::mutex> lock(buffer_mutex_);
                     audio_sync_index_ = rolling_buffer_.size();
                     audio_sync_ready_ = true;
-                    std::cout << "[" << name_ << "] Audio sync point updated at index " << audio_sync_index_ << std::endl;
+                    std::cout << "[" << name_ << "] Audio sync updated at index " << audio_sync_index_ << std::endl;
                     cv_.notify_all();
                 }
             }
@@ -484,41 +415,18 @@ void TCPReceiver::processTCPStream() {
                 std::lock_guard<std::mutex> lock(buffer_mutex_);
                 rolling_buffer_.push_back(pkt);
                 
-                // Track buffer fill statistics
-                {
-                    std::lock_guard<std::mutex> jlock(jitter_mutex_);
-                    size_t current_fill = rolling_buffer_.size();
-                    buffer_fills_.push_back(current_fill);
-                    if (buffer_fills_.size() > JITTER_WINDOW_SIZE) {
-                        buffer_fills_.pop_front();
-                    }
-                    if (current_fill < min_buffer_observed_) {
-                        min_buffer_observed_ = current_fill;
-                    }
-                    if (current_fill > max_buffer_observed_) {
-                        max_buffer_observed_ = current_fill;
-                    }
-                }
-                
                 // Trim buffer if too large
                 if (rolling_buffer_.size() > max_buffer_packets_ && idr_ready_.load()) {
                     size_t to_remove = rolling_buffer_.size() - max_buffer_packets_;
                     rolling_buffer_.erase(rolling_buffer_.begin(), rolling_buffer_.begin() + to_remove);
-                    if (idr_index_ >= to_remove) {
-                        idr_index_ -= to_remove;
-                    } else {
-                        idr_index_ = 0;
-                    }
-                    if (consume_index_ >= to_remove) {
-                        consume_index_ -= to_remove;
-                    } else {
-                        consume_index_ = 0;
-                    }
-                    if (last_snapshot_end_ >= to_remove) {
-                        last_snapshot_end_ -= to_remove;
-                    } else {
-                        last_snapshot_end_ = 0;
-                    }
+                    if (idr_index_ >= to_remove) idr_index_ -= to_remove;
+                    else idr_index_ = 0;
+                    if (consume_index_ >= to_remove) consume_index_ -= to_remove;
+                    else consume_index_ = 0;
+                    if (last_snapshot_end_ >= to_remove) last_snapshot_end_ -= to_remove;
+                    else last_snapshot_end_ = 0;
+                    if (audio_sync_index_ >= to_remove) audio_sync_index_ -= to_remove;
+                    else audio_sync_index_ = 0;
                 }
             }
             
@@ -532,33 +440,122 @@ void TCPReceiver::processTCPStream() {
     std::cout << "[" << name_ << "] Total packets in connection: " << total_packets_in_connection << std::endl;
 }
 
-void TCPReceiver::waitForStreamInfo() {
+void TCPReader::waitForStreamInfo() {
     std::cout << "[" << name_ << "] Waiting for stream info..." << std::endl;
     std::unique_lock<std::mutex> lock(buffer_mutex_);
     cv_.wait(lock, [this]{ return pids_ready_.load(); });
     std::cout << "[" << name_ << "] Stream info ready" << std::endl;
 }
 
-void TCPReceiver::waitForIDR() {
+void TCPReader::waitForIDR() {
     std::unique_lock<std::mutex> lock(buffer_mutex_);
     cv_.wait(lock, [this]{ return idr_ready_.load(); });
 }
 
-std::vector<ts::TSPacket> TCPReceiver::getBufferedPacketsFromIDR() {
+void TCPReader::waitForAudioSync() {
+    std::cout << "[" << name_ << "] Waiting for audio sync point..." << std::endl;
+    std::unique_lock<std::mutex> lock(buffer_mutex_);
+    
+    auto timeout = std::chrono::seconds(5);
+    bool found = cv_.wait_for(lock, timeout, [this]{ return audio_sync_ready_.load(); });
+    
+    if (found) {
+        std::cout << "[" << name_ << "] Audio sync ready at index " << audio_sync_index_ << std::endl;
+    } else {
+        std::cerr << "[" << name_ << "] Warning: Audio sync timeout - using IDR as fallback" << std::endl;
+        audio_sync_index_ = idr_index_;
+        audio_sync_ready_ = true;
+    }
+}
+
+void TCPReader::resetForNewLoop() {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    idr_ready_ = false;
+    audio_ready_ = false;
+    audio_sync_ready_ = false;
+    idr_index_ = 0;
+    audio_sync_index_ = 0;
+    std::cout << "[" << name_ << "] Reset for new loop - waiting for next IDR and audio sync" << std::endl;
+}
+
+std::vector<ts::TSPacket> TCPReader::getBufferedPacketsFromIDR() {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
     if (idr_index_ < rolling_buffer_.size()) {
         last_snapshot_end_ = rolling_buffer_.size();
-        return std::vector<ts::TSPacket>(rolling_buffer_.begin() + idr_index_,
-                                        rolling_buffer_.end());
+        return std::vector<ts::TSPacket>(rolling_buffer_.begin() + idr_index_, rolling_buffer_.end());
     }
     return {};
 }
 
-bool TCPReceiver::extractTimestampBases() {
+std::vector<ts::TSPacket> TCPReader::getBufferedPacketsFromAudioSync() {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    
+    // Always start from IDR to include video IDR frame
+    size_t start_index = idr_index_;
+    
+    if (audio_sync_ready_.load()) {
+        std::cout << "[" << name_ << "] IDR at " << idr_index_ << ", audio sync at " << audio_sync_index_ << std::endl;
+    }
+    
+    if (start_index < rolling_buffer_.size()) {
+        last_snapshot_end_ = rolling_buffer_.size();
+        return std::vector<ts::TSPacket>(rolling_buffer_.begin() + start_index, rolling_buffer_.end());
+    }
+    return {};
+}
+
+std::vector<ts::TSPacket> TCPReader::receivePackets(size_t maxPackets, int timeoutMs) {
+    std::vector<ts::TSPacket> result;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    
+    while (result.size() < maxPackets) {
+        {
+            std::unique_lock<std::mutex> lock(buffer_mutex_);
+            if (consume_index_ < rolling_buffer_.size()) {
+                size_t available = rolling_buffer_.size() - consume_index_;
+                size_t to_copy = std::min(maxPackets - result.size(), available);
+                
+                result.insert(result.end(),
+                            rolling_buffer_.begin() + consume_index_,
+                            rolling_buffer_.begin() + consume_index_ + to_copy);
+                consume_index_ += to_copy;
+                
+                // Periodically trim consumed packets
+                if (consume_index_ > max_buffer_packets_ / 2) {
+                    rolling_buffer_.erase(rolling_buffer_.begin(), rolling_buffer_.begin() + consume_index_);
+                    if (idr_index_ >= consume_index_) idr_index_ -= consume_index_;
+                    else idr_index_ = 0;
+                    consume_index_ = 0;
+                }
+            }
+        }
+        
+        if (result.size() >= maxPackets) break;
+        if (std::chrono::steady_clock::now() >= deadline) break;
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    return result;
+}
+
+void TCPReader::initConsumptionFromIndex(size_t index) {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    consume_index_ = index;
+    std::cout << "[" << name_ << "] Consumption started at index " << consume_index_ << std::endl;
+}
+
+void TCPReader::initConsumptionFromCurrentPosition() {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    consume_index_ = rolling_buffer_.size();
+    std::cout << "[" << name_ << "] Consumption started at current position " << consume_index_ << std::endl;
+}
+
+bool TCPReader::extractTimestampBases() {
     auto packets = getBufferedPacketsFromIDR();
     if (packets.empty()) return false;
     
-    // Extract SPS/PPS
+    // Extract SPS/PPS using NALParser
     NALParser nal_parser;
     for (const auto& pkt : packets) {
         if (pkt.getPID() == discovered_info_.video_pid && pkt.hasPayload()) {
@@ -588,9 +585,7 @@ bool TCPReceiver::extractTimestampBases() {
     for (const auto& pkt : packets) {
         // Extract video PTS base
         if (!found_video_pts && pkt.getPID() == discovered_info_.video_pid && pkt.hasPayload()) {
-            if (pkt.getPUSI()) {
-                video_pes_buffer.clear();
-            }
+            if (pkt.getPUSI()) video_pes_buffer.clear();
             
             size_t header_size = pkt.getHeaderSize();
             const uint8_t* payload = pkt.b + header_size;
@@ -608,9 +603,7 @@ bool TCPReceiver::extractTimestampBases() {
         // Extract audio PTS base
         if (!found_audio_pts && discovered_info_.audio_pid != ts::PID_NULL &&
             pkt.getPID() == discovered_info_.audio_pid && pkt.hasPayload()) {
-            if (pkt.getPUSI()) {
-                audio_pes_buffer.clear();
-            }
+            if (pkt.getPUSI()) audio_pes_buffer.clear();
             
             size_t header_size = pkt.getHeaderSize();
             const uint8_t* payload = pkt.b + header_size;
@@ -630,7 +623,7 @@ bool TCPReceiver::extractTimestampBases() {
         }
     }
     
-    // Use minimum of video and audio PTS as the base
+    // Use minimum of video and audio PTS as base
     if (found_video_pts && found_audio_pts) {
         pts_base_ = std::min(video_pts_base, audio_pts_base_temp);
         audio_pts_base_ = audio_pts_base_temp;
@@ -664,251 +657,54 @@ bool TCPReceiver::extractTimestampBases() {
         std::cout << "[" << name_ << "] PCR/PTS alignment offset: " << pcr_pts_alignment_offset_ << std::endl;
     } else {
         pcr_base_ = pts_base_ * 300;
-        std::cout << "[" << name_ << "] PCR not found, using PTS-derived PCR base: " << pcr_base_ << std::endl;
+        std::cout << "[" << name_ << "] PCR not found, using PTS-derived: " << pcr_base_ << std::endl;
     }
     
     return pts_base_ > 0;
 }
 
-std::vector<ts::TSPacket> TCPReceiver::receivePackets(size_t maxPackets, int timeoutMs) {
-    std::vector<ts::TSPacket> result;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    
-    while (result.size() < maxPackets) {
-        {
-            std::unique_lock<std::mutex> lock(buffer_mutex_);
-            if (consume_index_ < rolling_buffer_.size()) {
-                size_t available = rolling_buffer_.size() - consume_index_;
-                size_t to_copy = std::min(maxPackets - result.size(), available);
-                
-                result.insert(result.end(),
-                            rolling_buffer_.begin() + consume_index_,
-                            rolling_buffer_.begin() + consume_index_ + to_copy);
-                consume_index_ += to_copy;
-                
-                // Periodically trim consumed packets
-                if (consume_index_ > max_buffer_packets_ / 2) {
-                    rolling_buffer_.erase(rolling_buffer_.begin(), rolling_buffer_.begin() + consume_index_);
-                    if (idr_index_ >= consume_index_) {
-                        idr_index_ -= consume_index_;
-                    } else {
-                        idr_index_ = 0;
-                    }
-                    consume_index_ = 0;
-                }
-            }
-        }
-        
-        if (result.size() >= maxPackets) break;
-        
-        if (std::chrono::steady_clock::now() >= deadline) {
-            break;
-        }
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    
-    return result;
-}
-
-void TCPReceiver::initConsumptionFromIndex(size_t index) {
-    std::lock_guard<std::mutex> lock(buffer_mutex_);
-    consume_index_ = index;
-    std::cout << "[" << name_ << "] Consumption started at index " << consume_index_ << std::endl;
-}
-
-void TCPReceiver::initConsumptionFromCurrentPosition() {
-    std::lock_guard<std::mutex> lock(buffer_mutex_);
-    consume_index_ = rolling_buffer_.size();
-    std::cout << "[" << name_ << "] Consumption started at current position " << consume_index_ << std::endl;
-}
-
-void TCPReceiver::resetForNewLoop() {
-    std::lock_guard<std::mutex> lock(buffer_mutex_);
-    idr_ready_ = false;
-    audio_ready_ = false;
-    audio_sync_ready_ = false;  // Reset audio sync state for clean audio switching
-    idr_index_ = 0;
-    audio_sync_index_ = 0;  // Reset audio sync index
-    std::cout << "[" << name_ << "] Reset for new loop - waiting for next IDR and audio sync" << std::endl;
-}
-
-void TCPReceiver::waitForAudioSync() {
-    std::cout << "[" << name_ << "] Waiting for audio sync point..." << std::endl;
-    std::unique_lock<std::mutex> lock(buffer_mutex_);
-    
-    // Wait up to 5 seconds for audio sync (generous timeout)
-    auto timeout = std::chrono::seconds(5);
-    bool found = cv_.wait_for(lock, timeout, [this]{ return audio_sync_ready_.load(); });
-    
-    if (found) {
-        std::cout << "[" << name_ << "] Audio sync point ready at index " << audio_sync_index_ << std::endl;
-    } else {
-        std::cerr << "[" << name_ << "] Warning: Audio sync timeout - using IDR index as fallback" << std::endl;
-        audio_sync_index_ = idr_index_;  // Fallback to IDR index
-        audio_sync_ready_ = true;
-    }
-}
-
-std::vector<ts::TSPacket> TCPReceiver::getBufferedPacketsFromAudioSync() {
-    std::lock_guard<std::mutex> lock(buffer_mutex_);
-    
-    // CRITICAL: Always start from IDR index to include the video IDR frame
-    // The audio_sync_index is AFTER the IDR and is only used for validation
-    // Starting from audio_sync_index would skip all video packets from IDR to audio sync,
-    // causing "Packet corrupt" errors in FFmpeg
-    size_t start_index = idr_index_;
-    
-    // Log both indices for debugging
-    if (audio_sync_ready_.load()) {
-        std::cout << "[" << name_ << "] IDR at index " << idr_index_
-                  << ", audio sync at index " << audio_sync_index_
-                  << " (starting from IDR)" << std::endl;
-    }
-    
-    if (start_index < rolling_buffer_.size()) {
-        last_snapshot_end_ = rolling_buffer_.size();
-        std::cout << "[" << name_ << "] Getting " << (rolling_buffer_.size() - start_index)
-                  << " packets from IDR (index " << start_index << ")" << std::endl;
-        return std::vector<ts::TSPacket>(rolling_buffer_.begin() + start_index,
-                                        rolling_buffer_.end());
-    }
-    return {};
-}
-
-bool TCPReceiver::validateFirstAudioADTS(const std::vector<ts::TSPacket>& packets) const {
-    // Find first audio packet with PUSI in the provided packets
+bool TCPReader::validateFirstAudioADTS(const std::vector<ts::TSPacket>& packets) const {
+    // Find first audio packet with PUSI
     for (const auto& pkt : packets) {
-        if (pkt.getPID() == discovered_info_.audio_pid &&
-            pkt.getPUSI() && pkt.hasPayload()) {
-            
+        if (pkt.getPID() == discovered_info_.audio_pid && pkt.getPUSI() && pkt.hasPayload()) {
             size_t header_size = pkt.getHeaderSize();
             const uint8_t* payload = pkt.b + header_size;
             size_t payload_size = ts::PKT_SIZE - header_size;
             
-            // Need at least PES header (9 bytes minimum) + some payload for ADTS
-            if (payload_size < 9) {
-                std::cerr << "[" << name_ << "] Audio packet payload too small: " << payload_size << " bytes" << std::endl;
-                return false;
-            }
+            if (payload_size < 9) return false;
             
-            // Check for PES start code
-            if (payload[0] != 0x00 || payload[1] != 0x00 || payload[2] != 0x01) {
-                std::cerr << "[" << name_ << "] Invalid PES start code in audio packet" << std::endl;
-                return false;
-            }
+            // Check PES start code
+            if (payload[0] != 0x00 || payload[1] != 0x00 || payload[2] != 0x01) return false;
             
-            // Get PES header length to find start of audio data
+            // Get PES header length
             uint8_t pes_header_data_length = payload[8];
             size_t audio_data_start = 9 + pes_header_data_length;
             
             if (audio_data_start >= payload_size) {
-                std::cerr << "[" << name_ << "] PES header extends beyond packet - audio data in continuation packet" << std::endl;
-                // This is actually OK - the ADTS frame will be in continuation packets
-                // We trust that starting from PUSI gives us a complete PES
+                // ADTS in continuation packets - OK
                 return true;
             }
             
-            // Look for ADTS sync word (0xFFF - 12 bits)
-            // ADTS header: sync word is 0xFF followed by 0xF? (high nibble)
+            // Look for ADTS sync word (0xFFF)
             size_t remaining = payload_size - audio_data_start;
             const uint8_t* audio_data = payload + audio_data_start;
             
             for (size_t i = 0; i + 1 < remaining; i++) {
                 if (audio_data[i] == 0xFF && (audio_data[i+1] & 0xF0) == 0xF0) {
-                    std::cout << "[" << name_ << "] Valid ADTS sync word found at offset " << (audio_data_start + i) << std::endl;
+                    std::cout << "[" << name_ << "] Valid ADTS sync at offset " << (audio_data_start + i) << std::endl;
                     return true;
                 }
             }
             
-            // ADTS might start in continuation packets - this is still a valid PUSI boundary
-            std::cout << "[" << name_ << "] ADTS sync not in first packet - trusting PES boundary" << std::endl;
+            // ADTS might be in continuation - trust PES boundary
+            std::cout << "[" << name_ << "] ADTS not in first packet - trusting PES boundary" << std::endl;
             return true;
         }
     }
     
-    // No audio packets found - if no audio PID, this is OK
-    if (discovered_info_.audio_pid == ts::PID_NULL) {
-        return true;
-    }
+    // No audio or no audio PID
+    if (discovered_info_.audio_pid == ts::PID_NULL) return true;
     
-    std::cerr << "[" << name_ << "] No audio PUSI packet found in buffer" << std::endl;
+    std::cerr << "[" << name_ << "] No audio PUSI packet found" << std::endl;
     return false;
-}
-
-// Helper methods for jitter calculation
-double TCPReceiver::calculateMean(const std::deque<double>& values) const {
-    if (values.empty()) return 0.0;
-    double sum = 0.0;
-    for (const auto& val : values) {
-        sum += val;
-    }
-    return sum / values.size();
-}
-
-double TCPReceiver::calculateStdDev(const std::deque<double>& values, double mean) const {
-    if (values.size() < 2) return 0.0;
-    double sum_sq_diff = 0.0;
-    for (const auto& val : values) {
-        double diff = val - mean;
-        sum_sq_diff += diff * diff;
-    }
-    return std::sqrt(sum_sq_diff / (values.size() - 1));
-}
-
-JitterStats TCPReceiver::getJitterStats() const {
-    std::lock_guard<std::mutex> lock(jitter_mutex_);
-    
-    JitterStats stats;
-    
-    // Packet arrival timing
-    if (!packet_intervals_.empty()) {
-        stats.avg_packet_interval_ms = calculateMean(packet_intervals_);
-        stats.packet_jitter_ms = calculateStdDev(packet_intervals_, stats.avg_packet_interval_ms);
-        stats.min_packet_interval_ms = *std::min_element(packet_intervals_.begin(), packet_intervals_.end());
-        stats.max_packet_interval_ms = *std::max_element(packet_intervals_.begin(), packet_intervals_.end());
-    }
-    
-    // PTS timing
-    if (!pts_deltas_.empty()) {
-        stats.avg_pts_delta_ms = calculateMean(pts_deltas_);
-        stats.pts_jitter_ms = calculateStdDev(pts_deltas_, stats.avg_pts_delta_ms);
-        stats.total_pts_packets = pts_deltas_.size();
-    }
-    
-    // PCR timing
-    if (!pcr_deltas_.empty()) {
-        stats.avg_pcr_delta_ms = calculateMean(pcr_deltas_);
-        stats.pcr_jitter_ms = calculateStdDev(pcr_deltas_, stats.avg_pcr_delta_ms);
-        stats.total_pcr_packets = pcr_deltas_.size();
-    }
-    
-    // Buffer statistics
-    {
-        std::lock_guard<std::mutex> block(buffer_mutex_);
-        stats.current_buffer_size = rolling_buffer_.size();
-        stats.max_buffer_size = max_buffer_packets_;
-    }
-    stats.min_buffer_fill = min_buffer_observed_;
-    stats.max_buffer_fill = max_buffer_observed_;
-    if (!buffer_fills_.empty()) {
-        stats.avg_buffer_fill = calculateMean(buffer_fills_);
-    }
-    
-    // IDR frame timing
-    if (!idr_intervals_.empty()) {
-        stats.avg_idr_interval_ms = calculateMean(idr_intervals_);
-        stats.idr_interval_jitter_ms = calculateStdDev(idr_intervals_, stats.avg_idr_interval_ms);
-        stats.total_idr_frames = idr_intervals_.size() + 1;  // +1 for the initial IDR
-    }
-    
-    // Overall statistics
-    stats.total_packets = total_packets_received_.load();
-    if (connected_.load()) {
-        auto uptime = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - connection_start_time_).count();
-        stats.uptime_seconds = uptime;
-    }
-    
-    return stats;
 }

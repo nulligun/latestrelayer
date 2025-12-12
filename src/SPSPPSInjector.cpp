@@ -154,20 +154,24 @@ std::vector<uint8_t> SPSPPSInjector::buildPESPacket(
     pes_data.push_back(static_cast<uint8_t>(pes_header_data_length));
     
     // Optional fields: PTS and/or DTS
+    // Marker values are 4-bit nibbles that get shifted left by 4 in writePESTimestamp:
+    // - PTS only: '0010' = 0x02 -> after shift becomes 0x2x
+    // - PTS when DTS present: '0011' = 0x03 -> after shift becomes 0x3x
+    // - DTS: '0001' = 0x01 -> after shift becomes 0x1x
     if (pts.has_value() && dts.has_value()) {
         // PTS
         uint8_t pts_bytes[5];
-        writePESTimestamp(pts_bytes, pts.value(), 0x30);  // '0011' marker for PTS when both present
+        writePESTimestamp(pts_bytes, pts.value(), 0x03);  // '0011' marker for PTS when both present
         pes_data.insert(pes_data.end(), pts_bytes, pts_bytes + 5);
         
         // DTS
         uint8_t dts_bytes[5];
-        writePESTimestamp(dts_bytes, dts.value(), 0x10);  // '0001' marker for DTS
+        writePESTimestamp(dts_bytes, dts.value(), 0x01);  // '0001' marker for DTS
         pes_data.insert(pes_data.end(), dts_bytes, dts_bytes + 5);
     } else if (pts.has_value()) {
         // PTS only
         uint8_t pts_bytes[5];
-        writePESTimestamp(pts_bytes, pts.value(), 0x20);  // '0010' marker for PTS only
+        writePESTimestamp(pts_bytes, pts.value(), 0x02);  // '0010' marker for PTS only
         pes_data.insert(pes_data.end(), pts_bytes, pts_bytes + 5);
     }
     

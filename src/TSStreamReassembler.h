@@ -12,8 +12,8 @@
 /**
  * TSStreamReassembler - MPEG-TS Stream Reassembly from Arbitrary Byte Chunks
  * 
- * Handles reassembly of MPEG-TS packets from TCP stream that may:
- * - Split TS packets across recv() boundaries
+ * Handles reassembly of MPEG-TS packets from UDP datagrams that may:
+ * - Split TS packets across datagram boundaries
  * - Contain partial packets at the start/end
  * - Arrive with arbitrary sizes
  * 
@@ -44,7 +44,7 @@ public:
         , maxBufferSize_(maxBufferSize) {}
 
     /**
-     * Add raw bytes from TCP stream
+     * Add raw bytes from UDP datagram
      * @param data Pointer to raw bytes
      * @param length Number of bytes
      */
@@ -108,7 +108,7 @@ public:
         
         // DEBUG: Periodically log processing stats
         if (datagramCount_ % 500 == 0) {
-            std::cerr << "[REASSEMBLER] Stats after " << datagramCount_ << " recv calls:\n"
+            std::cerr << "[REASSEMBLER] Stats after " << datagramCount_ << " datagrams:\n"
                       << "  - Total bytes received: " << totalBytesReceived_ << "\n"
                       << "  - Pending buffer: " << buffer_.size() << " bytes\n"
                       << "  - State: " << stateToString(state_) << "\n"
@@ -245,10 +245,33 @@ private:
                 syncOffset_ = 0;
                 verifyCount_ = 0;
                 state_ = State::VERIFYING;
+                
+                // DEBUG: Log valid sync candidate found
+                static size_t validCandidates = 0;
+                validCandidates++;
+                if (validCandidates <= 5 || validCandidates % 100 == 0) {
+                    uint16_t pid = extractPID(0);
+                    std::cerr << "[REASSEMBLER] Found valid sync candidate #" << validCandidates
+                              << ": PID=" << pid << " (0x" << std::hex << pid << std::dec << ")\n";
+                }
+                
                 return true; // State changed, continue processing
             }
             
             // Not a valid sync position (either not 0x47 or invalid PID)
+            // DEBUG: Log rejected candidates
+            if (buffer_[0] == TS_SYNC_BYTE) {
+                // It was 0x47 but invalid PID - this is the false sync we're catching!
+                static size_t rejectedFalseSync = 0;
+                rejectedFalseSync++;
+                if (rejectedFalseSync <= 10 || rejectedFalseSync % 500 == 0) {
+                    uint16_t badPid = extractPID(0);
+                    std::cerr << "[REASSEMBLER] Rejected false sync #" << rejectedFalseSync
+                              << ": byte=0x47 but PID=" << badPid
+                              << " (0x" << std::hex << badPid << std::dec << ") > 8191\n";
+                }
+            }
+            
             buffer_.pop_front();
             bytesDiscarded_++;
         }
@@ -273,6 +296,18 @@ private:
             // Verification failed - not a valid sync pattern
             falseVerifyAttempts_++;
             
+            // DEBUG: Log verification failures (first few and periodically)
+            if (falseVerifyAttempts_ <= 5 || falseVerifyAttempts_ % 100 == 0) {
+                uint8_t byte0 = buffer_[nextPacketOffset];
+                uint16_t pid = extractPID(nextPacketOffset);
+                std::cerr << "[REASSEMBLER] Verify FAILED #" << falseVerifyAttempts_
+                          << ": at offset " << nextPacketOffset
+                          << ", byte=0x" << std::hex << std::setfill('0') << std::setw(2) << (int)byte0
+                          << ", PID=" << std::dec << pid << " (0x" << std::hex << pid << std::dec << ")"
+                          << ", verifyCount=" << verifyCount_
+                          << ", bufferSize=" << buffer_.size() << "\n";
+            }
+            
             // Discard the candidate sync byte and search again
             buffer_.pop_front();
             bytesDiscarded_++;
@@ -285,6 +320,14 @@ private:
         
         if (verifyCount_ >= requiredSyncPackets_) {
             // Successfully verified required number of packets
+            // DEBUG: Log successful sync lock
+            static size_t syncLockCount = 0;
+            syncLockCount++;
+            if (syncLockCount <= 3 || syncLockCount % 50 == 0) {
+                std::cerr << "[REASSEMBLER] SYNC LOCKED #" << syncLockCount
+                          << " after verifying " << verifyCount_ << " packets"
+                          << ", buffer=" << buffer_.size() << " bytes\n";
+            }
             state_ = State::SYNCED;
             return true; // State changed, continue processing
         }
@@ -305,7 +348,39 @@ private:
         // Verify we still have a valid TS header (sync byte + valid PID)
         if (!isValidTSHeader(0)) {
             // Lost sync!
+            size_t prevSyncLosses = syncLosses_.load();
             syncLosses_++;
+            
+            // DEBUG: Log sync loss with context
+            if (prevSyncLosses < 10 || prevSyncLosses % 100 == 0) {
+                uint16_t pid = extractPID(0);
+                std::cerr << "[REASSEMBLER] SYNC LOST #" << (prevSyncLosses + 1)
+                          << ": byte0=0x" << std::hex << std::setfill('0') << std::setw(2)
+                          << (int)buffer_[0] << ", PID=" << std::dec << pid
+                          << " (0x" << std::hex << pid << std::dec << ")"
+                          << ", packetsOutput=" << packetsOutput_.load()
+                          << ", bufferSize=" << buffer_.size() << "\n";
+                
+                // Show context: first 20 bytes of buffer
+                std::cerr << "[REASSEMBLER] Buffer context: ";
+                for (size_t i = 0; i < std::min(buffer_.size(), size_t(20)); i++) {
+                    std::cerr << std::hex << std::setfill('0') << std::setw(2)
+                              << (int)buffer_[i] << " ";
+                }
+                std::cerr << std::dec << "\n";
+                
+                // Check where next valid TS header is
+                for (size_t i = 1; i < std::min(buffer_.size(), size_t(600)); i++) {
+                    if (isValidTSHeader(i)) {
+                        uint16_t nextPid = extractPID(i);
+                        std::cerr << "[REASSEMBLER] Next valid header at offset " << i
+                                  << " (" << (i % TS_PACKET_SIZE) << " bytes from packet boundary)"
+                                  << ", PID=" << nextPid << "\n";
+                        break;
+                    }
+                }
+            }
+            
             state_ = State::SEARCHING;
             return true; // State changed, continue processing
         }
@@ -317,6 +392,23 @@ private:
             pkt.b[i] = buffer_[i];
         }
         buffer_.erase(buffer_.begin(), buffer_.begin() + TS_PACKET_SIZE);
+        
+        // DEBUG: Validate extracted packet
+        size_t pktCount = packetsOutput_.load();
+        if (pkt.b[0] != TS_SYNC_BYTE) {
+            std::cerr << "[REASSEMBLER] ERROR: Extracted packet #" << (pktCount + 1)
+                      << " has invalid sync byte 0x" << std::hex << (int)pkt.b[0] << std::dec << "!\n";
+        }
+        
+        // DEBUG: Log packet extraction periodically
+        if (pktCount < 5 || (pktCount < 200 && pktCount % 50 == 0) || pktCount % 1000 == 0) {
+            ts::PID pid = pkt.getPID();
+            std::cerr << "[REASSEMBLER] Extracted packet #" << (pktCount + 1)
+                      << ": sync=0x" << std::hex << (int)pkt.b[0]
+                      << ", PID=" << std::dec << pid
+                      << ", CC=" << (int)(pkt.b[3] & 0x0F)
+                      << ", pending=" << buffer_.size() << " bytes\n";
+        }
         
         outputQueue_.push_back(pkt);
         packetsOutput_++;

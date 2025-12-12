@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== FFmpeg SRT Live Wrapper ==="
+echo "=== FFmpeg RTMP Live Wrapper ==="
 
 # Signal handler for graceful shutdown
 cleanup() {
@@ -17,15 +17,9 @@ cleanup() {
 # Trap SIGTERM and SIGINT
 trap cleanup SIGTERM SIGINT
 
-# Wait for multiplexer to be ready
-echo "[Wrapper] Waiting for multiplexer to be ready..."
-sleep 3
-
-# Get SRT latency from environment variable (default: 200ms)
-# SRT latency is specified in microseconds in the URL
-SRT_LATENCY_MS=${SRT_LATENCY_MS:-200}
-SRT_LATENCY_US=$((SRT_LATENCY_MS * 1000))
-echo "[Wrapper] Using SRT latency: ${SRT_LATENCY_MS}ms (${SRT_LATENCY_US}µs)"
+# Wait for nginx-rtmp to be ready
+echo "[Wrapper] Waiting for nginx-rtmp to be ready..."
+sleep 5
 
 # Get TCP buffering parameters from environment variables
 TCP_SEND_BUFFER_SIZE=${TCP_SEND_BUFFER_SIZE:-2097152}
@@ -42,13 +36,14 @@ else
 fi
 
 # Start ffmpeg in background
-echo "[Wrapper] Starting ffmpeg SRT live stream (TCP output)..."
+# Pulls from nginx-rtmp drone publish endpoint and serves via TCP on port 10002
+echo "[Wrapper] Starting ffmpeg RTMP→TCP bridge..."
 echo "[Wrapper] Full command:"
-echo "ffmpeg -nostdin -loglevel info -fflags +nobuffer -i \"srt://0.0.0.0:1937?mode=listener&latency=${SRT_LATENCY_US}&transtype=live&payload_size=1316\" -c copy -f mpegts -mpegts_flags +resend_headers -max_delay ${MPEGTS_MAX_DELAY} -flush_packets 1 -async 1 ${MUXRATE_PARAM} 'tcp://0.0.0.0:10000?listen=1&send_buffer_size=${TCP_SEND_BUFFER_SIZE}'"
+echo "ffmpeg -nostdin -loglevel info -fflags +nobuffer -i 'rtmp://nginx-rtmp/publish/drone' -c copy -f mpegts -mpegts_flags +resend_headers -max_delay ${MPEGTS_MAX_DELAY} -flush_packets 1 -async 1 ${MUXRATE_PARAM} 'tcp://0.0.0.0:10002?listen=1&send_buffer_size=${TCP_SEND_BUFFER_SIZE}'"
 ffmpeg -nostdin \
     -loglevel info \
     -fflags +nobuffer \
-    -i "srt://0.0.0.0:1937?mode=listener&latency=${SRT_LATENCY_US}&transtype=live&payload_size=1316" \
+    -i 'rtmp://nginx-rtmp/publish/drone' \
     -c copy \
     -f mpegts \
     -mpegts_flags +resend_headers \
@@ -56,7 +51,7 @@ ffmpeg -nostdin \
     -flush_packets 1 \
     -async 1 \
     ${MUXRATE_PARAM} \
-    "tcp://0.0.0.0:10000?listen=1&send_buffer_size=${TCP_SEND_BUFFER_SIZE}" &
+    "tcp://0.0.0.0:10002?listen=1&send_buffer_size=${TCP_SEND_BUFFER_SIZE}" &
 
 FFMPEG_PID=$!
 echo "[Wrapper] FFmpeg started with PID $FFMPEG_PID"

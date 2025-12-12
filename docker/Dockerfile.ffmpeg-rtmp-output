@@ -1,0 +1,25 @@
+# FFmpeg RTMP Output - Receives MPEG-TS via TCP and Publishes to RTMP
+FROM jrottenberg/ffmpeg:latest
+
+# Install network debugging tools
+RUN apt-get update && apt-get install -y \
+    iputils-ping \
+    tcpdump \
+    iproute2 \
+    netcat-openbsd \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy wrapper script for signal handling
+COPY docker/ffmpeg-rtmp-output-wrapper.sh /usr/local/bin/ffmpeg-rtmp-output-wrapper.sh
+RUN chmod +x /usr/local/bin/ffmpeg-rtmp-output-wrapper.sh
+
+# Copy health check script
+COPY docker/ffmpeg-rtmp-output-health-check.sh /usr/local/bin/health-check.sh
+RUN chmod +x /usr/local/bin/health-check.sh
+
+# Expose TCP port for receiving MPEG-TS from multiplexer
+EXPOSE 10004
+
+# Use wrapper script as entrypoint
+ENTRYPOINT ["/usr/local/bin/ffmpeg-rtmp-output-wrapper.sh"]

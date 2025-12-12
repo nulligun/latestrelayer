@@ -47,6 +47,14 @@ private:
     // Process a single packet
     void processPacket(ts::TSPacket& packet, Source source);
     
+    // Switch input source (camera/drone) at runtime
+    // Returns true if switch was successful
+    bool switchInputSource(InputSource new_source);
+    
+    // Request input source switch (thread-safe, called from HTTP handler)
+    // Sets pending flag to be processed in main loop
+    void requestInputSourceSwitch(InputSource new_source);
+    
     // IDR-aware switch to live - buffers packets until IDR found
     // Returns true if switch was successful, false if timeout
     bool switchToLiveAtIDR();
@@ -60,9 +68,16 @@ private:
     void drainBufferFromIDR(std::vector<ts::TSPacket>& buffer, size_t idr_index,
                             Source source, bool needs_sps_pps_injection = false);
     
-    // Inject SPS/PPS packets before IDR frame
+    // Inject SPS/PPS packets before IDR frame (gets data from analyzer's NALParser)
     // Returns number of packets injected
     size_t injectSPSPPS(Source source, uint16_t video_pid,
+                        std::optional<uint64_t> pts, std::optional<uint64_t> dts);
+    
+    // Inject SPS/PPS packets before IDR frame (uses provided SPS/PPS data directly)
+    // Returns number of packets injected
+    size_t injectSPSPPS(Source source, uint16_t video_pid,
+                        const std::vector<uint8_t>& sps,
+                        const std::vector<uint8_t>& pps,
                         std::optional<uint64_t> pts, std::optional<uint64_t> dts);
     
     // Inject PAT/PMT tables at splice points for decoder stream configuration update
@@ -92,11 +107,8 @@ private:
     
     // TCP Receivers (TCPReceiver has internal rolling buffer)
     std::unique_ptr<TCPReceiver> camera_tcp_receiver_;      // Camera input via TCP (from ffmpeg-srt-live)
-    std::unique_ptr<RTMPReceiver> drone_receiver_;          // Drone input via RTMP pull (kept for dual-source)
+    std::unique_ptr<TCPReceiver> drone_tcp_receiver_;       // Drone input via TCP (from ffmpeg-rtmp-live)
     std::unique_ptr<TCPReceiver> fallback_tcp_receiver_;    // Fallback input via TCP
-    
-    // Queue only needed for drone RTMP input (camera uses TCP with internal buffer)
-    std::unique_ptr<TSPacketQueue> live_queue_;
     
     // Stream analyzers
     std::unique_ptr<TSAnalyzer> live_analyzer_;
@@ -135,4 +147,15 @@ private:
     // IDR wait timeouts (configurable via Config)
     uint32_t live_idr_timeout_ms_;     // Loaded from config
     uint32_t fallback_idr_timeout_ms_; // Loaded from config
+    
+    // Current input source tracking
+    InputSource current_input_source_ = InputSource::CAMERA;
+    
+    // Pending input source switch (thread-safe communication from HTTP handler to main loop)
+    std::atomic<bool> input_source_change_pending_{false};
+    std::atomic<InputSource> pending_input_source_{InputSource::CAMERA};
+    
+    // Pending privacy mode switch (thread-safe communication from HTTP handler to main loop)
+    std::atomic<bool> privacy_mode_change_pending_{false};
+    std::atomic<bool> pending_privacy_enabled_{false};
 };
