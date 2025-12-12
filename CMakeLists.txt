@@ -27,6 +27,8 @@ set(SOURCES
     src/TCPOutput.cpp
     src/StreamSplicer.cpp
     src/NALParser.cpp
+    src/HttpServer.cpp
+    src/InputSourceManager.cpp
 )
 
 # Create executable
