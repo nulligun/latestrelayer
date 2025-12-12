@@ -199,17 +199,6 @@ int main(int argc, char* argv[]) {
     Mode current_mode = Mode::FALLBACK;
     TCPReader* active_reader = &fallback_reader;
     
-    // Check if camera is already ready
-    bool camera_ready = false;
-    std::cout << "[Main] Checking if camera is available..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::seconds(2));
-    if (camera_reader.isConnected() && camera_reader.isStreamReady()) {
-        camera_ready = true;
-        std::cout << "[Main] Camera is available" << std::endl;
-    } else {
-        std::cout << "[Main] Camera not available yet - will detect dynamically" << std::endl;
-    }
-    
     std::cout << "[Main] Entering main processing loop..." << std::endl;
     
     uint64_t packets_processed = 0;
@@ -217,7 +206,7 @@ int main(int argc, char* argv[]) {
     
     while (g_running.load()) {
         // Check for mode switch
-        if (current_mode == Mode::FALLBACK && !camera_ready) {
+        if (current_mode == Mode::FALLBACK) {
             // Check if camera became ready (only switch if privacy is NOT enabled)
             if (!g_privacy_mode_enabled.load() &&
                 camera_reader.isConnected() && camera_reader.isStreamReady()) {
@@ -292,7 +281,6 @@ int main(int argc, char* argv[]) {
                 
                 current_mode = Mode::CAMERA;
                 active_reader = &camera_reader;
-                camera_ready = true;
                 std::cout << "[Main] Switched to CAMERA mode" << std::endl;
             }
         } else if (current_mode == Mode::CAMERA) {
@@ -376,7 +364,6 @@ int main(int argc, char* argv[]) {
                 
                 current_mode = Mode::FALLBACK;
                 active_reader = &fallback_reader;
-                camera_ready = false;
                 std::cout << "[Main] Switched to FALLBACK mode" << std::endl;
             }
         }
