@@ -53,6 +53,13 @@ bool Config::loadFromFile(const std::string& filename) {
             return false;
         }
         
+        if (config["drone_tcp_port"]) {
+            drone_tcp_port_ = config["drone_tcp_port"].as<uint16_t>();
+        } else {
+            std::cerr << "Missing required field: drone_tcp_port" << std::endl;
+            return false;
+        }
+        
         if (config["fallback_tcp_port"]) {
             fallback_tcp_port_ = config["fallback_tcp_port"].as<uint16_t>();
         } else {

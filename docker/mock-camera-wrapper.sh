@@ -30,6 +30,7 @@ ffmpeg -re \
   -filter_complex "[0:v]drawtext=text='CAMERA':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=72:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=50[vout];[1:a]aformat=channel_layouts=stereo[aout]" \
   -map "[vout]" -map "[aout]" \
   -c:v libx264 -tune zerolatency -preset veryfast -pix_fmt yuv420p \
+  -g 30 -keyint_min 30 \
   -c:a aac -b:a 128k \
   -f mpegts "srt://ffmpeg-srt-live:1937?mode=caller" &
 

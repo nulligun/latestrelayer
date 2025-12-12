@@ -112,6 +112,11 @@ void HttpServer::setInputSourceManager(std::shared_ptr<InputSourceManager> manag
     input_source_manager_ = manager;
 }
 
+void HttpServer::setInputSourceCallback(InputSourceCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    input_source_callback_ = std::move(callback);
+}
+
 void HttpServer::serverLoop() {
     while (running_.load()) {
         // Use poll to wait for connections with timeout
@@ -149,21 +154,59 @@ void HttpServer::serverLoop() {
             continue;
         }
         
-        // Read request with timeout
+        // Read request with timeout - may need multiple reads for body
         char buffer[4096];
         memset(buffer, 0, sizeof(buffer));
+        std::string full_request;
         
         struct pollfd read_pfd;
         read_pfd.fd = client_fd;
         read_pfd.events = POLLIN;
         
+        // Read initial chunk (headers + possibly body)
         if (poll(&read_pfd, 1, 1000) > 0) {
             ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
             if (bytes_read > 0) {
-                std::string request(buffer, bytes_read);
-                std::string method, path, body;
+                full_request.append(buffer, bytes_read);
                 
-                if (parseRequest(request, method, path, body)) {
+                // Check if we have the complete request by looking for \r\n\r\n
+                size_t header_end = full_request.find("\r\n\r\n");
+                if (header_end != std::string::npos) {
+                    // Parse Content-Length to see if we need more data
+                    size_t cl_pos = full_request.find("Content-Length:");
+                    if (cl_pos != std::string::npos && cl_pos < header_end) {
+                        size_t cl_start = cl_pos + 15; // strlen("Content-Length:")
+                        size_t cl_end = full_request.find("\r\n", cl_start);
+                        if (cl_end != std::string::npos) {
+                            std::string cl_str = full_request.substr(cl_start, cl_end - cl_start);
+                            // Trim whitespace
+                            size_t first = cl_str.find_first_not_of(" \t");
+                            if (first != std::string::npos) {
+                                cl_str = cl_str.substr(first);
+                            }
+                            int content_length = std::atoi(cl_str.c_str());
+                            
+                            // Check if we have all the body data
+                            size_t body_start = header_end + 4;
+                            int body_received = full_request.length() - body_start;
+                            
+                            // Read more if needed
+                            while (body_received < content_length && poll(&read_pfd, 1, 500) > 0) {
+                                memset(buffer, 0, sizeof(buffer));
+                                bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
+                                if (bytes_read > 0) {
+                                    full_request.append(buffer, bytes_read);
+                                    body_received = full_request.length() - body_start;
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                std::string method, path, body;
+                if (parseRequest(full_request, method, path, body)) {
                     std::string response = handleRequest(method, path, body);
                     write(client_fd, response.c_str(), response.length());
                 } else {
@@ -207,11 +250,32 @@ std::string HttpServer::handleRequest(const std::string& method, const std::stri
     
     // Handle POST /privacy
     if (method == "POST" && path == "/privacy") {
+        // Debug: Log the raw body for troubleshooting
+        std::cout << "[HttpServer] POST /privacy - Body: " << body << std::endl;
+        
         // Parse JSON body for "enabled" field
+        // More robust parsing that handles various whitespace and case variations
         bool enabled = false;
-        if (body.find("\"enabled\": true") != std::string::npos ||
-            body.find("\"enabled\":true") != std::string::npos) {
-            enabled = true;
+        
+        // Look for "enabled" key and check if value is true
+        size_t enabled_pos = body.find("\"enabled\"");
+        if (enabled_pos != std::string::npos) {
+            // Find the colon after "enabled"
+            size_t colon_pos = body.find(':', enabled_pos);
+            if (colon_pos != std::string::npos) {
+                // Look for 'true' after the colon (case-insensitive, handles whitespace)
+                std::string after_colon = body.substr(colon_pos + 1);
+                
+                // Remove leading whitespace
+                size_t value_start = after_colon.find_first_not_of(" \t\r\n");
+                if (value_start != std::string::npos) {
+                    // Check if it starts with 'true' or 'True' (handles Python True or JSON true)
+                    if (after_colon.substr(value_start, 4) == "true" ||
+                        after_colon.substr(value_start, 4) == "True") {
+                        enabled = true;
+                    }
+                }
+            }
         }
         
         std::cout << "[HttpServer] Privacy mode callback: enabled=" << (enabled ? "true" : "false") << std::endl;
@@ -331,10 +395,17 @@ std::string HttpServer::handleRequest(const std::string& method, const std::stri
             return response.str();
         }
         
+        // Trigger real-time switch via callback (if registered)
+        InputSource new_source = input_source_manager_->getInputSource();
+        if (input_source_callback_) {
+            std::cout << "[HttpServer] Triggering real-time input source switch to " << source_value << std::endl;
+            input_source_callback_(new_source);
+        }
+        
         std::ostringstream response_body;
         response_body << "{\"status\": \"ok\", \"source\": \"" << source_value
-                      << "\", \"message\": \"Input source set to " << source_value
-                      << ". Change will take effect after multiplexer restart.\"}";
+                      << "\", \"message\": \"Input source switch initiated to " << source_value
+                      << ". Switch will occur at next IDR frame.\"}";
         
         std::string body_str = response_body.str();
         std::ostringstream response;

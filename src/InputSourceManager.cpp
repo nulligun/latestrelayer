@@ -138,8 +138,6 @@ bool InputSourceManager::setInputSource(InputSource source) {
     if (old_source != source) {
         std::cout << "[InputSourceManager] Input source changed: " << toString(old_source)
                   << " -> " << toString(source) << std::endl;
-        std::cout << "[InputSourceManager] Note: Change will take effect after multiplexer restart"
-                  << std::endl;
     }
     
     return true;

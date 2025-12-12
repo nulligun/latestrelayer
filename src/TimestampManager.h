@@ -38,6 +38,19 @@ public:
     void updateOffsetsAfterSegment(uint64_t segmentDurationPTS);
     
     /**
+     * Initialize with PCR/PTS alignment offset
+     * This must be called BEFORE processing the first stream to ensure
+     * proper decoder buffer timing.
+     *
+     * Per splice.md: The alignment offset preserves the PCR/PTS relationship
+     * that provides the decoder its buffering margin. Without this, both
+     * PCR and PTS would rebase to near-zero, destroying the buffer time.
+     *
+     * @param alignmentOffset PCR/PTS alignment offset in 27MHz PCR units
+     */
+    void initializeWithAlignmentOffset(int64_t alignmentOffset);
+    
+    /**
      * Get current global offsets
      */
     uint64_t getGlobalPTSOffset() const { return global_pts_offset_; }

@@ -1,0 +1,24 @@
+# FFmpeg RTMP Live - Pulls from nginx-rtmp and outputs TCP
+FROM jrottenberg/ffmpeg:4.4-ubuntu
+
+# Install network debugging tools
+RUN apt-get update && apt-get install -y \
+    iputils-ping \
+    tcpdump \
+    iproute2 \
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy wrapper script for signal handling
+COPY docker/ffmpeg-rtmp-live-wrapper.sh /usr/local/bin/ffmpeg-rtmp-live-wrapper.sh
+RUN chmod +x /usr/local/bin/ffmpeg-rtmp-live-wrapper.sh
+
+# Copy health check script
+COPY docker/ffmpeg-rtmp-live-health-check.sh /usr/local/bin/health-check.sh
+RUN chmod +x /usr/local/bin/health-check.sh
+
+# Expose TCP port for multiplexer to connect
+EXPOSE 10002
+
+# Use wrapper script as entrypoint
+ENTRYPOINT ["/usr/local/bin/ffmpeg-rtmp-live-wrapper.sh"]

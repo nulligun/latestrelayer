@@ -12,6 +12,7 @@ public:
     
     // Core configuration values
     uint16_t getLiveTcpPort() const { return live_tcp_port_; }
+    uint16_t getDroneTcpPort() const { return drone_tcp_port_; }
     uint16_t getFallbackTcpPort() const { return fallback_tcp_port_; }
     std::string getRtmpUrl() const { return rtmp_url_; }
     uint32_t getMaxLiveGapMs() const { return max_live_gap_ms_; }
@@ -42,6 +43,7 @@ private:
     
     // Core settings
     uint16_t live_tcp_port_ = 10000;
+    uint16_t drone_tcp_port_ = 10002;
     uint16_t fallback_tcp_port_ = 10001;
     std::string rtmp_url_;
     uint32_t max_live_gap_ms_ = 2000;
