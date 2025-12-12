@@ -20,12 +20,16 @@
 #include "TCPReader.h"
 #include "TCPOutput.h"
 #include "StreamSplicer.h"
+#include "HttpServer.h"
 #include <iostream>
 #include <csignal>
 #include <atomic>
 
 // Global running flag for signal handling
 std::atomic<bool> g_running(true);
+
+// Global privacy mode flag
+std::atomic<bool> g_privacy_mode_enabled(false);
 
 void signal_handler(int signum) {
     std::cout << "\n[Main] Received signal " << signum << ", shutting down..." << std::endl;
@@ -59,6 +63,23 @@ int main(int argc, char* argv[]) {
     
     std::cout << "[Main] Creating stream splicer..." << std::endl;
     StreamSplicer splicer;
+    
+    // Create and start HTTP server for controller integration
+    std::cout << "[Main] Creating HTTP server on port 8091..." << std::endl;
+    HttpServer http_server(8091);
+    
+    // Register privacy mode callback
+    http_server.setPrivacyCallback([](bool enabled) {
+        std::cout << "[Main] Privacy mode " << (enabled ? "ENABLED" : "DISABLED")
+                  << " - will " << (enabled ? "switch to" : "allow switching from")
+                  << " fallback" << std::endl;
+        g_privacy_mode_enabled.store(enabled);
+    });
+    
+    if (!http_server.start()) {
+        std::cerr << "[Main] Failed to start HTTP server" << std::endl;
+        return 1;
+    }
     
     // Start TCP readers
     std::cout << "[Main] Starting TCP readers..." << std::endl;
@@ -197,8 +218,9 @@ int main(int argc, char* argv[]) {
     while (g_running.load()) {
         // Check for mode switch
         if (current_mode == Mode::FALLBACK && !camera_ready) {
-            // Check if camera became ready
-            if (camera_reader.isConnected() && camera_reader.isStreamReady()) {
+            // Check if camera became ready (only switch if privacy is NOT enabled)
+            if (!g_privacy_mode_enabled.load() &&
+                camera_reader.isConnected() && camera_reader.isStreamReady()) {
                 std::cout << "[Main] ========================================" << std::endl;
                 std::cout << "[Main] Camera became available - switching!" << std::endl;
                 std::cout << "[Main] ========================================" << std::endl;
@@ -274,13 +296,21 @@ int main(int argc, char* argv[]) {
                 std::cout << "[Main] Switched to CAMERA mode" << std::endl;
             }
         } else if (current_mode == Mode::CAMERA) {
-            // Check if camera disconnected
-            if (!camera_reader.isConnected() || !camera_reader.isStreamReady()) {
-                std::cout << "[Main] ========================================" << std::endl;
-                std::cout << "[Main] Camera lost - switching to fallback!" << std::endl;
-                std::cout << "[Main] ========================================" << std::endl;
+            // Check if privacy mode enabled (force switch to fallback) OR camera disconnected
+            if (g_privacy_mode_enabled.load() ||
+                !camera_reader.isConnected() || !camera_reader.isStreamReady()) {
                 
-               fallback_reader.resetForNewLoop();
+                if (g_privacy_mode_enabled.load()) {
+                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] Privacy mode enabled - switching to fallback!" << std::endl;
+                    std::cout << "[Main] ========================================" << std::endl;
+                } else {
+                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] Camera lost - switching to fallback!" << std::endl;
+                    std::cout << "[Main] ========================================" << std::endl;
+                }
+                
+                fallback_reader.resetForNewLoop();
                 fallback_reader.waitForIDR();
                 fallback_reader.waitForAudioSync();
                 
@@ -375,6 +405,7 @@ int main(int argc, char* argv[]) {
     std::cout << "\n[Main] Shutting down..." << std::endl;
     
     // Cleanup
+    http_server.stop();
     camera_reader.stop();
     fallback_reader.stop();
     tcp_output.disconnect();
