@@ -126,20 +126,30 @@ const wss = new WebSocket.Server({ server });
 
 // WebSocket connection handling
 wss.on('connection', (ws) => {
-  console.log('[ws] Frontend client connected');
+  console.log('[ws][startup-debug] Frontend client connected');
+  console.log(`[ws][startup-debug] Controller WebSocket connected: ${controllerWs.isConnected}`);
+  console.log(`[ws][startup-debug] Latest container state has ${latestContainerState.containers.length} containers`);
   
-  // Send latest container state to newly connected client with current scene/privacy
+  // Send latest container state to newly connected client with default scene/privacy
+  // The actual scene/privacy will come from the controller after requesting an update
   if (latestContainerState.containers.length > 0) {
-    const sceneState = controllerWs.getSceneState();
-    console.log(`[ws] Sending initial state to new client: scene=${sceneState.currentScene}, privacy=${sceneState.privacyEnabled}`);
+    console.log(`[ws][startup-debug] Sending initial state to new client: scene=unknown, privacy=false (will request update from controller)`);
     ws.send(JSON.stringify({
       type: 'container_update',
       containers: latestContainerState.containers,
       timestamp: latestContainerState.timestamp,
-      currentScene: sceneState.currentScene,
-      privacyEnabled: sceneState.privacyEnabled
+      currentScene: 'unknown',
+      privacyEnabled: false
     }));
+  } else {
+    console.log('[ws][startup-debug] No containers in latestContainerState yet - waiting for controller WebSocket to send initial_state');
   }
+  
+  // Request the controller to query the multiplexer for the current scene/privacy state
+  // This will trigger a scene_change event with 'connecting_to_multiplexer' first,
+  // then another scene_change event with the actual result from the multiplexer
+  console.log('[ws][startup-debug] Requesting state update from controller (will query multiplexer)');
+  controllerWs.requestStateUpdate();
   
   // Handle messages from frontend clients
   ws.on('message', (data) => {
@@ -192,16 +202,17 @@ function broadcast(data) {
 
 // Setup controller WebSocket event handlers
 controllerWs.on('connected', () => {
-  console.log('[main] Controller WebSocket connected');
+  console.log('[main][startup-debug] Controller WebSocket CONNECTED - can now receive container and scene updates');
 });
 
 controllerWs.on('disconnected', () => {
-  console.error('[main] Controller WebSocket disconnected');
+  console.error('[main][startup-debug] Controller WebSocket DISCONNECTED');
 });
 
 controllerWs.on('initial_state', (message) => {
-  console.log(`[main] Received initial state from controller`);
-  console.log(`[main] Initial scene: ${message.current_scene}, privacy: ${message.privacy_enabled}`);
+  console.log(`[main][startup-debug] Received INITIAL_STATE from controller`);
+  console.log(`[main][startup-debug] Initial scene: ${message.current_scene}, privacy: ${message.privacy_enabled}`);
+  console.log(`[main][startup-debug] Containers count: ${message.containers?.length || 0}`);
   
   // Store containers with their timestamps for persistence
   latestContainerState = {
@@ -1159,8 +1170,9 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('[ws] WebSocket server ready for frontend clients');
   
   // Connect to controller WebSocket
+  console.log('[main][startup-debug] About to call controllerWs.connect()...');
   controllerWs.connect();
-  console.log('[main] Connecting to controller WebSocket...');
+  console.log('[main][startup-debug] controllerWs.connect() called - connection in progress');
   
   // Start system metrics polling
   startMetricsPolling();

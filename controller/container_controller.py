@@ -60,6 +60,7 @@ class ScenePrivacyManager:
         self._privacy_enabled = False
         self._lock = threading.Lock()
         self._change_callbacks = []
+        self._query_in_progress = False
         
         # Load privacy state from file
         self._load_privacy_state()
@@ -219,6 +220,82 @@ class ScenePrivacyManager:
                 'scene_timestamp': self._scene_timestamp.isoformat() + 'Z',
                 'privacy_enabled': self._privacy_enabled
             }
+    
+    def query_multiplexer_scene(self):
+        """Query the multiplexer for the current scene."""
+        print(f"[startup-debug] query_multiplexer_scene() CALLED", flush=True)
+        def do_query():
+            print(f"[startup-debug] do_query() thread starting", flush=True)
+            try:
+                url = f"{self.multiplexer_url}/scene"
+                print(f"[startup-debug] Making HTTP GET request to: {url}", flush=True)
+                
+                req = urllib.request.Request(url, headers={'Accept': 'application/json'}, method='GET')
+                
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    result = response.read().decode('utf-8')
+                    data = json.loads(result)
+                    scene = data.get('scene', 'unknown')
+                    print(f"[startup-debug] Multiplexer responded with scene: {scene}", flush=True)
+                    
+                    # Map multiplexer scene format to controller format
+                    if scene == 'live':
+                        mapped_scene = 'LIVE'
+                    elif scene == 'fallback':
+                        mapped_scene = 'FALLBACK'
+                    else:
+                        mapped_scene = 'unknown'
+                    
+                    # Update scene if it changed
+                    self.set_scene(mapped_scene)
+                    
+            except urllib.error.URLError as e:
+                print(f"[startup-debug] URLError querying multiplexer: {e}", flush=True)
+                # Set scene back to unknown if query failed
+                with self._lock:
+                    if self._current_scene == 'connecting_to_multiplexer':
+                        self._current_scene = 'unknown'
+                        self._scene_timestamp = datetime.utcnow()
+                        self._trigger_change_callbacks('scene_change', {
+                            'previous_scene': 'connecting_to_multiplexer',
+                            'current_scene': 'unknown',
+                            'timestamp': self._scene_timestamp.isoformat() + 'Z'
+                        })
+            except Exception as e:
+                print(f"[startup-debug] Exception querying multiplexer: {e}", flush=True)
+                # Set scene back to unknown if query failed
+                with self._lock:
+                    if self._current_scene == 'connecting_to_multiplexer':
+                        self._current_scene = 'unknown'
+                        self._scene_timestamp = datetime.utcnow()
+                        self._trigger_change_callbacks('scene_change', {
+                            'previous_scene': 'connecting_to_multiplexer',
+                            'current_scene': 'unknown',
+                            'timestamp': self._scene_timestamp.isoformat() + 'Z'
+                        })
+            finally:
+                with self._lock:
+                    self._query_in_progress = False
+        
+        # Only query if not already querying
+        with self._lock:
+            if self._query_in_progress:
+                return
+            self._query_in_progress = True
+            # Set the scene to connecting_to_multiplexer while querying
+            old_scene = self._current_scene
+            self._current_scene = 'connecting_to_multiplexer'
+            self._scene_timestamp = datetime.utcnow()
+            print(f"[scene-privacy] Setting scene to connecting_to_multiplexer", flush=True)
+            self._trigger_change_callbacks('scene_change', {
+                'previous_scene': old_scene,
+                'current_scene': 'connecting_to_multiplexer',
+                'timestamp': self._scene_timestamp.isoformat() + 'Z'
+            })
+        
+        # Run query in background thread
+        thread = threading.Thread(target=do_query, daemon=True)
+        thread.start()
 
 
 class ComposeParser:
@@ -1136,15 +1213,21 @@ class WebSocketServer:
     async def send_initial_state(self, websocket):
         """Send initial container state to a newly connected client."""
         client_id = id(websocket)
-        print(f"[ws] send_initial_state starting for client {client_id}", flush=True)
+        print(f"[ws][startup-debug] send_initial_state CALLED for client {client_id}", flush=True)
         try:
-            print(f"[ws] Calling list_containers for client {client_id}", flush=True)
+            print(f"[ws][startup-debug] Calling list_containers for client {client_id}", flush=True)
             result = self.controller.list_containers()
             containers = result.get('containers', [])
-            print(f"[ws] Got {len(containers)} containers for client {client_id}", flush=True)
+            print(f"[ws][startup-debug] Got {len(containers)} containers for client {client_id}", flush=True)
+            
+            # Query multiplexer for current scene (this will trigger scene updates via WebSocket)
+            print(f"[ws][startup-debug] About to call query_multiplexer_scene()", flush=True)
+            self.scene_privacy_manager.query_multiplexer_scene()
+            print(f"[ws][startup-debug] query_multiplexer_scene() called (runs in background thread)", flush=True)
             
             # Get scene and privacy state
             scene_privacy_state = self.scene_privacy_manager.get_state()
+            print(f"[ws][startup-debug] Current scene_privacy_state: {scene_privacy_state}", flush=True)
             
             message = {
                 'type': 'initial_state',
@@ -1155,9 +1238,9 @@ class WebSocketServer:
                 'scene_timestamp': scene_privacy_state['scene_timestamp']
             }
             
-            print(f"[ws] Sending initial_state message to client {client_id}", flush=True)
+            print(f"[ws][startup-debug] Sending initial_state message to client {client_id}", flush=True)
             await websocket.send(json.dumps(message))
-            print(f"[ws] Successfully sent initial state with {len(containers)} containers, scene={scene_privacy_state['current_scene']}, privacy={scene_privacy_state['privacy_enabled']} to client {client_id}", flush=True)
+            print(f"[ws][startup-debug] SENT initial_state with {len(containers)} containers, scene={scene_privacy_state['current_scene']}, privacy={scene_privacy_state['privacy_enabled']} to client {client_id}", flush=True)
             
         except Exception as e:
             print(f"[ws] Error in send_initial_state for client {client_id}: {e}", file=sys.stderr)
@@ -1392,6 +1475,14 @@ class WebSocketServer:
                 container = message.get('container')
                 print(f"[ws] Client {client_id} unsubscribing from logs for {container}", flush=True)
                 await self.handle_log_unsubscription(websocket, container)
+                
+            elif msg_type == 'request_state_update':
+                print(f"[ws] Client {client_id} requesting state update from multiplexer", flush=True)
+                # Trigger multiplexer scene query which will:
+                # 1. Set scene to 'connecting_to_multiplexer' and emit scene_change
+                # 2. HTTP GET to multiplexer in background
+                # 3. Emit scene_change with the actual result
+                self.scene_privacy_manager.query_multiplexer_scene()
                 
             else:
                 print(f"[ws] Unknown message type from client {client_id}: {msg_type}", file=sys.stderr)

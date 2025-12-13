@@ -173,6 +173,7 @@ services:
       - MIN_CONSECUTIVE_FOR_SWITCH=${MIN_CONSECUTIVE_FOR_SWITCH:-10}
       - LIVE_IDR_TIMEOUT_MS=${LIVE_IDR_TIMEOUT_MS:-10000}
       - FALLBACK_IDR_TIMEOUT_MS=${FALLBACK_IDR_TIMEOUT_MS:-2000}
+      - CONTROLLER_URL=http://controller:8089
     networks:
       - tsnet
     restart: unless-stopped

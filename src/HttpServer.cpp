@@ -10,6 +10,9 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <algorithm>
+#include <thread>
+#include <sys/types.h>
+#include <netdb.h>
 
 HttpServer::HttpServer(uint16_t port)
     : port_(port),
@@ -115,6 +118,110 @@ void HttpServer::setInputSourceManager(std::shared_ptr<InputSourceManager> manag
 void HttpServer::setInputSourceCallback(InputSourceCallback callback) {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     input_source_callback_ = std::move(callback);
+}
+
+void HttpServer::setGetCurrentSceneCallback(GetCurrentSceneCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    get_current_scene_callback_ = std::move(callback);
+    std::cout << "[HttpServer][startup-debug] setGetCurrentSceneCallback called - callback is " << (get_current_scene_callback_ ? "SET" : "NULL") << std::endl;
+}
+
+void HttpServer::notifySceneChange(const std::string& scene, const std::string& controllerUrl) {
+    // Send HTTP POST in a background thread to avoid blocking
+    std::thread([scene, controllerUrl]() {
+        try {
+            std::cout << "[HttpServer] Notifying controller of scene change: " << scene << std::endl;
+            
+            // Parse controller URL to get host and port
+            std::string host;
+            int port = 8089;  // Default port
+            
+            // Simple URL parsing - expect format http://host:port or http://host
+            size_t protocol_end = controllerUrl.find("://");
+            std::string url_part = controllerUrl;
+            if (protocol_end != std::string::npos) {
+                url_part = controllerUrl.substr(protocol_end + 3);
+            }
+            
+            size_t port_pos = url_part.find(':');
+            if (port_pos != std::string::npos) {
+                host = url_part.substr(0, port_pos);
+                port = std::stoi(url_part.substr(port_pos + 1));
+            } else {
+                host = url_part;
+            }
+            
+            std::cout << "[HttpServer] Connecting to " << host << ":" << port << std::endl;
+            
+            // Create socket
+            int sock = socket(AF_INET, SOCK_STREAM, 0);
+            if (sock < 0) {
+                std::cerr << "[HttpServer] Failed to create socket: " << strerror(errno) << std::endl;
+                return;
+            }
+            
+            // Set timeout
+            struct timeval timeout;
+            timeout.tv_sec = 5;
+            timeout.tv_usec = 0;
+            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+            
+            // Resolve hostname
+            struct hostent *server = gethostbyname(host.c_str());
+            if (server == nullptr) {
+                std::cerr << "[HttpServer] Failed to resolve host: " << host << std::endl;
+                close(sock);
+                return;
+            }
+            
+            // Connect to server
+            struct sockaddr_in serv_addr;
+            memset(&serv_addr, 0, sizeof(serv_addr));
+            serv_addr.sin_family = AF_INET;
+            memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
+            serv_addr.sin_port = htons(port);
+            
+            if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+                std::cerr << "[HttpServer] Failed to connect to controller: " << strerror(errno) << std::endl;
+                close(sock);
+                return;
+            }
+            
+            // Build HTTP POST request
+            std::string path = "/scene/" + scene;
+            std::ostringstream request;
+            request << "POST " << path << " HTTP/1.1\r\n"
+                    << "Host: " << host << "\r\n"
+                    << "Content-Length: 0\r\n"
+                    << "Connection: close\r\n"
+                    << "\r\n";
+            
+            std::string request_str = request.str();
+            
+            // Send request
+            ssize_t sent = send(sock, request_str.c_str(), request_str.length(), 0);
+            if (sent < 0) {
+                std::cerr << "[HttpServer] Failed to send request: " << strerror(errno) << std::endl;
+                close(sock);
+                return;
+            }
+            
+            // Read response (just check if we get something back)
+            char buffer[1024];
+            ssize_t received = recv(sock, buffer, sizeof(buffer) - 1, 0);
+            if (received > 0) {
+                buffer[received] = '\0';
+                std::cout << "[HttpServer] Controller response received" << std::endl;
+            }
+            
+            close(sock);
+            std::cout << "[HttpServer] Scene change notification sent successfully" << std::endl;
+            
+        } catch (const std::exception& e) {
+            std::cerr << "[HttpServer] Error notifying controller: " << e.what() << std::endl;
+        }
+    }).detach();
 }
 
 void HttpServer::serverLoop() {
@@ -414,6 +521,36 @@ std::string HttpServer::handleRequest(const std::string& method, const std::stri
                  << "Content-Length: " << body_str.length() << "\r\n"
                  << "\r\n"
                  << body_str;
+        return response.str();
+    }
+    
+    // Handle GET /scene
+    if (method == "GET" && path == "/scene") {
+        std::cout << "[HttpServer][startup-debug] GET /scene request received" << std::endl;
+        std::ostringstream response_body;
+        
+        // Query current scene from callback
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            if (get_current_scene_callback_) {
+                std::cout << "[HttpServer][startup-debug] Calling get_current_scene_callback_" << std::endl;
+                std::string current_scene = get_current_scene_callback_();
+                std::cout << "[HttpServer][startup-debug] get_current_scene_callback_ returned: " << current_scene << std::endl;
+                response_body << "{\"scene\": \"" << current_scene << "\"}";
+            } else {
+                // No callback set - return unknown
+                std::cout << "[HttpServer][startup-debug] WARNING: get_current_scene_callback_ is NULL, returning unknown" << std::endl;
+                response_body << "{\"scene\": \"unknown\"}";
+            }
+        }
+        
+        std::string body = response_body.str();
+        std::ostringstream response;
+        response << "HTTP/1.1 200 OK\r\n"
+                 << "Content-Type: application/json\r\n"
+                 << "Content-Length: " << body.length() << "\r\n"
+                 << "\r\n"
+                 << body;
         return response.str();
     }
     

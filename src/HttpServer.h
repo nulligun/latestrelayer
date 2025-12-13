@@ -30,6 +30,8 @@ public:
     using PrivacyCallback = std::function<void(bool enabled)>;
     using HealthCallback = std::function<HealthStatus()>;
     using InputSourceCallback = std::function<void(InputSource source)>;
+    using SceneChangeCallback = std::function<void(const std::string& scene)>;
+    using GetCurrentSceneCallback = std::function<std::string()>;
     
     explicit HttpServer(uint16_t port);
     ~HttpServer();
@@ -56,6 +58,12 @@ public:
     // Set input source manager for /input endpoints
     void setInputSourceManager(std::shared_ptr<InputSourceManager> manager);
     
+    // Register callback for getting current scene
+    void setGetCurrentSceneCallback(GetCurrentSceneCallback callback);
+    
+    // Notify controller of scene change
+    void notifySceneChange(const std::string& scene, const std::string& controllerUrl);
+    
     // Check if server is running
     bool isRunning() const { return running_.load(); }
     
@@ -78,5 +86,6 @@ private:
     PrivacyCallback privacy_callback_;
     HealthCallback health_callback_;
     InputSourceCallback input_source_callback_;
+    GetCurrentSceneCallback get_current_scene_callback_;
     std::shared_ptr<InputSourceManager> input_source_manager_;
 };
