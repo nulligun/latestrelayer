@@ -11,6 +11,7 @@ export class WebSocketService {
   }
 
   connect(onMessage, onError, onReconnect = null) {
+    console.log('[ws][startup-debug] connect() called');
     // Store the onReconnect callback for use during reconnections
     if (onReconnect) {
       this.onReconnectCallback = onReconnect;
@@ -20,12 +21,12 @@ export class WebSocketService {
     const host = window.location.host;
     const wsUrl = `${protocol}//${host}`;
 
-    console.log('[ws] Connecting to:', wsUrl);
+    console.log('[ws][startup-debug] Connecting to:', wsUrl);
 
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
-      console.log('[ws] Connected');
+      console.log('[ws][startup-debug] WebSocket OPENED - connected to dashboard backend');
       
       // Check if this is a reconnection (not the first connection)
       if (this.hasConnectedBefore) {
@@ -34,7 +35,7 @@ export class WebSocketService {
           this.onReconnectCallback();
         }
       } else {
-        console.log('[ws] Initial connection established');
+        console.log('[ws][startup-debug] Initial connection established - waiting for initial state from backend');
         this.hasConnectedBefore = true;
       }
       
@@ -45,6 +46,7 @@ export class WebSocketService {
     this.ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        console.log('[ws][startup-debug] Received message type:', data.type, '- currentScene:', data.currentScene);
         onMessage(data);
       } catch (error) {
         console.error('[ws] Error parsing message:', error);

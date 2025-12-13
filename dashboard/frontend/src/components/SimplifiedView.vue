@@ -31,7 +31,7 @@
         {{ isKickLive ? '🔴 LIVE ON KICK' : 'KICK OFFLINE' }}, Input = {{ displayActiveInput }}
       </div>
       <div class="scene-value">{{ displayScene }}</div>
-      <div v-if="sceneDurationSeconds > 0" class="scene-duration">
+      <div v-if="sceneDurationSeconds > 0 && displayScene !== 'Unknown'" class="scene-duration">
         {{ formatDuration(sceneDurationSeconds) }}
       </div>
     </div>
@@ -184,7 +184,7 @@ export default {
 
     // Computed: Display scene
     const displayScene = computed(() => {
-      if (!props.currentScene) return 'UNKNOWN';
+      if (!props.currentScene) return 'Unknown';
       
       const scene = props.currentScene.toUpperCase();
       const privacyEnabled = props.switcherHealth?.privacy_enabled || false;
@@ -195,7 +195,9 @@ export default {
       } else if (scene === 'FALLBACK') {
         return privacyEnabled ? 'PRIVACY' : 'Fallback';
       } else if (scene === 'UNKNOWN') {
-        return 'Camera Not Connected';
+        return 'Unknown';
+      } else if (scene === 'CONNECTING_TO_MULTIPLEXER') {
+        return 'Connecting to multiplexer';
       }
       
       // Legacy support for old scene names (SRT/VIDEO/BLACK)

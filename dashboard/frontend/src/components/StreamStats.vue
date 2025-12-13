@@ -104,7 +104,7 @@
           <div class="info-value scene-value">
             {{ displayScene }}
           </div>
-          <div class="duration-text">
+          <div v-if="displayScene !== 'Unknown'" class="duration-text">
             {{ formatDuration(sceneDurationSeconds) }}
           </div>
         </div>
@@ -258,7 +258,9 @@ export default {
         }
         return 'Fallback';
       } else if (scene === 'UNKNOWN') {
-        return 'Camera Not Connected';
+        return 'Unknown';
+      } else if (scene === 'CONNECTING_TO_MULTIPLEXER') {
+        return 'Connecting to multiplexer';
       }
       
       // Legacy support for old scene names (SRT/VIDEO/BLACK)

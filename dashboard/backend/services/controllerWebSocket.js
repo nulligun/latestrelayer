@@ -33,17 +33,18 @@ class ControllerWebSocketClient extends EventEmitter {
   
   connect() {
     if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
-      console.log('[controller-ws] Already connected or connecting');
+      console.log('[controller-ws][startup-debug] Already connected or connecting');
       return;
     }
     
-    console.log(`[controller-ws] Connecting to ${this.wsUrl}...`);
+    console.log(`[controller-ws][startup-debug] Connecting to ${this.wsUrl}...`);
     
     try {
       this.ws = new WebSocket(this.wsUrl);
+      console.log(`[controller-ws][startup-debug] WebSocket object created, waiting for 'open' event...`);
       
       this.ws.on('open', () => {
-        console.log('[controller-ws] Connected successfully');
+        console.log('[controller-ws][startup-debug] Connected SUCCESSFULLY to controller');
         this.isConnected = true;
         this.reconnectAttempts = 0;
         this.reconnectDelay = 2000;
@@ -51,6 +52,7 @@ class ControllerWebSocketClient extends EventEmitter {
         // Process any pending log subscriptions
         this.processPendingSubscriptions();
         
+        console.log('[controller-ws][startup-debug] Emitting "connected" event');
         this.emit('connected');
       });
       
@@ -65,12 +67,12 @@ class ControllerWebSocketClient extends EventEmitter {
       });
       
       this.ws.on('error', (error) => {
-        console.error('[controller-ws] WebSocket error:', error.message);
+        console.error('[controller-ws][startup-debug] WebSocket ERROR:', error.message);
         this.emit('error', error);
       });
       
       this.ws.on('close', (code, reason) => {
-        console.log(`[controller-ws] Connection closed (code: ${code}, reason: ${reason || 'none'})`);
+        console.log(`[controller-ws][startup-debug] Connection CLOSED (code: ${code}, reason: ${reason || 'none'})`);
         this.isConnected = false;
         this.emit('disconnected');
         
@@ -110,16 +112,18 @@ class ControllerWebSocketClient extends EventEmitter {
     
     switch (type) {
       case 'initial_state':
-        console.log(`[controller-ws] Received initial state with ${message.containers?.length || 0} containers`);
+        console.log(`[controller-ws][startup-debug] Received INITIAL_STATE with ${message.containers?.length || 0} containers`);
+        console.log(`[controller-ws][startup-debug] Scene from initial_state: ${message.current_scene}`);
         // Update scene and privacy state from initial state
         if (message.current_scene !== undefined) {
           this.currentScene = message.current_scene;
-          console.log(`[controller-ws] Initial scene: ${this.currentScene}`);
+          console.log(`[controller-ws][startup-debug] Set currentScene to: ${this.currentScene}`);
         }
         if (message.privacy_enabled !== undefined) {
           this.privacyEnabled = message.privacy_enabled;
-          console.log(`[controller-ws] Initial privacy mode: ${this.privacyEnabled}`);
+          console.log(`[controller-ws][startup-debug] Set privacyEnabled to: ${this.privacyEnabled}`);
         }
+        console.log(`[controller-ws][startup-debug] Emitting 'initial_state' event to server.js`);
         this.emit('initial_state', message);
         break;
         
@@ -259,6 +263,24 @@ class ControllerWebSocketClient extends EventEmitter {
       console.log(`[controller-ws] Unsubscribed from logs for ${containerName}`);
     } catch (error) {
       console.error(`[controller-ws] Error unsubscribing from logs:`, error.message);
+    }
+  }
+  
+  requestStateUpdate() {
+    if (!this.isConnected) {
+      console.log('[controller-ws] Not connected, cannot request state update');
+      return;
+    }
+    
+    const message = {
+      type: 'request_state_update'
+    };
+    
+    try {
+      this.ws.send(JSON.stringify(message));
+      console.log('[controller-ws] Requested state update from controller (will query multiplexer)');
+    } catch (error) {
+      console.error('[controller-ws] Error requesting state update:', error.message);
     }
   }
   

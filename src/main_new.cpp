@@ -31,6 +31,13 @@ std::atomic<bool> g_running(true);
 // Global privacy mode flag
 std::atomic<bool> g_privacy_mode_enabled(false);
 
+// Global current scene state ("fallback" or "live")
+std::atomic<std::string*> g_current_scene_ptr(nullptr);
+std::mutex g_scene_mutex;
+
+// Global controller URL for notifications
+std::string g_controller_url;
+
 void signal_handler(int signum) {
     std::cout << "\n[Main] Received signal " << signum << ", shutting down..." << std::endl;
     g_running = false;
@@ -53,6 +60,22 @@ int main(int argc, char* argv[]) {
     const std::string OUTPUT_HOST = "ffmpeg-rtmp-output";
     const uint16_t OUTPUT_PORT = 10004;
     
+    // Get controller URL from environment variable
+    const char* controller_url_env = std::getenv("CONTROLLER_URL");
+    if (controller_url_env) {
+        g_controller_url = controller_url_env;
+        std::cout << "[Main] Controller URL: " << g_controller_url << std::endl;
+    } else {
+        g_controller_url = "http://controller:8089";
+        std::cout << "[Main] Controller URL not set, using default: " << g_controller_url << std::endl;
+    }
+    
+    // Initialize current scene
+    {
+        std::lock_guard<std::mutex> lock(g_scene_mutex);
+        g_current_scene_ptr.store(new std::string("fallback"));
+    }
+    
     // Create components
     std::cout << "[Main] Creating TCP readers..." << std::endl;
     TCPReader camera_reader("Camera", CAMERA_HOST, CAMERA_PORT);
@@ -74,6 +97,16 @@ int main(int argc, char* argv[]) {
                   << " - will " << (enabled ? "switch to" : "allow switching from")
                   << " fallback" << std::endl;
         g_privacy_mode_enabled.store(enabled);
+    });
+    
+    // Register get current scene callback
+    http_server.setGetCurrentSceneCallback([]() -> std::string {
+        std::lock_guard<std::mutex> lock(g_scene_mutex);
+        std::string* scene_ptr = g_current_scene_ptr.load();
+        if (scene_ptr) {
+            return *scene_ptr;
+        }
+        return "unknown";
     });
     
     if (!http_server.start()) {
@@ -282,6 +315,15 @@ int main(int argc, char* argv[]) {
                 current_mode = Mode::CAMERA;
                 active_reader = &camera_reader;
                 std::cout << "[Main] Switched to CAMERA mode" << std::endl;
+                
+                // Update global scene and notify controller
+                {
+                    std::lock_guard<std::mutex> lock(g_scene_mutex);
+                    std::string* old_scene = g_current_scene_ptr.load();
+                    g_current_scene_ptr.store(new std::string("live"));
+                    delete old_scene;
+                }
+                http_server.notifySceneChange("live", g_controller_url);
             }
         } else if (current_mode == Mode::CAMERA) {
             // Check if privacy mode enabled (force switch to fallback) OR camera disconnected
@@ -365,6 +407,15 @@ int main(int argc, char* argv[]) {
                 current_mode = Mode::FALLBACK;
                 active_reader = &fallback_reader;
                 std::cout << "[Main] Switched to FALLBACK mode" << std::endl;
+                
+// Update global scene and notify controller
+                {
+                    std::lock_guard<std::mutex> lock(g_scene_mutex);
+                    std::string* old_scene = g_current_scene_ptr.load();
+                    g_current_scene_ptr.store(new std::string("fallback"));
+                    delete old_scene;
+                }
+                http_server.notifySceneChange("fallback", g_controller_url);
             }
         }
         
