@@ -7,8 +7,8 @@
 **File: [`docker-compose.yml`](docker-compose.yml)**
 
 Added TCP port mappings to allow direct host access to stream sources:
-- **ffmpeg-srt-live**: Exposed port `10000/tcp` → Host can connect to `localhost:10000`
-- **ffmpeg-rtmp-live**: Exposed port `10002/tcp` → Host can connect to `localhost:10002`
+- **ffmpeg-srt-input**: Exposed port `10000/tcp` → Host can connect to `localhost:10000`
+- **ffmpeg-rtmp-input**: Exposed port `10002/tcp` → Host can connect to `localhost:10002`
 
 This allows testing streams directly from the host without going through the multiplexer.
 
@@ -170,12 +170,12 @@ IDR: avg_interval=2001ms, jitter=245ms
 
 ```mermaid
 graph LR
-    A[SRT Input :1937] --> B[ffmpeg-srt-live]
+    A[SRT Input :1937] --> B[ffmpeg-srt-input]
     B --> C[TCP :10000]
     C --> D[Multiplexer]
     C -.Direct Test.-> H[Host ffplay/VLC]
     
-    E[RTMP Publish] --> F[ffmpeg-rtmp-live]
+    E[RTMP Publish] --> F[ffmpeg-rtmp-input]
     F --> G[TCP :10002]
     G --> D
     G -.Direct Test.-> H
@@ -186,8 +186,8 @@ graph LR
 
 ## Files Modified Summary
 
-1. **[`docker-compose.yml`](docker-compose.yml:203)** - Added port `10000:10000/tcp` to ffmpeg-srt-live
-2. **[`docker-compose.yml`](docker-compose.yml:231)** - Added port `10002:10002/tcp` to ffmpeg-rtmp-live  
+1. **[`docker-compose.yml`](docker-compose.yml:203)** - Added port `10000:10000/tcp` to ffmpeg-srt-input
+2. **[`docker-compose.yml`](docker-compose.yml:231)** - Added port `10002:10002/tcp` to ffmpeg-rtmp-input 
 3. **[`src/TCPReceiver.h`](src/TCPReceiver.h:14)** - Added `JitterStats` struct (42 lines)
 4. **[`src/TCPReceiver.h`](src/TCPReceiver.h:112)** - Added `getJitterStats()` method
 5. **[`src/TCPReceiver.h`](src/TCPReceiver.h:165)** - Added jitter tracking members
@@ -210,7 +210,7 @@ graph LR
 3. Verify build was successful: `docker-compose logs multiplexer | grep -i jitter`
 
 **If ports aren't accessible:**
-1. Restart services: `docker-compose restart ffmpeg-srt-live ffmpeg-rtmp-live`
+1. Restart services: `docker-compose restart ffmpeg-srt-input ffmpeg-rtmp-input`
 2. Check port bindings: `docker ps | grep ffmpeg`
 3. Verify no other services using ports 10000/10002
 

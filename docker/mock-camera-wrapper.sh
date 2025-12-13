@@ -17,8 +17,8 @@ cleanup() {
 # Trap SIGTERM and SIGINT
 trap cleanup SIGTERM SIGINT
 
-# Wait for ffmpeg-srt-live to be ready
-echo "[Wrapper] Waiting for ffmpeg-srt-live to be ready..."
+# Wait for ffmpeg-srt-input to be ready
+echo "[Wrapper] Waiting for ffmpeg-srt-input to be ready..."
 sleep 5
 
 # Start ffmpeg in background
@@ -32,7 +32,7 @@ ffmpeg -re \
   -c:v libx264 -tune zerolatency -preset veryfast -pix_fmt yuv420p \
   -g 30 -keyint_min 30 \
   -c:a aac -b:a 128k \
-  -f mpegts "srt://ffmpeg-srt-live:1937?mode=caller" &
+  -f mpegts "srt://ffmpeg-srt-input:1937?mode=caller" &
 
 FFMPEG_PID=$!
 echo "[Wrapper] FFmpeg started with PID $FFMPEG_PID"

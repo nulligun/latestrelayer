@@ -147,7 +147,7 @@ docker-compose down -v
 
 ### "Stuck in fallback mode"
 - Verify SRT stream is reaching port 1937
-- Check: `docker-compose logs ffmpeg-srt-live`
+- Check: `docker-compose logs ffmpeg-srt-input`
 - Ensure live stream has valid PAT/PMT
 
 ### "Container won't start"

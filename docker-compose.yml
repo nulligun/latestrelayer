@@ -223,12 +223,12 @@ services:
   # Tier 4: Stream Sources (will restart until they connect)
   # ============================================================================
 
-  ffmpeg-srt-live:
+  ffmpeg-srt-input:
     stop_grace_period: 2s
     build:
       context: .
-      dockerfile: docker/Dockerfile.ffmpeg-srt-live
-    container_name: ffmpeg-srt-live
+      dockerfile: docker/Dockerfile.ffmpeg-srt-input
+    container_name: ffmpeg-srt-input
     ports:
       - "1937:1937/udp"
       - "10000:10000/tcp"  # Expose TCP stream for host testing
@@ -252,12 +252,12 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  ffmpeg-rtmp-live:
+  ffmpeg-rtmp-input:
     stop_grace_period: 2s
     build:
       context: .
-      dockerfile: docker/Dockerfile.ffmpeg-rtmp-live
-    container_name: ffmpeg-rtmp-live
+      dockerfile: docker/Dockerfile.ffmpeg-rtmp-input
+    container_name: ffmpeg-rtmp-input
     depends_on:
       nginx-rtmp:
         condition: service_healthy

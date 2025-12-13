@@ -1,5 +1,5 @@
 #!/bin/bash
-# Health check for ffmpeg-rtmp-live container
+# Health check for ffmpeg-rtmp-input container
 # Checks if FFmpeg process is running and TCP port 10002 is listening
 
 # Check if FFmpeg process is running

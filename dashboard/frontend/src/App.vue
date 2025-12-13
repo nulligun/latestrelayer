@@ -186,9 +186,9 @@ export default {
         warnings.push('NOT LIVE ON KICK!');
       }
       
-      // Check if ffmpeg-srt-live container is running and healthy (indicates SRT camera connection on port 1937)
-      const srtLiveContainer = data.value.containers?.find(c => c.name === 'ffmpeg-srt-live');
-      if (!srtLiveContainer?.running || srtLiveContainer?.health !== 'healthy') {
+      // Check if ffmpeg-srt-input container is running and healthy (indicates SRT camera connection on port 1937)
+      const srtInputContainer = data.value.containers?.find(c => c.name === 'ffmpeg-srt-input');
+      if (!srtInputContainer?.running || srtInputContainer?.health !== 'healthy') {
         warnings.push('CAMERA NOT CONNECTED');
       }
       
