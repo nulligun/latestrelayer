@@ -600,6 +600,39 @@ class ContainerController:
         container_name = self.get_container_name(short_name)
         
         try:
+            # Get service info from compose parser first
+            service_info = self.compose_parser.get_service(short_name)
+            if not service_info:
+                error_msg = f"Service not found in compose file: {short_name}"
+                print(f"[controller] ERROR: {error_msg}", file=sys.stderr)
+                return
+            
+            service_name = service_info['service_name']
+            
+            # For mock-camera and mock-drone, always recreate to ensure fresh DNS resolution
+            # This prevents stale DNS cache issues when containers are started before their dependencies
+            if service_name in ['mock-camera', 'mock-drone']:
+                print(f"[controller] {service_name} requires recreation for fresh DNS resolution")
+                try:
+                    container = self.client.containers.get(container_name)
+                    container.reload()
+                    if container.status == "running":
+                        print(f"[controller] Container {container_name} is already running, stopping first...")
+                        self._stop_container_sync(short_name)
+                        # Wait a moment for stop to complete
+                        import time
+                        time.sleep(2)
+                except docker.errors.NotFound:
+                    # Container doesn't exist, that's fine
+                    pass
+                
+                # Remove container if it exists, then create fresh
+                print(f"[controller] Recreating {container_name} for fresh DNS...")
+                self._remove_container_sync(short_name)
+                self._create_and_start_container_sync(short_name)
+                return
+            
+            # Standard start logic for other containers
             # Check if container exists first
             try:
                 container = self.client.containers.get(container_name)
@@ -612,15 +645,6 @@ class ContainerController:
                 print(f"[controller] Container {container_name} not found, creating and starting...")
                 self._create_and_start_container_sync(short_name)
                 return
-            
-            # Get service info from compose parser
-            service_info = self.compose_parser.get_service(short_name)
-            if not service_info:
-                error_msg = f"Service not found in compose file: {short_name}"
-                print(f"[controller] ERROR: {error_msg}", file=sys.stderr)
-                return
-            
-            service_name = service_info['service_name']
             
             # Use docker compose start command
             env_file = os.path.join(PROJECT_PATH, ".env")
@@ -1001,6 +1025,12 @@ class ContainerController:
             
             # Build command - add --no-deps for manual profile services to avoid recreating dependencies
             cmd = ["docker", "compose", "--project-directory", PROJECT_PATH, "-f", COMPOSE_FILE, "--env-file", env_file, "up", "-d", "--remove-orphans"]
+            
+            # For mock-camera and mock-drone, always rebuild the image to pick up script changes
+            if service_name in ['mock-camera', 'mock-drone']:
+                cmd.append("--build")
+                cmd.append("--force-recreate")
+                print(f"[controller] Service {short_name} will be rebuilt and recreated to ensure latest script changes are applied")
             
             # For manual profile services, use --no-deps to prevent dependency resolution
             if service_info.get('is_manual', False):
