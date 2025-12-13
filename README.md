@@ -21,7 +21,7 @@ A high-availability MPEG-TS multiplexer built with TSDuck that provides automati
 This system consists of four Docker containers:
 
 1. **Multiplexer** - C++ application using TSDuck for TS packet processing
-2. **ffmpeg-srt-live** - Receives SRT input and converts to UDP TS
+2. **ffmpeg-srt-input** - Receives SRT input and converts to UDP TS
 3. **ffmpeg-fallback** - Loops a fallback MPEG-TS file as UDP TS
 4. **nginx-rtmp** - RTMP/HLS server for stream distribution and monitoring
 
@@ -37,7 +37,7 @@ The multiplexer intelligently switches between live and fallback sources while m
          │                                    │ Web Browsers     │
          v                                    │ Mobile Apps      │
 ┌─────────────────────┐                       └────────┬─────────┘
-│ ffmpeg-srt-live     │                                │
+│ ffmpeg-srt-input    │                                │
 │ SRT → UDP TS:10000  │                                │
 └──────────┬──────────┘                                │
            │                                           │
@@ -395,8 +395,8 @@ docker exec ts-multiplexer ps aux | grep ffmpeg
 
 **Check SRT connection:**
 ```bash
-# View ffmpeg-srt-live logs
-docker-compose logs ffmpeg-srt-live
+# View ffmpeg-srt-input logs
+docker-compose logs ffmpeg-srt-input
 ```
 
 **Test SRT connectivity:**

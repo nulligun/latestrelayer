@@ -86,16 +86,18 @@ export default {
     let timerInterval = null;
 
     const containerDescriptions = {
-      'multiplexer': 'Auto switch between Camera and BRB',
+      'multiplexer': 'Uncompressed domain splicer',
       'ffmpeg-kick': 'Stream to kick',
-      'muxer': 'Mux BRB and Cam to Program',
       'dashboard': 'This control panel',
       'ffmpeg-fallback': 'A looping video of the BRB screen',
-      'mock-camera': 'A looping video for testing the camera feed',
+      'ffmpeg-rtmp-output': 'Relay multiplexer output to rtmp server',
+      'mock-camera': 'Camera test feed',
+      'mock-drone': 'Drone test feed',
       'nginx-rtmp': 'RTMP Relay server',
-      'ffmpeg-srt-live': 'SRT to RTMP relay',
+      'ffmpeg-srt-input': 'SRT input',
+      'ffmpeg-rtmp-input': 'RTMP input',
       'controller': 'API for container management',
-      'nginx-proxy': 'Nginx reverse proxy - provides HTTPS access to dashboard'
+      'nginx-proxy': 'Provides HTTPS access to dashboard'
     };
 
     // Start the timer that updates every second

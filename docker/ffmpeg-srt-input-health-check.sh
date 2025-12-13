@@ -1,5 +1,5 @@
 #!/bin/bash
-# Health check script for ffmpeg-srt-live container
+# Health check script for ffmpeg-srt-input container
 # Verifies that FFmpeg is ready to receive SRT input or is actively streaming
 
 set -e

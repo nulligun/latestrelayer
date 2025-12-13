@@ -8,7 +8,7 @@
  * InputSource enum - represents the active input source for the multiplexer
  */
 enum class InputSource {
-    CAMERA,  // SRT camera input (via ffmpeg-srt-live UDP)
+    CAMERA,  // SRT camera input (via ffmpeg-srt-input UDP)
     DRONE    // Drone RTMP input (via RTMPReceiver)
 };
 

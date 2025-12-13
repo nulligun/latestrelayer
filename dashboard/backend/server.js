@@ -230,7 +230,7 @@ controllerWs.on('status_change', (message) => {
     console.log(`[main] Status includes scene: ${message.current_scene}, privacy: ${message.privacy_enabled}`);
   }
   
-  // Update our state with the changes while preserving timestamps
+  // Update our state with the changes, using fresh timestamps when available
   message.changes.forEach(change => {
     const idx = latestContainerState.containers.findIndex(c => c.name === change.name);
     if (idx !== -1) {
@@ -241,9 +241,9 @@ controllerWs.on('status_change', (message) => {
         health: change.currentHealth,
         running: change.running,
         statusDetail: change.statusDetail,
-        // Preserve timestamps from existing state (they came from initial_state)
-        startedAt: existingContainer.startedAt,
-        finishedAt: existingContainer.finishedAt
+        // Use fresh timestamps from change if provided, otherwise preserve existing
+        startedAt: change.startedAt !== undefined ? change.startedAt : existingContainer.startedAt,
+        finishedAt: change.finishedAt !== undefined ? change.finishedAt : existingContainer.finishedAt
       };
     }
   });

@@ -1213,7 +1213,9 @@ class WebSocketServer:
                         'status': container['status'],
                         'health': container.get('health'),
                         'status_detail': container.get('status_detail'),
-                        'running': container.get('running', False)
+                        'running': container.get('running', False),
+                        'startedAt': container.get('startedAt'),
+                        'finishedAt': container.get('finishedAt')
                     }
                     
                     # Check if this container state changed
@@ -1231,7 +1233,9 @@ class WebSocketServer:
                                 'currentStatus': curr['status'],
                                 'currentHealth': curr.get('health'),
                                 'running': curr['running'],
-                                'statusDetail': curr['status_detail']
+                                'statusDetail': curr['status_detail'],
+                                'startedAt': curr['startedAt'],
+                                'finishedAt': curr['finishedAt']
                             })
                             print(f"[ws] Status change detected for {name}: {prev['status']}→{curr['status']}", flush=True)
                     else:

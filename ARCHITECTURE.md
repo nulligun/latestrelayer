@@ -345,11 +345,11 @@ Output (live resumed):
 Docker Network: tsnet (bridge)
 
 ├─ multiplexer (service)
-│  ├─ Listens UDP 10000 (from ffmpeg-srt-live)
+│  ├─ Listens UDP 10000 (from ffmpeg-srt-input)
 │  ├─ Listens UDP 10001 (from ffmpeg-fallback)
 │  └─ Outputs RTMP to external server
 │
-├─ ffmpeg-srt-live (service)
+├─ ffmpeg-srt-input (service)
 │  ├─ Exposed port: 1937/udp (SRT listener)
 │  └─ Sends TS to multiplexer:10000
 │

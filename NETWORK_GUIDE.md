@@ -11,10 +11,10 @@ All containers run on a single Docker bridge network: `tsduck-multiplexer-networ
 │            tsduck-multiplexer-network (bridge)              │
 │                                                             │
 │  ┌──────────────┐    ┌──────────────┐   ┌───────────────┐ │
-│  │ ts-multiplexer│◄───│ffmpeg-srt-live│   │ffmpeg-fallback│ │
+│  │ ts-multiplexer│◄───│ffmpeg-srt-input││ffmpeg-fallback│ │
 │  │              │    │              │   │               │ │
 │  │ Service:     │    │Service:      │   │Service:       │ │
-│  │ multiplexer  │    │ffmpeg-srt-live   │ffmpeg-fallback│ │
+│  │ multiplexer  │    │ffmpeg-srt-input   │ffmpeg-fallback│ │
 │  └──────┬───────┘    └──────────────┘   └───────────────┘ │
 │         │                                                   │
 │         │ RTMP                                              │
@@ -38,7 +38,7 @@ All containers run on a single Docker bridge network: `tsduck-multiplexer-networ
 |-------------------------|----------------------------|---------|
 | `multiplexer` | `ts-multiplexer` | TSDuck multiplexer |
 | `nginx-rtmp` | `nginx-rtmp-server` | RTMP/HLS server |
-| `ffmpeg-srt-live` | `ffmpeg-srt-live` | Live SRT input |
+| `ffmpeg-srt-input` | `ffmpeg-srt-input` | Live SRT input |
 | `ffmpeg-fallback` | `ffmpeg-fallback` | Fallback stream |
 
 ### Examples
@@ -67,7 +67,7 @@ rtmp://nginx-rtmp-server/live/stream
 ## Port Configuration
 
 ### Multiplexer UDP Ports
-- **10000/udp** - Live stream input (from ffmpeg-srt-live)
+- **10000/udp** - Live stream input (from ffmpeg-srt-input)
 - **10001/udp** - Fallback stream input (from ffmpeg-fallback)
 
 ### Nginx RTMP Ports
@@ -75,7 +75,7 @@ rtmp://nginx-rtmp-server/live/stream
 - **8080/tcp** - HTTP/HLS output (mapped to host)
 
 ### External Ports
-- **1937/udp** - SRT listener (on ffmpeg-srt-live, mapped to host)
+- **1937/udp** - SRT listener (on ffmpeg-srt-input, mapped to host)
 
 ## Network Testing
 
@@ -202,7 +202,7 @@ IP addresses are dynamically assigned by Docker. Example configuration:
 |-----------|------------|
 | ts-multiplexer | 172.18.0.3/16 |
 | nginx-rtmp-server | 172.18.0.5/16 |
-| ffmpeg-srt-live | 172.18.0.2/16 |
+| ffmpeg-srt-input | 172.18.0.2/16 |
 | ffmpeg-fallback | 172.18.0.4/16 |
 
 **Note**: Always use service names, not IP addresses. IP addresses may change when containers restart.
@@ -227,7 +227,7 @@ docker compose up -d
 ```bash
 docker logs ts-multiplexer
 docker logs nginx-rtmp-server
-docker logs ffmpeg-srt-live
+docker logs ffmpeg-srt-input
 docker logs ffmpeg-fallback
 ```
 

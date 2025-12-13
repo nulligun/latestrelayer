@@ -10,15 +10,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy wrapper script for signal handling
-COPY docker/ffmpeg-rtmp-live-wrapper.sh /usr/local/bin/ffmpeg-rtmp-live-wrapper.sh
-RUN chmod +x /usr/local/bin/ffmpeg-rtmp-live-wrapper.sh
+COPY docker/ffmpeg-rtmp-input-wrapper.sh /usr/local/bin/ffmpeg-rtmp-input-wrapper.sh
+RUN chmod +x /usr/local/bin/ffmpeg-rtmp-input-wrapper.sh
 
 # Copy health check script
-COPY docker/ffmpeg-rtmp-live-health-check.sh /usr/local/bin/health-check.sh
+COPY docker/ffmpeg-rtmp-input-health-check.sh /usr/local/bin/health-check.sh
 RUN chmod +x /usr/local/bin/health-check.sh
 
 # Expose TCP port for multiplexer to connect
 EXPOSE 10002
 
 # Use wrapper script as entrypoint
-ENTRYPOINT ["/usr/local/bin/ffmpeg-rtmp-live-wrapper.sh"]
+ENTRYPOINT ["/usr/local/bin/ffmpeg-rtmp-input-wrapper.sh"]

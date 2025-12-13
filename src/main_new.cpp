@@ -46,7 +46,7 @@ int main(int argc, char* argv[]) {
     signal(SIGTERM, signal_handler);
     
     // Configuration
-    const std::string CAMERA_HOST = "ffmpeg-srt-live";
+    const std::string CAMERA_HOST = "ffmpeg-srt-input";
     const uint16_t CAMERA_PORT = 10000;
     const std::string FALLBACK_HOST = "ffmpeg-fallback";
     const uint16_t FALLBACK_PORT = 10001;

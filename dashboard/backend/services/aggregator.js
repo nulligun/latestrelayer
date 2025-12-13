@@ -13,7 +13,7 @@ const CRITICAL_CONTAINERS = [
   {
     name: 'nginx-proxy',
     fullName: 'latestrelayer-nginx-proxy',
-    description: 'Nginx reverse proxy - provides HTTPS access to dashboard'
+    description: 'Provides HTTPS access to dashboard'
   },
   {
     name: 'dashboard',

@@ -43,7 +43,7 @@ echo ""
 
 run_test "Multiplexer container running" "docker ps | grep -q ts-multiplexer"
 run_test "Nginx RTMP container running" "docker ps | grep -q nginx-rtmp-server"
-run_test "FFmpeg SRT Live container running" "docker ps | grep -q ffmpeg-srt-live"
+run_test "FFmpeg SRT Input container running" "docker ps | grep -q ffmpeg-srt-input"
 run_test "FFmpeg Fallback container running" "docker ps | grep -q ffmpeg-fallback"
 
 echo ""
@@ -66,7 +66,7 @@ echo ""
 run_test "Resolve 'nginx-rtmp' from multiplexer" "docker exec ts-multiplexer getent hosts nginx-rtmp"
 run_test "Resolve 'multiplexer' from nginx" "docker exec nginx-rtmp-server getent hosts multiplexer"
 run_test "Resolve 'ffmpeg-fallback' from multiplexer" "docker exec ts-multiplexer getent hosts ffmpeg-fallback"
-run_test "Resolve 'ffmpeg-srt-live' from multiplexer" "docker exec ts-multiplexer getent hosts ffmpeg-srt-live"
+run_test "Resolve 'ffmpeg-srt-input' from multiplexer" "docker exec ts-multiplexer getent hosts ffmpeg-srt-input"
 
 echo ""
 
@@ -83,7 +83,7 @@ else
     echo -e "${YELLOW}⊘ SKIPPED (ping not available in nginx container)${NC}"
 fi
 run_test "Ping ffmpeg-fallback from multiplexer" "docker exec ts-multiplexer ping -c 1 -W 2 ffmpeg-fallback"
-run_test "Ping ffmpeg-srt-live from multiplexer" "docker exec ts-multiplexer ping -c 1 -W 2 ffmpeg-srt-live"
+run_test "Ping ffmpeg-srt-input from multiplexer" "docker exec ts-multiplexer ping -c 1 -W 2 ffmpeg-srt-input"
 
 echo ""
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Health check script for mock-camera container
-# Verifies that SRT traffic is being sent to ffmpeg-srt-live on port 1937
+# Verifies that SRT traffic is being sent to ffmpeg-srt-input on port 1937
 
 set -e
 
