@@ -49,12 +49,16 @@ while true; do
     # Listen on TCP 10004, receive MPEG-TS, publish to RTMP
     echo "[Wrapper] Starting ffmpeg RTMP output..."
     echo "[Wrapper] Full command:"
-    echo "ffmpeg -nostdin -loglevel info -stats -f mpegts -i 'tcp://0.0.0.0:10004?listen=1&recv_buffer_size=${TCP_RECV_BUFFER_SIZE}' -c copy -f flv '${RTMP_URL}'"
+    echo "ffmpeg -nostdin -loglevel debug -stats -fflags +discardcorrupt+genpts -err_detect explode -f mpegts -analyzeduration 10000000 -probesize 10000000 -i 'tcp://0.0.0.0:10004?listen=1&recv_buffer_size=${TCP_RECV_BUFFER_SIZE}' -c copy -f flv '${RTMP_URL}'"
 
     ffmpeg -nostdin \
-        -loglevel info \
+        -loglevel debug \
         -stats \
+        -fflags +discardcorrupt+genpts \
+        -err_detect explode \
         -f mpegts \
+        -analyzeduration 10000000 \
+        -probesize 10000000 \
         -i "tcp://0.0.0.0:10004?listen=1&recv_buffer_size=${TCP_RECV_BUFFER_SIZE}" \
         -c copy \
         -f flv \
