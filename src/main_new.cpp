@@ -236,11 +236,6 @@ int main(int argc, char* argv[]) {
     
     uint64_t packets_processed = 0;
     auto last_log = std::chrono::steady_clock::now();
-
-    // CC verification tracking (like tcp_main.cpp)
-    std::map<ts::PID, uint8_t> last_cc_values;
-    size_t cc_discontinuities = 0;
-    size_t cc_verifications = 0;
     
     while (g_running.load()) {
         // Check for mode switch
@@ -431,32 +426,6 @@ int main(int argc, char* argv[]) {
             for (auto& pkt : packets) {
                 splicer.rebasePacket(pkt, pts_base, pcr_base, pcr_pts_alignment);
                 splicer.fixContinuityCounter(pkt);
-
-                                
-                // CC VERIFICATION: Check CC was correctly set
-                ts::PID pid = pkt.getPID();
-                if (pkt.hasPayload()) {
-                    cc_verifications++;
-                    uint8_t current_cc = pkt.getCC();
-                    
-                    if (last_cc_values.find(pid) != last_cc_values.end()) {
-                        uint8_t expected_cc = (last_cc_values[pid] + 1) & 0x0F;
-                        if (current_cc != expected_cc) {
-                            cc_discontinuities++;
-                            std::cerr << "[CC-ERROR] PID=" << pid << " expected CC=" << (int)expected_cc
-                                      << ", got CC=" << (int)current_cc
-                                      << " (discontinuity #" << cc_discontinuities << ")" << std::endl;
-                        }
-                    }
-                    last_cc_values[pid] = current_cc;
-                    
-                    // Log first 20 packets to verify CC sequence
-                    if (cc_verifications <= 20) {
-                        std::cerr << "[CC-TRACE] Packet #" << cc_verifications
-                                  << ": PID=" << pid << ", CC=" << (int)current_cc << std::endl;
-                    }
-                }
-                
                 tcp_output.writePacket(pkt);
                 packets_processed++;
             }
@@ -484,17 +453,6 @@ int main(int argc, char* argv[]) {
     std::cout << "  Camera packets received: " <<  camera_reader.getPacketsReceived() << std::endl;
     std::cout << "  Fallback packets received: " << fallback_reader.getPacketsReceived() << std::endl;
     std::cout << "  Output packets written: " << tcp_output.getPacketsWritten() << std::endl;
-       std::cout << "\n[Main] CC Verification Statistics:" << std::endl;
-    std::cout << "  Total CC verifications: " << cc_verifications << std::endl;
-    std::cout << "  CC discontinuities detected: " << cc_discontinuities << std::endl;
-    if (cc_verifications > 0) {
-        std::cout << "  CC error rate: " << (100.0 * cc_discontinuities / cc_verifications) << "%" << std::endl;
-    }
-    if (cc_discontinuities == 0) {
-        std::cout << "  ✓ All CC values were sequential (no discontinuities)" << std::endl;
-    } else {
-        std::cerr << "  ✗ WARNING: CC discontinuities indicate a bug in CC management!" << std::endl;
-    }
     std::cout << "[Main] Shutdown complete" << std::endl;
     
     return 0;
