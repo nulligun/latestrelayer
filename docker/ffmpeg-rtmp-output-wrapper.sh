@@ -63,12 +63,16 @@ while true; do
         -loglevel debug \
         -stats \
         -fflags +discardcorrupt+genpts \
-        -err_detect explode \
         -f mpegts \
-        -analyzeduration 10000000 \
-        -probesize 10000000 \
+        -analyzeduration 0 \
+        -probesize 32768 \
         -i "${PIPE_PATH}" \
         -c copy \
+        -muxdelay 0 -muxpreload 0 \
+        -max_interleave_delta 0 \
+        -max_muxing_queue_size 4096 \
+        -flvflags no_duration_filesize \
+        -rtmp_live live \
         -f flv \
         "${RTMP_URL}" &
 
@@ -87,7 +91,6 @@ while true; do
         exit 0
     fi
     
-    # Otherwise, restart after a short delay
-    echo "[Wrapper] Restarting ffmpeg in 1 second..."
-    sleep 1
+    # Otherwise, restart
+    echo "[Wrapper] Restarting ffmpeg"
 done
