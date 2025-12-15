@@ -31,8 +31,5 @@ RUN chmod +x /usr/local/bin/fallback-source-selector.sh
 COPY docker/ffmpeg-fallback-health-check.sh /usr/local/bin/health-check.sh
 RUN chmod +x /usr/local/bin/health-check.sh
 
-# Expose TCP port for multiplexer to connect
-EXPOSE 10001
-
 # Use wrapper script as entrypoint
 ENTRYPOINT ["/usr/local/bin/ffmpeg-fallback-wrapper.sh"]

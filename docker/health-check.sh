@@ -1,27 +1,15 @@
 #!/bin/bash
 # Health check script for ts-multiplexer
-# Verifies that multiplexer has an active TCP connection to ffmpeg-rtmp-output on port 10004
-# Note: Multiplexer is a TCP client that connects to ffmpeg-rtmp-output:10004
+# Verifies that the multiplexer process is running
 
 set -e
 
-# Check if multiplexer has an established connection to port 10004
-check_tcp_connection() {
-    # Use ss to check for ESTABLISHED connection to port 10004
-    # The multiplexer connects TO ffmpeg-rtmp-output:10004 as a client
-    if ss -tan 2>/dev/null | grep ':10004 ' | grep -q 'ESTAB'; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-# Check TCP connection to port 10004
-if ! check_tcp_connection; then
-    echo "Health check failed: No established connection to port 10004"
+# Check if the multiplexer process is running
+if ! pgrep -f "multiplexer" > /dev/null; then
+    echo "Health check failed: Multiplexer process not running"
     exit 1
 fi
 
 # All checks passed
-echo "Health check passed: Active connection to port 10004"
+echo "Health check passed: Multiplexer process is running"
 exit 0

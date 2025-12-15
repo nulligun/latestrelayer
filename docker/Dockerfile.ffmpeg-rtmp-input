@@ -17,8 +17,5 @@ RUN chmod +x /usr/local/bin/ffmpeg-rtmp-input-wrapper.sh
 COPY docker/ffmpeg-rtmp-input-health-check.sh /usr/local/bin/health-check.sh
 RUN chmod +x /usr/local/bin/health-check.sh
 
-# Expose TCP port for multiplexer to connect
-EXPOSE 10002
-
 # Use wrapper script as entrypoint
 ENTRYPOINT ["/usr/local/bin/ffmpeg-rtmp-input-wrapper.sh"]

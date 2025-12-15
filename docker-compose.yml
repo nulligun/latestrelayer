@@ -12,7 +12,7 @@ services:
       - ts-pipe-volume:/pipe
     restart: "no"  # Run once and exit
     healthcheck:
-      test: ["CMD", "test", "-p", "/pipe/camera.ts", "-a", "-p", "/pipe/fallback.ts", "-a", "-p", "/pipe/ts_output.pipe"]
+      test: ["CMD", "test", "-p", "/pipe/camera.ts", "-a", "-p", "/pipe/fallback.ts", "-a", "-p", "/pipe/drone.ts", "-a", "-p", "/pipe/ts_output.pipe"]
       interval: 1s
       timeout: 2s
       retries: 1
@@ -262,7 +262,6 @@ services:
         condition: service_completed_successfully
     ports:
       - "1937:1937/udp"
-      - "10000:10000/tcp"  # Expose TCP stream for host testing
     volumes:
       - ts-pipe-volume:/pipe
     environment:
@@ -294,8 +293,10 @@ services:
     depends_on:
       nginx-rtmp:
         condition: service_healthy
-    ports:
-      - "10002:10002/tcp"  # Expose TCP stream for host testing
+      pipe-init:
+        condition: service_completed_successfully
+    volumes:
+      - ts-pipe-volume:/pipe
     environment:
       - TCP_SEND_BUFFER_SIZE=${TCP_SEND_BUFFER_SIZE:-2097152}
       - MPEGTS_MAX_DELAY=${MPEGTS_MAX_DELAY:-1000000}
@@ -324,8 +325,6 @@ services:
     depends_on:
       pipe-init:
         condition: service_completed_successfully
-    ports:
-      - "10001:10001/tcp"  # Expose TCP stream for host testing
     volumes:
       - ${SHARED_FOLDER}:/media:rw
       - ts-pipe-volume:/pipe

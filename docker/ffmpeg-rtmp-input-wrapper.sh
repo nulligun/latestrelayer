@@ -24,39 +24,38 @@ trap cleanup SIGTERM SIGINT
 echo "[Wrapper] Waiting for nginx-rtmp to be ready..."
 sleep 5
 
-# Get TCP buffering parameters from environment variables
-TCP_SEND_BUFFER_SIZE=${TCP_SEND_BUFFER_SIZE:-2097152}
-MPEGTS_MAX_DELAY=${MPEGTS_MAX_DELAY:-1000000}
-MPEGTS_MUXRATE=${MPEGTS_MUXRATE:-5M}
+# Named pipe path
+PIPE_PATH="/pipe/drone.ts"
 
-# Build muxrate parameter if set
-MUXRATE_PARAM=""
-if [ -n "$MPEGTS_MUXRATE" ]; then
-    MUXRATE_PARAM="-muxrate ${MPEGTS_MUXRATE}"
-    echo "[Wrapper] TCP buffer settings: send_buffer=${TCP_SEND_BUFFER_SIZE}, max_delay=${MPEGTS_MAX_DELAY}µs, muxrate=${MPEGTS_MUXRATE}"
-else
-    echo "[Wrapper] TCP buffer settings: send_buffer=${TCP_SEND_BUFFER_SIZE}, max_delay=${MPEGTS_MAX_DELAY}µs, muxrate=disabled (natural bitrate)"
-fi
+echo "[Wrapper] Waiting for named pipe at $PIPE_PATH..."
+WAIT_COUNT=0
+while [ ! -p "$PIPE_PATH" ]; do
+    if [ $WAIT_COUNT -ge 60 ]; then
+        echo "[Wrapper] ERROR: Named pipe not created after 60 seconds"
+        exit 1
+    fi
+    echo "[Wrapper] Pipe not ready (attempt $((WAIT_COUNT+1))/60), waiting..."
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT+1))
+done
+echo "[Wrapper] Named pipe ready!"
+ls -l "$PIPE_PATH"
 
 # Infinite restart loop
 while true; do
     # Start ffmpeg in background
-    # Pulls from nginx-rtmp drone publish endpoint and serves via TCP on port 10002
-    echo "[Wrapper] Starting ffmpeg RTMP→TCP bridge..."
+    # Pulls from nginx-rtmp drone publish endpoint and outputs to named pipe
+    echo "[Wrapper] Starting ffmpeg RTMP→pipe bridge..."
     echo "[Wrapper] Full command:"
-    echo "ffmpeg -nostdin -loglevel info -fflags +nobuffer -i 'rtmp://nginx-rtmp/publish/drone' -c copy -f mpegts -mpegts_flags +resend_headers -max_delay ${MPEGTS_MAX_DELAY} -flush_packets 1 -async 1 ${MUXRATE_PARAM} 'tcp://0.0.0.0:10002?listen=1&send_buffer_size=${TCP_SEND_BUFFER_SIZE}'"
-    ffmpeg -nostdin \
+    echo "ffmpeg -y -nostdin -loglevel info -fflags +nobuffer -i 'rtmp://nginx-rtmp/publish/drone' -c copy -f mpegts -mpegts_flags +resend_headers \"${PIPE_PATH}\""
+    ffmpeg -y -nostdin \
         -loglevel info \
         -fflags +nobuffer \
         -i 'rtmp://nginx-rtmp/publish/drone' \
         -c copy \
         -f mpegts \
         -mpegts_flags +resend_headers \
-        -max_delay ${MPEGTS_MAX_DELAY} \
-        -flush_packets 1 \
-        -async 1 \
-        ${MUXRATE_PARAM} \
-        "tcp://0.0.0.0:10002?listen=1&send_buffer_size=${TCP_SEND_BUFFER_SIZE}" &
+        "${PIPE_PATH}" &
 
     FFMPEG_PID=$!
     echo "[Wrapper] FFmpeg started with PID $FFMPEG_PID"
