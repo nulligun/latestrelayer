@@ -328,8 +328,30 @@ echo ""
 echo "=== Phase 2: Multiplexer Compilation ==="
 compile_multiplexer
 
+echo "=== Phase 3: Verifying Named Pipes ==="
+# Pipes are now created by the pipe-init container
+# Just verify they exist
+PIPE_DIR="/pipe"
+echo "[pipe] Checking for named pipes in $PIPE_DIR..."
+
+if [ ! -p "$PIPE_DIR/camera.ts" ]; then
+    echo "[pipe] ERROR: /pipe/camera.ts not found - pipe-init may have failed"
+    exit 1
+fi
+if [ ! -p "$PIPE_DIR/fallback.ts" ]; then
+    echo "[pipe] ERROR: /pipe/fallback.ts not found - pipe-init may have failed"
+    exit 1
+fi
+if [ ! -p "$PIPE_DIR/ts_output.pipe" ]; then
+    echo "[pipe] ERROR: /pipe/ts_output.pipe not found - pipe-init may have failed"
+    exit 1
+fi
+
+echo "[pipe] All named pipes verified:"
+ls -l "$PIPE_DIR"
+
 echo ""
-echo "=== Phase 3: Starting Multiplexer ==="
+echo "=== Phase 4: Starting Multiplexer ==="
 echo "Starting: $@"
 
 # Remove trap since exec will replace this shell with the target process

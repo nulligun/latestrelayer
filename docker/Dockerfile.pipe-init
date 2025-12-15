@@ -1,0 +1,8 @@
+FROM alpine:3.18
+
+RUN apk add --no-cache coreutils
+
+COPY docker/pipe-init.sh /pipe-init.sh
+RUN chmod +x /pipe-init.sh
+
+ENTRYPOINT ["/pipe-init.sh"]

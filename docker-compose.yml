@@ -1,5 +1,28 @@
 services:
   # ============================================================================
+  # Tier 0: Pipe Initialization (runs once and exits)
+  # ============================================================================
+  
+  pipe-init:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pipe-init
+    container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-pipe-init
+    volumes:
+      - ts-pipe-volume:/pipe
+    restart: "no"  # Run once and exit
+    healthcheck:
+      test: ["CMD", "test", "-p", "/pipe/camera.ts", "-a", "-p", "/pipe/fallback.ts", "-a", "-p", "/pipe/ts_output.pipe"]
+      interval: 1s
+      timeout: 2s
+      retries: 1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  # ============================================================================
   # Tier 1: Core Services (start first - no streaming dependencies)
   # ============================================================================
   
@@ -166,6 +189,7 @@ services:
       - ${SHARED_FOLDER}/tsduck-src:/opt/tsduck-src
       - ${SHARED_FOLDER}/tsduck-build:/opt/tsduck-build
       - ${SHARED_FOLDER}/tsduck:/opt/tsduck
+      - ts-pipe-volume:/pipe  # Shared named pipe volume
     environment:
       - UDP_RCVBUF_SIZE=${UDP_RCVBUF_SIZE:-262144}
       - TS_QUEUE_SIZE=${TS_QUEUE_SIZE:-5000}
@@ -202,8 +226,11 @@ services:
     depends_on:
       nginx-rtmp:
         condition: service_healthy
+      multiplexer:
+        condition: service_started  # Wait for multiplexer to create the pipe
+    volumes:
+      - ts-pipe-volume:/pipe  # Shared named pipe volume
     environment:
-      - TCP_RECV_BUFFER_SIZE=${TCP_RECV_BUFFER_SIZE:-2097152}
       - RTMP_URL=${RTMP_URL:-rtmp://nginx-rtmp/live/stream}
     networks:
       - tsnet
@@ -230,9 +257,14 @@ services:
       context: .
       dockerfile: docker/Dockerfile.ffmpeg-srt-input
     container_name: ffmpeg-srt-input
+    depends_on:
+      pipe-init:
+        condition: service_completed_successfully
     ports:
       - "1937:1937/udp"
       - "10000:10000/tcp"  # Expose TCP stream for host testing
+    volumes:
+      - ts-pipe-volume:/pipe
     environment:
       - SRT_LATENCY_MS=${SRT_LATENCY_MS:-200}
       - TCP_SEND_BUFFER_SIZE=${TCP_SEND_BUFFER_SIZE:-2097152}
@@ -289,10 +321,14 @@ services:
       context: .
       dockerfile: docker/Dockerfile.ffmpeg-fallback
     container_name: ffmpeg-fallback
+    depends_on:
+      pipe-init:
+        condition: service_completed_successfully
     ports:
       - "10001:10001/tcp"  # Expose TCP stream for host testing
     volumes:
       - ${SHARED_FOLDER}:/media:rw
+      - ts-pipe-volume:/pipe
     environment:
       - TCP_SEND_BUFFER_SIZE=${TCP_SEND_BUFFER_SIZE:-2097152}
       - MPEGTS_MAX_DELAY=${MPEGTS_MAX_DELAY:-1000000}
@@ -410,3 +446,7 @@ networks:
       config:
         - subnet: 172.28.0.0/16
           gateway: 172.28.0.1
+
+volumes:
+  ts-pipe-volume:
+    driver: local

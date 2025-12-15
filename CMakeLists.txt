@@ -24,7 +24,8 @@ find_package(CURL REQUIRED)
 set(SOURCES
     src/main_new.cpp
     src/TCPReader.cpp
-    src/TCPOutput.cpp
+    src/FIFOInput.cpp
+    src/FIFOOutput.cpp
     src/StreamSplicer.cpp
     src/NALParser.cpp
     src/HttpServer.cpp

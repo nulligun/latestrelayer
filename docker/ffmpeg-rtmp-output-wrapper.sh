@@ -28,28 +28,36 @@ until nc -z nginx-rtmp 1935; do
 done
 echo "[Wrapper] nginx-rtmp is ready"
 
-# Wait for multiplexer to be ready
-echo "[Wrapper] Waiting for multiplexer to be ready..."
-sleep 5
-
-# Get TCP buffer configuration from environment
-TCP_RECV_BUFFER_SIZE=${TCP_RECV_BUFFER_SIZE:-2097152}  # 2MB
+# Wait for named pipe to be created by multiplexer
+PIPE_PATH="/pipe/ts_output.pipe"
+echo "[Wrapper] Waiting for named pipe at $PIPE_PATH..."
+WAIT_COUNT=0
+while [ ! -p "$PIPE_PATH" ]; do
+    if [ $WAIT_COUNT -ge 30 ]; then
+        echo "[Wrapper] ERROR: Named pipe not created after 30 seconds"
+        exit 1
+    fi
+    echo "[Wrapper] Pipe not ready (attempt $((WAIT_COUNT+1))/30), waiting..."
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT+1))
+done
+echo "[Wrapper] Named pipe ready!"
+ls -l "$PIPE_PATH"
 
 # RTMP URL (default to nginx-rtmp live stream)
 RTMP_URL=${RTMP_URL:-rtmp://nginx-rtmp/live/stream}
 
 echo "[Wrapper] Configuration:"
-echo "  TCP listen port: 10004"
-echo "  TCP receive buffer: ${TCP_RECV_BUFFER_SIZE} bytes"
+echo "  Input: Named pipe at $PIPE_PATH"
 echo "  RTMP URL: ${RTMP_URL}"
 
 # Infinite restart loop
 while true; do
     # Start ffmpeg in background
-    # Listen on TCP 10004, receive MPEG-TS, publish to RTMP
+    # Read from named pipe, receive MPEG-TS, publish to RTMP
     echo "[Wrapper] Starting ffmpeg RTMP output..."
     echo "[Wrapper] Full command:"
-    echo "ffmpeg -nostdin -loglevel debug -stats -fflags +discardcorrupt+genpts -err_detect explode -f mpegts -analyzeduration 10000000 -probesize 10000000 -i 'tcp://0.0.0.0:10004?listen=1&recv_buffer_size=${TCP_RECV_BUFFER_SIZE}' -c copy -f flv '${RTMP_URL}'"
+    echo "ffmpeg -nostdin -loglevel debug -stats -fflags +discardcorrupt+genpts -err_detect explode -f mpegts -analyzeduration 10000000 -probesize 10000000 -i '${PIPE_PATH}' -c copy -f flv '${RTMP_URL}'"
 
     ffmpeg -nostdin \
         -loglevel debug \
@@ -59,7 +67,7 @@ while true; do
         -f mpegts \
         -analyzeduration 10000000 \
         -probesize 10000000 \
-        -i "tcp://0.0.0.0:10004?listen=1&recv_buffer_size=${TCP_RECV_BUFFER_SIZE}" \
+        -i "${PIPE_PATH}" \
         -c copy \
         -f flv \
         "${RTMP_URL}" &
