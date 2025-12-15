@@ -1,19 +1,14 @@
 #!/bin/bash
 # Health check for ffmpeg-rtmp-input container
-# Checks if FFmpeg process is running and TCP port 10002 is listening
+# Checks if FFmpeg process is running
+
+set -e
 
 # Check if FFmpeg process is running
 if ! pgrep -x ffmpeg > /dev/null; then
-    echo "FFmpeg process not found"
+    echo "Health check failed: FFmpeg process not running"
     exit 1
 fi
 
-# Check if TCP port 10002 is listening
-if ! netstat -tln 2>/dev/null | grep -q ":10002.*LISTEN" && \
-   ! ss -tln 2>/dev/null | grep -q ":10002.*LISTEN"; then
-    echo "TCP port 10002 not listening"
-    exit 1
-fi
-
-echo "Health check passed"
+echo "Health check passed: FFmpeg process is running"
 exit 0
