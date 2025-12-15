@@ -1,15 +1,15 @@
 /*
- * Streamlined Multiplexer - Camera + Fallback Splicing via TCP
- * 
+ * Streamlined Multiplexer - Camera + Fallback Splicing via Named Pipes
+ *
  * Based on multi2/src/tcp_main.cpp proven TCP splicing pattern.
- * 
+ *
  * Architecture:
- * - TCPReader for camera input (port 10000)
- * - TCPReader for fallback input (port 10001)
+ * - FIFOInput for camera input (/pipe/camera.ts)
+ * - FIFOInput for fallback input (/pipe/fallback.ts)
  * - StreamSplicer for timestamp rebasing and splice logic
- * - TCPOutput connects to ffmpeg-rtmp-output (port 10004)
+ * - FIFOOutput to ffmpeg-rtmp-output (/pipe/ts_output.pipe)
  * - FFmpeg publishes to nginx-rtmp
- * 
+ *
  * Switching logic:
  * - Start with fallback stream
  * - Auto-switch to camera when available
@@ -17,8 +17,8 @@
  * - All switches happen at IDR frames with audio sync
  */
 
-#include "TCPReader.h"
-#include "TCPOutput.h"
+#include "FIFOInput.h"
+#include "FIFOOutput.h"
 #include "StreamSplicer.h"
 #include "HttpServer.h"
 #include <iostream>
@@ -53,12 +53,9 @@ int main(int argc, char* argv[]) {
     signal(SIGTERM, signal_handler);
     
     // Configuration
-    const std::string CAMERA_HOST = "ffmpeg-srt-input";
-    const uint16_t CAMERA_PORT = 10000;
-    const std::string FALLBACK_HOST = "ffmpeg-fallback";
-    const uint16_t FALLBACK_PORT = 10001;
-    const std::string OUTPUT_HOST = "ffmpeg-rtmp-output";
-    const uint16_t OUTPUT_PORT = 10004;
+    const std::string CAMERA_PIPE = "/pipe/camera.ts";
+    const std::string FALLBACK_PIPE = "/pipe/fallback.ts";
+    const std::string OUTPUT_PIPE = "/pipe/ts_output.pipe";
     
     // Get controller URL from environment variable
     const char* controller_url_env = std::getenv("CONTROLLER_URL");
@@ -77,12 +74,12 @@ int main(int argc, char* argv[]) {
     }
     
     // Create components
-    std::cout << "[Main] Creating TCP readers..." << std::endl;
-    TCPReader camera_reader("Camera", CAMERA_HOST, CAMERA_PORT);
-    TCPReader fallback_reader("Fallback", FALLBACK_HOST, FALLBACK_PORT);
+    std::cout << "[Main] Creating FIFO readers..." << std::endl;
+    FIFOInput camera_reader("Camera", CAMERA_PIPE);
+    FIFOInput fallback_reader("Fallback", FALLBACK_PIPE);
     
-    std::cout << "[Main] Creating TCP output..." << std::endl;
-    TCPOutput tcp_output(OUTPUT_HOST, OUTPUT_PORT, g_running);
+    std::cout << "[Main] Creating FIFO output..." << std::endl;
+    FIFOOutput fifo_output(OUTPUT_PIPE, g_running);
     
     std::cout << "[Main] Creating stream splicer..." << std::endl;
     StreamSplicer splicer;
@@ -114,8 +111,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Start TCP readers
-    std::cout << "[Main] Starting TCP readers..." << std::endl;
+    // Start FIFO readers
+    std::cout << "[Main] Starting FIFO readers..." << std::endl;
     if (!camera_reader.start()) {
         std::cerr << "[Main] Failed to start camera reader" << std::endl;
         return 1;
@@ -146,10 +143,10 @@ int main(int argc, char* argv[]) {
     // Initialize splicer with PCR/PTS alignment offset
     splicer.initializeWithAlignmentOffset(fallback_reader.getPCRPTSAlignmentOffset());
     
-    // Connect to output
-    std::cout << "[Main] Connecting to ffmpeg-rtmp-output..." << std::endl;
-    if (!tcp_output.connect()) {
-        std::cerr << "[Main] Failed to connect to output" << std::endl;
+    // Open named pipe output (will block until ffmpeg opens it for reading)
+    std::cout << "[Main] Opening named pipe for output..." << std::endl;
+    if (!fifo_output.open()) {
+        std::cerr << "[Main] Failed to open output pipe" << std::endl;
         return 1;
     }
     
@@ -158,7 +155,7 @@ int main(int argc, char* argv[]) {
     ts::TSPacket pat = splicer.createPAT(fallback_info.program_number > 0 ? fallback_info.program_number : 1,
                                          ts::PID(4096));
     splicer.fixContinuityCounter(pat);
-    tcp_output.writePacket(pat);
+    fifo_output.writePacket(pat);
     
     ts::TSPacket pmt = splicer.createPMT(fallback_info.program_number > 0 ? fallback_info.program_number : 1,
                                          fallback_info.video_pid,
@@ -167,7 +164,7 @@ int main(int argc, char* argv[]) {
                                          fallback_info.video_stream_type,
                                          fallback_info.audio_stream_type);
     splicer.fixContinuityCounter(pmt);
-    tcp_output.writePacket(pmt);
+    fifo_output.writePacket(pmt);
     
     // Get initial buffered packets from fallback
     auto initial_packets = fallback_reader.getBufferedPacketsFromAudioSync();
@@ -183,7 +180,7 @@ int main(int argc, char* argv[]) {
         std::cout << "[Main] Injecting " << sps_pps_packets.size() << " SPS/PPS packets" << std::endl;
         for (auto& pkt : sps_pps_packets) {
             splicer.fixContinuityCounter(pkt);
-            tcp_output.writePacket(pkt);
+            fifo_output.writePacket(pkt);
         }
     }
     
@@ -197,7 +194,7 @@ int main(int argc, char* argv[]) {
     for (auto& pkt : initial_packets) {
         splicer.rebasePacket(pkt, pts_base, pcr_base, pcr_pts_alignment);
         splicer.fixContinuityCounter(pkt);
-        tcp_output.writePacket(pkt);
+        fifo_output.writePacket(pkt);
         
         // Track max timestamps
         if (pkt.hasPCR()) {
@@ -230,7 +227,7 @@ int main(int argc, char* argv[]) {
     // Main loop state
     enum class Mode { FALLBACK, CAMERA };
     Mode current_mode = Mode::FALLBACK;
-    TCPReader* active_reader = &fallback_reader;
+    FIFOInput* active_reader = &fallback_reader;
     
     std::cout << "[Main] Entering main processing loop..." << std::endl;
     
@@ -276,7 +273,7 @@ int main(int argc, char* argv[]) {
                     std::cout << "[Main] Injecting " << sps_pps_pkt.size() << " camera SPS/PPS packets" << std::endl;
                     for (auto& pkt : sps_pps_pkt) {
                         splicer.fixContinuityCounter(pkt);
-                        tcp_output.writePacket(pkt);
+                        fifo_output.writePacket(pkt);
                     }
                 }
                 
@@ -291,7 +288,7 @@ int main(int argc, char* argv[]) {
                 for (auto& pkt : camera_packets) {
                     splicer.rebasePacket(pkt, pts_base, pcr_base, pcr_pts_alignment);
                     splicer.fixContinuityCounter(pkt);
-                    tcp_output.writePacket(pkt);
+                    fifo_output.writePacket(pkt);
                     packets_processed++;
                     
                     // Track max timestamps
@@ -368,7 +365,7 @@ int main(int argc, char* argv[]) {
                     std::cout << "[Main] Injecting " << sps_pps_pkt.size() << " fallback SPS/PPS packets" << std::endl;
                     for (auto& pkt : sps_pps_pkt) {
                         splicer.fixContinuityCounter(pkt);
-                        tcp_output.writePacket(pkt);
+                        fifo_output.writePacket(pkt);
                     }
                 }
                 
@@ -383,7 +380,7 @@ int main(int argc, char* argv[]) {
                 for (auto& pkt : fb_packets) {
                     splicer.rebasePacket(pkt, pts_base, pcr_base, pcr_pts_alignment);
                     splicer.fixContinuityCounter(pkt);
-                    tcp_output.writePacket(pkt);
+                    fifo_output.writePacket(pkt);
                     packets_processed++;
                     
                     // Track max timestamps
@@ -457,7 +454,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 
-                tcp_output.writePacket(pkt);
+                fifo_output.writePacket(pkt);
                 packets_processed++;
             }
         }
@@ -477,13 +474,13 @@ int main(int argc, char* argv[]) {
     http_server.stop();
     camera_reader.stop();
     fallback_reader.stop();
-    tcp_output.disconnect();
+    fifo_output.close();
     
     std::cout << "[Main] Final statistics:" << std::endl;
     std::cout << "  Packets processed: " << packets_processed << std::endl;
     std::cout << "  Camera packets received: " <<  camera_reader.getPacketsReceived() << std::endl;
     std::cout << "  Fallback packets received: " << fallback_reader.getPacketsReceived() << std::endl;
-    std::cout << "  Output packets written: " << tcp_output.getPacketsWritten() << std::endl;
+    std::cout << "  Output packets written: " << fifo_output.getPacketsWritten() << std::endl;
        std::cout << "\n[Main] CC Verification Statistics:" << std::endl;
     std::cout << "  Total CC verifications: " << cc_verifications << std::endl;
     std::cout << "  CC discontinuities detected: " << cc_discontinuities << std::endl;
