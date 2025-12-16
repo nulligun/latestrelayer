@@ -47,10 +47,10 @@ while true; do
     # Pulls from nginx-rtmp drone publish endpoint and outputs to named pipe
     echo "[Wrapper] Starting ffmpeg RTMP→pipe bridge..."
     echo "[Wrapper] Full command:"
-    echo "ffmpeg -y -nostdin -loglevel info -fflags +nobuffer -i 'rtmp://nginx-rtmp/publish/drone' -c copy -f mpegts -mpegts_flags +resend_headers \"${PIPE_PATH}\""
+    echo "ffmpeg -y -nostdin -loglevel debug -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 2 -i 'rtmp://nginx-rtmp/publish/drone' -c copy -f mpegts -mpegts_flags +resend_headers \"${PIPE_PATH}\""
     ffmpeg -y -nostdin \
-        -loglevel info \
-        -fflags +nobuffer \
+        -loglevel debug \
+        -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 2 \
         -i 'rtmp://nginx-rtmp/publish/drone' \
         -c copy \
         -f mpegts \
