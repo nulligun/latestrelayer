@@ -32,6 +32,7 @@ public:
     using InputSourceCallback = std::function<void(InputSource source)>;
     using SceneChangeCallback = std::function<void(const std::string& scene)>;
     using GetCurrentSceneCallback = std::function<std::string()>;
+    using GetSceneTimestampCallback = std::function<int64_t()>;
     
     explicit HttpServer(uint16_t port);
     ~HttpServer();
@@ -61,6 +62,9 @@ public:
     // Register callback for getting current scene
     void setGetCurrentSceneCallback(GetCurrentSceneCallback callback);
     
+    // Register callback for getting scene change timestamp
+    void setGetSceneTimestampCallback(GetSceneTimestampCallback callback);
+    
     // Notify controller of scene change
     void notifySceneChange(const std::string& scene, const std::string& controllerUrl);
     
@@ -87,5 +91,6 @@ private:
     HealthCallback health_callback_;
     InputSourceCallback input_source_callback_;
     GetCurrentSceneCallback get_current_scene_callback_;
+    GetSceneTimestampCallback get_scene_timestamp_callback_;
     std::shared_ptr<InputSourceManager> input_source_manager_;
 };

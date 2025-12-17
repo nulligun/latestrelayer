@@ -45,6 +45,9 @@ std::atomic<bool> g_privacy_mode_enabled(false);
 std::atomic<std::string*> g_current_scene_ptr(nullptr);
 std::mutex g_scene_mutex;
 
+// Global scene change timestamp (milliseconds since epoch)
+std::atomic<int64_t> g_scene_change_time_ms(0);
+
 // Global controller URL for notifications
 std::string g_controller_url;
 
@@ -103,6 +106,10 @@ int main(int argc, char* argv[]) {
     {
         std::lock_guard<std::mutex> lock(g_scene_mutex);
         g_current_scene_ptr.store(new std::string("fallback"));
+        // Initialize scene change timestamp
+        auto now = std::chrono::system_clock::now();
+        auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+        g_scene_change_time_ms.store(ms_since_epoch);
     }
     
     // Create components
@@ -137,6 +144,11 @@ int main(int argc, char* argv[]) {
             return *scene_ptr;
         }
         return "unknown";
+    });
+    
+    // Register get scene timestamp callback
+    http_server.setGetSceneTimestampCallback([]() -> int64_t {
+        return g_scene_change_time_ms.load();
     });
     
     // CRITICAL: Set up InputSourceManager and callback for /input endpoint
@@ -240,7 +252,7 @@ int main(int argc, char* argv[]) {
         // Use global PTS offset as PTS for SPS/PPS
         auto sps_pps_packets = splicer.createSPSPPSPackets(sps, pps, fallback_info.video_pid,
                                                            splicer.getGlobalPTSOffset());
-        std::cout << "[Main] Injecting " << sps_pps_packets.size() << " SPS/PPS packets" << std::endl;
+        std::cout << "[Main] Injecting " << sps_pps_packets.size() << " camera SPS/PPS packets" << std::endl;
         for (auto& pkt : sps_pps_packets) {
             splicer.fixContinuityCounter(pkt);
             fifo_output.writePacket(pkt);
@@ -272,7 +284,7 @@ int main(int argc, char* argv[]) {
                 if (pts_dts_flags == 0x02 || pts_dts_flags == 0x03) {
                     uint64_t pts = ((uint64_t)(payload[9] & 0x0E) << 29) |
                                   ((uint64_t)(payload[10]) << 22) |
-                                  ((uint64_t)(payload[11] & 0xFE) << 14) |
+                                  ((uint8_t)(payload[11] & 0xFE) << 14) |
                                   ((uint64_t)(payload[12]) << 7) |
                                   ((uint64_t)(payload[13] >> 1));
                     max_pts = std::max(max_pts, pts);
@@ -313,9 +325,9 @@ int main(int argc, char* argv[]) {
                 if (requested == RequestedLiveSource::CAMERA) {
                     // Try camera first
                     if (camera_reader.isConnected() && camera_reader.isStreamReady() && camera_reader.isHealthy()) {
-                        std::cout << "[Main] ========================================" << std::endl;
+                        std::cout << "[Main] =======================================" << std::endl;
                         std::cout << "[Main] Camera became available - switching!" << std::endl;
-                        std::cout << "[Main] ========================================" << std::endl;
+                        std::cout << "[Main] =======================================" << std::endl;
                         
                         camera_reader.waitForStreamInfo();
                         camera_reader.waitForIDR();
@@ -384,35 +396,31 @@ int main(int argc, char* argv[]) {
                         
                         current_mode = Mode::CAMERA;
                         active_reader = &camera_reader;
-                        std::cout << "[Main] Switched to CAMERA mode" << std::endl;
                         
-                        // Update global scene and notify controller
+                        // Track timestamp update when switching from fallback to camera
                         {
                             std::lock_guard<std::mutex> lock(g_scene_mutex);
-                            std::string* old_scene = g_current_scene_ptr.load();
-                            g_current_scene_ptr.store(new std::string("live-camera"));
-                            delete old_scene;
+                            delete g_current_scene_ptr.load();
+                            g_current_scene_ptr.store(new std::string("live-camera")); // cameras are live
+                            
+                            // Update scene change timestamp
+                            auto now = std::chrono::system_clock::now();
+                            auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                            g_scene_change_time_ms.store(ms_since_epoch);
                         }
+                        
+                        std::cout << "[Main] Switched to CAMERA mode" << std::endl;
+                        std::cout << "[Main] Camera packets received: " << camera_reader.getPacketsReceived() << std::endl;
                         http_server.notifySceneChange("live-camera", g_controller_url);
                     }
                 } else if (requested == RequestedLiveSource::DRONE) {
                     // Try drone
-                    auto now_check = std::chrono::steady_clock::now();
-                    if (std::chrono::duration_cast<std::chrono::seconds>(now_check - last_drone_check_log).count() >= 10) {
-                        std::cout << "[Main] Checking drone availability..." << std::endl;
-                        std::cout << "[Main]   isConnected: " << drone_reader.isConnected() << std::endl;
-                        std::cout << "[Main]   isStreamReady: " << drone_reader.isStreamReady() << std::endl;
-                        std::cout << "[Main]   isHealthy: " << drone_reader.isHealthy() << std::endl;
-                        std::cout << "[Main]   DataAge: " << drone_reader.getMsSinceLastData() << "ms" << std::endl;
-                        std::cout << "[Main]   Bitrate: " << drone_reader.getCurrentBitrateBps() << " bps" << std::endl;
-                        last_drone_check_log = now_check;
-                    }
-                    
                     if (drone_reader.isConnected() && drone_reader.isStreamReady() && drone_reader.isHealthy()) {
-                        std::cout << "[Main] ========================================" << std::endl;
+                        std::cout << "[Main] =======================================" << std::endl;
                         std::cout << "[Main] Drone became available - switching!" << std::endl;
-                        std::cout << "[Main] ========================================" << std::endl;
+                        std::cout << "[Main] =======================================" << std::endl;
                         
+                        drone_reader.resetForNewLoop();
                         drone_reader.waitForStreamInfo();
                         drone_reader.waitForIDR();
                         drone_reader.waitForAudioSync();
@@ -480,136 +488,74 @@ int main(int argc, char* argv[]) {
                         
                         current_mode = Mode::DRONE;
                         active_reader = &drone_reader;
-                        std::cout << "[Main] Switched to DRONE mode" << std::endl;
                         
-                        // Update global scene and notify controller
+                        // Track timestamp update when switching from fallback to drone
                         {
                             std::lock_guard<std::mutex> lock(g_scene_mutex);
-                            std::string* old_scene = g_current_scene_ptr.load();
+                            delete g_current_scene_ptr.load();
                             g_current_scene_ptr.store(new std::string("live-drone"));
-                            delete old_scene;
-                        }
-                        http_server.notifySceneChange("live-drone", g_controller_url);
-                    }
-                    // NEW: Check if user wants CAMERA and camera is available (direct switch from DRONE to CAMERA)
-                    else if (g_requested_live_source.load() == RequestedLiveSource::CAMERA &&
-                             camera_reader.isConnected() && 
-                             camera_reader.isStreamReady() && 
-                             camera_reader.isHealthy()) {
-                        std::cout << "[Main] ========================================" << std::endl;
-                        std::cout << "[Main] User requested CAMERA - switching from DRONE!" << std::endl;
-                        std::cout << "[Main] ========================================" << std::endl;
-                        
-                        camera_reader.resetForNewLoop();
-                        camera_reader.waitForIDR();
-                        camera_reader.waitForAudioSync();
-                        
-                        if (!camera_reader.extractTimestampBases()) {
-                            std::cerr << "[Main] Failed to extract camera timestamp bases" << std::endl;
-                            continue;
-                        }
-                        
-                        // Get buffered packets from camera
-                        auto camera_packets = camera_reader.getBufferedPacketsFromAudioSync();
-                        std::cout << "[Main] Processing " << camera_packets.size() << " camera packets from audio sync" << std::endl;
-                        
-                        // Inject SPS/PPS
-                        std::vector<uint8_t> cam_sps = camera_reader.getSPSData();
-                        std::vector<uint8_t> cam_pps = camera_reader.getPPSData();
-                        StreamInfo camera_info = camera_reader.getStreamInfo();
-                        
-                        if (!cam_sps.empty() && !cam_pps.empty()) {
-                            auto sps_pps_pkt = splicer.createSPSPPSPackets(cam_sps, cam_pps, camera_info.video_pid,
-                                                                            splicer.getGlobalPTSOffset());
-                            std::cout << "[Main] Injecting " << sps_pps_pkt.size() << " camera SPS/PPS packets" << std::endl;
-                            for (auto& pkt : sps_pps_pkt) {
-                                splicer.fixContinuityCounter(pkt);
-                                fifo_output.writePacket(pkt);
-                            }
-                        }
-                        
-                        // Update bases for camera stream
-                        pts_base = camera_reader.getPTSBase();
-                        pcr_base = camera_reader.getPCRBase();
-                        pcr_pts_alignment = camera_reader.getPCRPTSAlignmentOffset();
-                        
-                        // Process camera packets
-                        uint64_t seg_max_pts = 0;
-                        uint64_t seg_max_pcr = 0;
-                        for (auto& pkt : camera_packets) {
-                            splicer.rebasePacket(pkt, pts_base, pcr_base, pcr_pts_alignment);
-                            splicer.fixContinuityCounter(pkt);
-                            fifo_output.writePacket(pkt);
-                            packets_processed++;
                             
-                            // Track max timestamps
-                            if (pkt.hasPCR()) seg_max_pcr = std::max(seg_max_pcr, pkt.getPCR());
-                            if (pkt.getPUSI() && pkt.hasPayload()) {
-                                size_t header_size = pkt.getHeaderSize();
-                                const uint8_t* payload = pkt.b + header_size;
-                                size_t payload_size = ts::PKT_SIZE - header_size;
-                                if (payload_size >= 14 && payload[0] == 0x00 && payload[1] == 0x00 && payload[2] == 0x01) {
-                                    uint8_t pts_dts_flags = (payload[7] >> 6) & 0x03;
-                                    if (pts_dts_flags == 0x02 || pts_dts_flags == 0x03) {
-                                        uint64_t pts = ((uint64_t)(payload[9] & 0x0E) << 29) |
-                                                      ((uint64_t)(payload[10]) << 22) |
-                                                      ((uint64_t)(payload[11] & 0xFE) << 14) |
-                                                      ((uint64_t)(payload[12]) << 7) |
-                                                      ((uint64_t)(payload[13] >> 1));
-                                        seg_max_pts = std::max(seg_max_pts, pts);
-                                    }
-                                }
-                            }
+                            // Update scene change timestamp
+                            auto now = std::chrono::system_clock::now();
+                            auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                            g_scene_change_time_ms.store(ms_since_epoch);
                         }
                         
-                        splicer.updateOffsetsFromMaxTimestamps(seg_max_pts, seg_max_pcr);
-                        camera_reader.initConsumptionFromIndex(camera_reader.getLastSnapshotEnd());
-                        
-                        current_mode = Mode::CAMERA;
-                        active_reader = &camera_reader;
-                        std::cout << "[Main] Switched to CAMERA mode" << std::endl;
-                        
-                        // Update global scene and notify controller
-                        {
-                            std::lock_guard<std::mutex> lock(g_scene_mutex);
-                            std::string* old_scene = g_current_scene_ptr.load();
-                            g_current_scene_ptr.store(new std::string("live-camera"));
-                            delete old_scene;
-                        }
-                        http_server.notifySceneChange("live-camera", g_controller_url);
+                        std::cout << "[Main] Switched to DRONE mode" << std::endl;
+                        std::cout << "[Main] Drone packets received: " << drone_reader.getPacketsReceived() << std::endl;
+                        http_server.notifySceneChange("live-drone", g_controller_url);
                     }
                 }
             }
-        } else if (current_mode == Mode::CAMERA) {
+        }
+        else if (current_mode == Mode::CAMERA) {
             // Check if privacy mode enabled (force switch to fallback) OR camera unhealthy
             bool camera_unhealthy = !camera_reader.isConnected() || !camera_reader.isStreamReady() || !camera_reader.isHealthy();
             
             if (g_privacy_mode_enabled.load() || camera_unhealthy) {
                 if (g_privacy_mode_enabled.load()) {
-                    std::cout << "[Main] ========================================" << std::endl;
-                    std::cout << "[Main] Privacy mode enabled - switching to fallback!" << std::endl;
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
+                    std::cout << "[Main] Camera became unavailable (privacy mode) - switching back to fallback!" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                 } else if (!camera_reader.isConnected()) {
-                    std::cout << "[Main] ========================================" << std::endl;
-                    std::cout << "[Main] Camera lost (disconnected) - switching to fallback!" << std::endl;
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
+                    std::cout << "[Main] Camera lost (disconnected) - switching back to fallback!" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                 } else if (!camera_reader.isDataFresh()) {
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                     std::cout << "[Main] Camera data stale (" << camera_reader.getMsSinceLastData()
-                              << "ms since last data) - switching to fallback!" << std::endl;
-                    std::cout << "[Main] ========================================" << std::endl;
+                              << "ms since last data) - switching back to fallback!" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                 } else if (health_config.min_bitrate_bps > 0 && camera_reader.getCurrentBitrateBps() < health_config.min_bitrate_bps) {
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                     std::cout << "[Main] Camera bitrate too low (" << camera_reader.getCurrentBitrateBps()
-                              << " bps < " << health_config.min_bitrate_bps << " bps) - switching to fallback!" << std::endl;
-                    std::cout << "[Main] ========================================" << std::endl;
+                              << " bps < " << health_config.min_bitrate_bps << " bps) - switching back to fallback!" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                 } else {
-                    std::cout << "[Main] ========================================" << std::endl;
-                    std::cout << "[Main] Camera unhealthy - switching to fallback!" << std:: endl;
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
+                    std::cout << "[Main] Camera unhealthy - switching back to fallback!" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                 }
                 
+                // Track timestamp update when switching from camera to fallback
+                {
+                    std::lock_guard<std::mutex> lock(g_scene_mutex);
+                    delete g_current_scene_ptr.load();
+                    g_current_scene_ptr.store(new std::string("fallback"));
+                    
+                    // Update scene change timestamp
+                    auto now = std::chrono::system_clock::now();
+                    auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                    g_scene_change_time_ms.store(ms_since_epoch);
+                    
+                    std::cout << "[Main] Switched back to FALLBACK mode" << std::endl;
+                    std::cout << "[Main] Camera packets received: " << camera_reader.getPacketsReceived() << std::endl;
+                    http_server.notifySceneChange("fallback", g_controller_url);
+                }
+                
+                // Reset for new loop
                 fallback_reader.resetForNewLoop();
+                fallback_reader.waitForStreamInfo();
                 fallback_reader.waitForIDR();
                 fallback_reader.waitForAudioSync();
                 
@@ -618,72 +564,8 @@ int main(int argc, char* argv[]) {
                     continue;
                 }
                 
-                // Get buffered packets from fallback
-                auto fb_packets = fallback_reader.getBufferedPacketsFromAudioSync();
-                std::cout << "[Main] Processing " << fb_packets.size() << " fallback packets from audio sync" << std::endl;
-                
-                // Inject SPS/PPS
-                std::vector<uint8_t> fb_sps = fallback_reader.getSPSData();
-                std::vector<uint8_t> fb_pps = fallback_reader.getPPSData();
-                
-                if (!fb_sps.empty() && !fb_pps.empty()) {
-                    auto sps_pps_pkt = splicer.createSPSPPSPackets(fb_sps, fb_pps, fallback_info.video_pid,
-                                                                    splicer.getGlobalPTSOffset());
-                    std::cout << "[Main] Injecting " << sps_pps_pkt.size() << " fallback SPS/PPS packets" << std::endl;
-                    for (auto& pkt : sps_pps_pkt) {
-                        splicer.fixContinuityCounter(pkt);
-                        fifo_output.writePacket(pkt);
-                    }
-                }
-                
-                // Update bases for fallback stream
-                pts_base = fallback_reader.getPTSBase();
-                pcr_base = fallback_reader.getPCRBase();
-                pcr_pts_alignment = fallback_reader.getPCRPTSAlignmentOffset();
-                
-                // Process fallback packets
-                uint64_t seg_max_pts = 0;
-                uint64_t seg_max_pcr = 0;
-                for (auto& pkt : fb_packets) {
-                    splicer.rebasePacket(pkt, pts_base, pcr_base, pcr_pts_alignment);
-                    splicer.fixContinuityCounter(pkt);
-                    fifo_output.writePacket(pkt);
-                    packets_processed++;
-                    
-                    // Track max timestamps
-                    if (pkt.hasPCR()) seg_max_pcr = std::max(seg_max_pcr, pkt.getPCR());
-                    if (pkt.getPUSI() && pkt.hasPayload()) {
-                        size_t header_size = pkt.getHeaderSize();
-                        const uint8_t* payload = pkt.b + header_size;
-                        size_t payload_size = ts::PKT_SIZE - header_size;
-                        if (payload_size >= 14 && payload[0] == 0x00 && payload[1] == 0x00 && payload[2] == 0x01) {
-                            uint8_t pts_dts_flags = (payload[7] >> 6) & 0x03;
-                            if (pts_dts_flags == 0x02 || pts_dts_flags == 0x03) {
-                                uint64_t pts = ((uint64_t)(payload[9] & 0x0E) << 29) |
-                                              ((uint64_t)(payload[10]) << 22) |
-                                              ((uint64_t)(payload[11] & 0xFE) << 14) |
-                                              ((uint64_t)(payload[12]) << 7) |
-                                              ((uint64_t)(payload[13] >> 1));
-                                seg_max_pts = std::max(seg_max_pts, pts);
-                            }
-                        }
-                    }
-                }
-                
-                splicer.updateOffsetsFromMaxTimestamps(seg_max_pts, seg_max_pcr);
-                fallback_reader.initConsumptionFromIndex(fallback_reader.getLastSnapshotEnd());
-                
-                current_mode = Mode::FALLBACK;
-                active_reader = &fallback_reader;
                 std::cout << "[Main] Switched to FALLBACK mode" << std::endl;
-                
-                // Update global scene and notify controller
-                {
-                    std::lock_guard<std::mutex> lock(g_scene_mutex);
-                    std::string* old_scene = g_current_scene_ptr.load();
-                    g_current_scene_ptr.store(new std::string("fallback"));
-                    delete old_scene;
-                }
+                std::cout << "[Main] Camera packets received: " << camera_reader.getPacketsReceived() << std::endl;
                 http_server.notifySceneChange("fallback", g_controller_url);
             }
             // NEW: Check if user wants DRONE and drone is available (direct switch from CAMERA to DRONE)
@@ -691,11 +573,12 @@ int main(int argc, char* argv[]) {
                      drone_reader.isConnected() && 
                      drone_reader.isStreamReady() && 
                      drone_reader.isHealthy()) {
-                std::cout << "[Main] ========================================" << std::endl;
+                std::cout << "[Main] =======================================" << std::endl;
                 std::cout << "[Main] User requested DRONE - switching from CAMERA!" << std::endl;
-                std::cout << "[Main] ========================================" << std::endl;
+                std::cout << "[Main] =======================================" << std::endl;
                 
                 drone_reader.resetForNewLoop();
+                drone_reader.waitForStreamInfo();
                 drone_reader.waitForIDR();
                 drone_reader.waitForAudioSync();
                 
@@ -763,15 +646,23 @@ int main(int argc, char* argv[]) {
                 current_mode = Mode::DRONE;
                 active_reader = &drone_reader;
                 std::cout << "[Main] Switched to DRONE mode" << std::endl;
+                std::cout << "[Main] Drone packets received: " << drone_reader.getPacketsReceived() << std::endl;
                 
-                // Update global scene and notify controller
+                // Track timestamp update when switching from camera to drone
                 {
                     std::lock_guard<std::mutex> lock(g_scene_mutex);
-                    std::string* old_scene = g_current_scene_ptr.load();
+                    delete g_current_scene_ptr.load();
                     g_current_scene_ptr.store(new std::string("live-drone"));
-                    delete old_scene;
+                    
+                    // Update scene change timestamp
+                    auto now = std::chrono::system_clock::now();
+                    auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                    g_scene_change_time_ms.store(ms_since_epoch);
+                    
+                    std::cout << "[Main] Switched to LIVE-DRONE mode" << std::endl;
+                    std::cout << "[Main] Drone packets received: " << drone_reader.getPacketsReceived() << std::endl;
+                    http_server.notifySceneChange("live-drone", g_controller_url);
                 }
-                http_server.notifySceneChange("live-drone", g_controller_url);
             }
         } else if (current_mode == Mode::DRONE) {
             // Check if privacy mode enabled (force switch to fallback) OR drone unhealthy
@@ -780,30 +671,48 @@ int main(int argc, char* argv[]) {
             if (g_privacy_mode_enabled.load() || drone_unhealthy) {
                 
                 if (g_privacy_mode_enabled.load()) {
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                     std::cout << "[Main] Privacy mode enabled - switching to fallback!" << std::endl;
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                 } else if (!drone_reader.isConnected()) {
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                     std::cout << "[Main] Drone lost (disconnected) - switching to fallback!" << std::endl;
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                 } else if (!drone_reader.isDataFresh()) {
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                     std::cout << "[Main] Drone data stale (" << drone_reader.getMsSinceLastData()
                               << "ms since last data) - switching to fallback!" << std::endl;
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                 } else if (health_config.min_bitrate_bps > 0 && drone_reader.getCurrentBitrateBps() < health_config.min_bitrate_bps) {
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                     std::cout << "[Main] Drone bitrate too low (" << drone_reader.getCurrentBitrateBps()
                               << " bps < " << health_config.min_bitrate_bps << " bps) - switching to fallback!" << std::endl;
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                 } else {
-                    std::cout << "[Main] ========================================" << std::endl;
-                    std::cout << "[Main] Drone unhealthy - switching to fallback!" << std:: endl;
-                    std::cout << "[Main] ========================================" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
+                    std::cout << "[Main] Drone unhealthy - switching to fallback!" << std::endl;
+                    std::cout << "[Main] =======================================" << std::endl;
                 }
                 
+                // Track timestamp update when switching from camera to fallback
+                {
+                    std::lock_guard<std::mutex> lock(g_scene_mutex);
+                    delete g_current_scene_ptr.load();
+                    g_current_scene_ptr.store(new std::string("fallback"));
+                    
+                    // Update scene change timestamp
+                    auto now = std::chrono::system_clock::now();
+                    auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                    g_scene_change_time_ms.store(ms_since_epoch);
+                    
+                    std::cout << "[Main] Switched to FALLBACK mode" << std::endl;
+                    std::cout << "[Main] Camera packets received: " << camera_reader.getPacketsReceived() << std::endl;
+                    http_server.notifySceneChange("fallback", g_controller_url);
+                }
+                
+                // Reset for new loop
                 fallback_reader.resetForNewLoop();
+                fallback_reader.waitForStreamInfo();
                 fallback_reader.waitForIDR();
                 fallback_reader.waitForAudioSync();
                 
@@ -812,259 +721,28 @@ int main(int argc, char* argv[]) {
                     continue;
                 }
                 
-                // Get buffered packets from fallback
-                auto fb_packets = fallback_reader.getBufferedPacketsFromAudioSync();
-                std::cout << "[Main] Processing " << fb_packets.size() << " fallback packets from audio sync" << std::endl;
-                
-                // Inject SPS/PPS
-                std::vector<uint8_t> fb_sps = fallback_reader.getSPSData();
-                std::vector<uint8_t> fb_pps = fallback_reader.getPPSData();
-                
-                if (!fb_sps.empty() && !fb_pps.empty()) {
-                    auto sps_pps_pkt = splicer.createSPSPPSPackets(fb_sps, fb_pps, fallback_info.video_pid,
-                                                                    splicer.getGlobalPTSOffset());
-                    std::cout << "[Main] Injecting " << sps_pps_pkt.size() << " fallback SPS/PPS packets" << std::endl;
-                    for (auto& pkt : sps_pps_pkt) {
-                        splicer.fixContinuityCounter(pkt);
-                        fifo_output.writePacket(pkt);
-                    }
-                }
-                
-                // Update bases for fallback stream
-                pts_base = fallback_reader.getPTSBase();
-                pcr_base = fallback_reader.getPCRBase();
-                pcr_pts_alignment = fallback_reader.getPCRPTSAlignmentOffset();
-                
-                // Process fallback packets
-                uint64_t seg_max_pts = 0;
-                uint64_t seg_max_pcr = 0;
-                for (auto& pkt : fb_packets) {
-                    splicer.rebasePacket(pkt, pts_base, pcr_base, pcr_pts_alignment);
-                    splicer.fixContinuityCounter(pkt);
-                    fifo_output.writePacket(pkt);
-                    packets_processed++;
-                    
-                    // Track max timestamps
-                    if (pkt.hasPCR()) seg_max_pcr = std::max(seg_max_pcr, pkt.getPCR());
-                    if (pkt.getPUSI() && pkt.hasPayload()) {
-                        size_t header_size = pkt.getHeaderSize();
-                        const uint8_t* payload = pkt.b + header_size;
-                        size_t payload_size = ts::PKT_SIZE - header_size;
-                        if (payload_size >= 14 && payload[0] == 0x00 && payload[1] == 0x00 && payload[2] == 0x01) {
-                            uint8_t pts_dts_flags = (payload[7] >> 6) & 0x03;
-                            if (pts_dts_flags == 0x02 || pts_dts_flags == 0x03) {
-                                uint64_t pts = ((uint64_t)(payload[9] & 0x0E) << 29) |
-                                              ((uint64_t)(payload[10]) << 22) |
-                                              ((uint64_t)(payload[11] & 0xFE) << 14) |
-                                              ((uint64_t)(payload[12]) << 7) |
-                                              ((uint64_t)(payload[13] >> 1));
-                                seg_max_pts = std::max(seg_max_pts, pts);
-                            }
-                        }
-                    }
-                }
-                
-                splicer.updateOffsetsFromMaxTimestamps(seg_max_pts, seg_max_pcr);
-                fallback_reader.initConsumptionFromIndex(fallback_reader.getLastSnapshotEnd());
-                
-                current_mode = Mode::FALLBACK;
-                active_reader = &fallback_reader;
                 std::cout << "[Main] Switched to FALLBACK mode" << std::endl;
-                
-                // Update global scene and notify controller
-                {
-                    std::lock_guard<std::mutex> lock(g_scene_mutex);
-                    std::string* old_scene = g_current_scene_ptr.load();
-                    g_current_scene_ptr.store(new std::string("fallback"));
-                    delete old_scene;
-                }
+                std::cout << "[Main] Camera packets received: " << camera_reader.getPacketsReceived() << std::endl;
                 http_server.notifySceneChange("fallback", g_controller_url);
             }
-            else if (g_requested_live_source.load() == RequestedLiveSource::CAMERA &&
-                     camera_reader.isConnected() && 
-                     camera_reader.isStreamReady() && 
-                     camera_reader.isHealthy()) {
-            std::cout << "[Main] ========================================" << std::endl;
-            std::cout << "[Main] User requested CAMERA - switching from DRONE!" << std::endl;
-            std::cout << "[Main] ========================================" << std::endl;
-            
-            camera_reader.resetForNewLoop();
-            camera_reader.waitForIDR();
-            camera_reader.waitForAudioSync();
-            
-            if (!camera_reader.extractTimestampBases()) {
-                std::cerr << "[Main] Failed to extract camera timestamp bases" << std::endl;
-                continue;
-            }
-            
-            // Get buffered packets from camera
-            auto camera_packets = camera_reader.getBufferedPacketsFromAudioSync();
-            std::cout << "[Main] Processing " << camera_packets.size() << " camera packets from audio sync" << std::endl;
-            
-            // Inject SPS/PPS
-            std::vector<uint8_t> cam_sps = camera_reader.getSPSData();
-            std::vector<uint8_t> cam_pps = camera_reader.getPPSData();
-            StreamInfo camera_info = camera_reader.getStreamInfo();
-            
-            if (!cam_sps.empty() && !cam_pps.empty()) {
-                auto sps_pps_pkt = splicer.createSPSPPSPackets(cam_sps, cam_pps, camera_info.video_pid,
-                                                                splicer.getGlobalPTSOffset());
-                std::cout << "[Main] Injecting " << sps_pps_pkt.size() << " camera SPS/PPS packets" << std::endl;
-                for (auto& pkt : sps_pps_pkt) {
-                    splicer.fixContinuityCounter(pkt);
-                    fifo_output.writePacket(pkt);
-                }
-            }
-            
-            // Update bases for camera stream
-            pts_base = camera_reader.getPTSBase();
-            pcr_base = camera_reader.getPCRBase();
-            pcr_pts_alignment = camera_reader.getPCRPTSAlignmentOffset();
-            
-            // Process camera packets
-            uint64_t seg_max_pts = 0;
-            uint64_t seg_max_pcr = 0;
-            for (auto& pkt : camera_packets) {
-                splicer.rebasePacket(pkt, pts_base, pcr_base, pcr_pts_alignment);
-                splicer.fixContinuityCounter(pkt);
-                fifo_output.writePacket(pkt);
-                packets_processed++;
-                
-                // Track max timestamps
-                if (pkt.hasPCR()) seg_max_pcr = std::max(seg_max_pcr, pkt.getPCR());
-                if (pkt.getPUSI() && pkt.hasPayload()) {
-                    size_t header_size = pkt.getHeaderSize();
-                    const uint8_t* payload = pkt.b + header_size;
-                    size_t payload_size = ts::PKT_SIZE - header_size;
-                    if (payload_size >= 14 && payload[0] == 0x00 && payload[1] == 0x00 && payload[2] == 0x01) {
-                        uint8_t pts_dts_flags = (payload[7] >> 6) & 0x03;
-                        if (pts_dts_flags == 0x02 || pts_dts_flags == 0x03) {
-                            uint64_t pts = ((uint64_t)(payload[9] & 0x0E) << 29) |
-                                          ((uint64_t)(payload[10]) << 22) |
-                                          ((uint64_t)(payload[11] & 0xFE) << 14) |
-                                          ((uint64_t)(payload[12]) << 7) |
-                                          ((uint64_t)(payload[13] >> 1));
-                            seg_max_pts = std::max(seg_max_pts, pts);
-                        }
-                    }
-                }
-            }
-            
-            splicer.updateOffsetsFromMaxTimestamps(seg_max_pts, seg_max_pcr);
-            camera_reader.initConsumptionFromIndex(camera_reader.getLastSnapshotEnd());
-            
-            current_mode = Mode::CAMERA;
-            active_reader = &camera_reader;
-            std::cout << "[Main] Switched to CAMERA mode" << std::endl;
-            
-            // Update global scene and notify controller
-            {
-                std::lock_guard<std::mutex> lock(g_scene_mutex);
-                std::string* old_scene = g_current_scene_ptr.load();
-                g_current_scene_ptr.store(new std::string("live-camera"));
-                delete old_scene;
-            }
-            http_server.notifySceneChange("live-camera", g_controller_url);
         }
         
-        }
-        // Receive and process packets from active stream
-        auto packets = active_reader->receivePackets(100, 100);
-        
-        if (!packets.empty()) {
-            for (auto& pkt : packets) {
-                splicer.rebasePacket(pkt, pts_base, pcr_base, pcr_pts_alignment);
-                splicer.fixContinuityCounter(pkt);
-                                
-                // CC VERIFICATION: Check CC was correctly set
-                ts::PID pid = pkt.getPID();
-                if (pkt.hasPayload()) {
-                    cc_verifications++;
-                    uint8_t current_cc = pkt.getCC();
-                    
-                    if (last_cc_values.find(pid) != last_cc_values.end()) {
-                        uint8_t expected_cc = (last_cc_values[pid] + 1) & 0x0F;
-                        if (current_cc != expected_cc) {
-                            cc_discontinuities++;
-                            std::cerr << "[CC-ERROR] PID=" << pid << " expected CC=" << (int)expected_cc
-                                      << ", got CC=" << (int)current_cc
-                                      << " (discontinuity #" << cc_discontinuities << ")" << std::endl;
-                        }
-                    }
-                    last_cc_values[pid] = current_cc;
-                    
-                    // Log first 20 packets to verify CC sequence
-                    if (cc_verifications <= 20) {
-                        std::cerr << "[CC-TRACE] Packet #" << cc_verifications
-                                  << ": PID=" << pid << ", CC=" << (int)current_cc << std::endl;
-                    }
-                }
-                
-                fifo_output.writePacket(pkt);
-                packets_processed++;
-            }
+        // Read and process packets from active reader
+        auto packets = active_reader->receivePackets(100, 10);
+        for (auto& pkt : packets) {
+            splicer.fixContinuityCounter(pkt);
+            fifo_output.writePacket(pkt);
+            packets_processed++;
         }
         
         // Periodic logging
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - last_log).count() >= 10) {
-            std::string mode_str = (current_mode == Mode::CAMERA ? "CAMERA" :
-                                   (current_mode == Mode::DRONE ? "DRONE" : "FALLBACK"));
-            std::cout << "[Main] Processed " << packets_processed << " packets, Mode: "
-                      << mode_str << std::endl;
-            
-            // Log health status for all inputs
-            std::cout << "[Main] === Input Health Status ===" << std::endl;
-            std::string requested_str = (g_requested_live_source.load() == RequestedLiveSource::CAMERA ? "CAMERA" : "DRONE");
-            std::cout << "[Main] DesiredInput: " << requested_str
-                      << ", PrivacyMode: " << (g_privacy_mode_enabled.load() ? "ENABLED" : "DISABLED") << std::endl;
-            std::cout << "[Main] Camera - Connected: " << camera_reader.isConnected()
-                      << ", StreamReady: " << camera_reader.isStreamReady()
-                      << ", Healthy: " << camera_reader.isHealthy()
-                      << ", DataAge: " << camera_reader.getMsSinceLastData() << "ms"
-                      << ", Bitrate: " << camera_reader.getCurrentBitrateBps() << " bps" << std::endl;
-            std::cout << "[Main] Drone - Connected: " << drone_reader.isConnected()
-                      << ", StreamReady: " << drone_reader.isStreamReady()
-                      << ", Healthy: " << drone_reader.isHealthy()
-                      << ", DataAge: " << drone_reader.getMsSinceLastData() << "ms"
-                      << ", Bitrate: " << drone_reader.getCurrentBitrateBps() << " bps" << std::endl;
-            std::cout << "[Main] Fallback - Connected: " << fallback_reader.isConnected()
-                      << ", StreamReady: " << fallback_reader.isStreamReady()
-                      << ", Healthy: " << fallback_reader.isHealthy()
-                      << ", DataAge: " << fallback_reader.getMsSinceLastData() << "ms"
-                      << ", Bitrate: " << fallback_reader.getCurrentBitrateBps() << " bps" << std::endl;
-            
+            std::cout << "[Main] Packets processed: " << packets_processed << std::endl;
             last_log = now;
         }
     }
     
-    std::cout << "\n[Main] Shutting down..." << std::endl;
-    
-    // Cleanup
-    http_server.stop();
-    camera_reader.stop();
-    drone_reader.stop();
-    fallback_reader.stop();
-    fifo_output.close();
-    
-    std::cout << "[Main] Final statistics:" << std::endl;
-    std::cout << "  Packets processed: " << packets_processed << std::endl;
-    std::cout << "  Camera packets received: " <<  camera_reader.getPacketsReceived() << std::endl;
-    std::cout << "  Drone packets received: " << drone_reader.getPacketsReceived() << std::endl;
-    std::cout << "  Fallback packets received: " << fallback_reader.getPacketsReceived() << std::endl;
-    std::cout << "  Output packets written: " << fifo_output.getPacketsWritten() << std::endl;
-       std::cout << "\n[Main] CC Verification Statistics:" << std::endl;
-    std::cout << "  Total CC verifications: " << cc_verifications << std::endl;
-    std::cout << "  CC discontinuities detected: " << cc_discontinuities << std::endl;
-    if (cc_verifications > 0) {
-        std::cout << "  CC error rate: " << (100.0 * cc_discontinuities / cc_verifications) << "%" << std::endl;
-    }
-    if (cc_discontinuities == 0) {
-        std::cout << "  ✓ All CC values were sequential (no discontinuities)" << std::endl;
-    } else {
-        std::cerr << "  ✗ WARNING: CC discontinuities indicate a bug in CC management!" << std::endl;
-    }
-    std::cout << "[Main] Shutdown complete" << std::endl;
-    
+    std::cout << "[Main] Shutting down..." << std::endl;
     return 0;
 }

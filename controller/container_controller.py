@@ -98,7 +98,7 @@ class ScenePrivacyManager:
             print(f"[scene-privacy] Error saving privacy state: {e}", file=sys.stderr)
     
     def _notify_multiplexer(self, enabled):
-        """Notify the multiplexer about privacy mode change via HTTP callback."""
+        """Notify the multiplexer about privacy mode change via HTTP call."""
         def do_notify():
             try:
                 url = f"{self.multiplexer_url}/privacy"
@@ -152,11 +152,11 @@ class ScenePrivacyManager:
         with self._lock:
             return self._privacy_enabled
     
-    def set_scene(self, scene):
+    def set_scene(self, scene, timestamp_iso=None):
         """Set the current scene (called by multiplexer)."""
         with self._lock:
             old_scene = self._current_scene
-            print(f"[scene_change_debug] set_scene called: old={old_scene}, new={scene}", flush=True)
+            print(f"[scene_change_debug] set_scene called: old={old_scene}, new={scene}, ts={timestamp_iso}", flush=True)
             if old_scene != scene:
                 self._current_scene = scene
                 self._scene_timestamp = datetime.utcnow()
@@ -167,6 +167,7 @@ class ScenePrivacyManager:
                 self._trigger_change_callbacks('scene_change', {
                     'previous_scene': old_scene,
                     'current_scene': scene,
+                    'timestamp_iso': timestamp_iso,
                     'timestamp': self._scene_timestamp.isoformat() + 'Z'
                 })
                 return True
@@ -236,7 +237,8 @@ class ScenePrivacyManager:
                     result = response.read().decode('utf-8')
                     data = json.loads(result)
                     scene = data.get('scene', 'unknown')
-                    print(f"[startup-debug] Multiplexer responded with scene: {scene}", flush=True)
+                    timestamp_iso = data.get('scene_started_at')
+                    print(f"[startup-debug] Multiplexer responded with scene: {scene}, timestamp: {timestamp_iso}", flush=True)
                     
                     # Map multiplexer scene format to controller format
                     if scene in ['live', 'live-camera', 'live-drone']:
@@ -246,8 +248,8 @@ class ScenePrivacyManager:
                     else:
                         mapped_scene = 'unknown'
                     
-                    # Update scene if a changed
-                    self.set_scene(scene)
+                    # Update scene with timestamp if available
+                    self.set_scene(scene, timestamp_iso)
                     
             except urllib.error.URLError as e:
                 print(f"[startup-debug] URLError querying multiplexer: {e}", flush=True)
@@ -1615,7 +1617,44 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path_parts = parsed.path.strip("/").split("/")
         
-        # Scene notification from multiplexer: POST /scene/live or /scene/fallback
+        # Scene notification from multiplexer: POST /scene with JSON body
+        if len(path_parts) == 1 and path_parts[0] == "scene":
+            try:
+                # Read and parse JSON body
+                body = self._read_request_body()
+                scene = body.get('scene', '').lower()
+                timestamp_iso = body.get('timestamp')
+                
+                if not scene:
+                    self.send_json({"error": "Missing 'scene' in request body"}, 400)
+                    return
+                
+                # Map to controller format
+                if scene in ['live', 'live-camera', 'live-drone']:
+                    mapped_scene = 'LIVE'
+                elif scene == 'fallback':
+                    mapped_scene = 'FALLBACK'
+                else:
+                    self.send_json({"error": f"Invalid scene: {scene}"}, 400)
+                    return
+                
+                print(f"[http] Scene notification from multiplexer: {scene} -> {mapped_scene}, timestamp: {timestamp_iso}", flush=True)
+                print(f"[scene_change_debug] HTTP received POST /scene with scene={scene}, timestamp={timestamp_iso}, mapping to {mapped_scene}", flush=True)
+                changed = scene_privacy_manager.set_scene(mapped_scene, timestamp_iso)
+                print(f"[scene_change_debug] set_scene returned changed={changed}", flush=True)
+                self.send_json({
+                    "status": "ok",
+                    "scene": mapped_scene,
+                    "original_scene": scene,
+                    "changed": changed
+                })
+                return
+            except json.JSONDecodeError as e:
+                print(f"[http] Failed to parse JSON body: {e}", file=sys.stderr)
+                self.send_json({"error": "Invalid JSON in request body"}, 400)
+                return
+        
+        # Legacy support: POST /scene/live or /scene/fallback (without JSON body) 
         if len(path_parts) == 2 and path_parts[0] == "scene":
             scene = path_parts[1].lower()  # Get scene in lowercase: live-camera, live-drone, fallback
             
@@ -1628,8 +1667,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"Invalid scene: {scene}"}, 400)
                 return
             
-            print(f"[http] Scene notification from multiplexer: {scene} -> {mapped_scene}")
-            print(f"[scene_change_debug] HTTP received POST /scene/{scene}, mapping to {mapped_scene}", flush=True)
+            print(f"[http] Legacy scene notification (no timestamp): {scene} -> {mapped_scene}", flush=True)
+            print(f"[scene_change_debug] HTTP received legacy POST /scene/{scene}, mapping to {mapped_scene}", flush=True)
             changed = scene_privacy_manager.set_scene(mapped_scene)
             print(f"[scene_change_debug] set_scene returned changed={changed}", flush=True)
             self.send_json({
@@ -1700,7 +1739,7 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"[http] ERROR: {error['error']}", file=sys.stderr)
                 self.send_json(error, 500)
             except Exception as e:
-                error = {"error": f"Unexpected error: {str(e)}"}
+                error = {"error": str(e)}
                 print(f"[http] ERROR: {error['error']}", file=sys.stderr)
                 self.send_json(error, 500)
         else:

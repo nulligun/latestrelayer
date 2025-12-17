@@ -27,6 +27,7 @@ class ControllerWebSocketClient extends EventEmitter {
     // Scene and privacy state from controller
     this.currentScene = 'unknown';
     this.privacyEnabled = false;
+    this.sceneStartedAt = null;  // ISO8601 timestamp string
     
     console.log(`[controller-ws] Initialized with URL: ${this.wsUrl}`);
   }
@@ -123,6 +124,10 @@ class ControllerWebSocketClient extends EventEmitter {
           this.privacyEnabled = message.privacy_enabled;
           console.log(`[controller-ws][startup-debug] Set privacyEnabled to: ${this.privacyEnabled}`);
         }
+        if (message.scene_timestamp !== undefined) {
+          this.sceneStartedAt = message.scene_timestamp;
+          console.log(`[controller-ws][startup-debug] Set sceneStartedAt to: ${this.sceneStartedAt}`);
+        }
         console.log(`[controller-ws][startup-debug] Emitting 'initial_state' event to server.js`);
         this.emit('initial_state', message);
         break;
@@ -161,12 +166,17 @@ class ControllerWebSocketClient extends EventEmitter {
         if (message.privacy_enabled !== undefined) {
           this.privacyEnabled = message.privacy_enabled;
         }
-        console.log(`[scene_change_debug] Emitting scene_change event with currentScene=${this.currentScene}`);
+        // Update sceneStartedAt from the timestamp in the message
+        if (message.timestamp !== undefined) {
+          this.sceneStartedAt = message.timestamp;
+        }
+        console.log(`[scene_change_debug] Emitting scene_change event with currentScene=${this.currentScene}, sceneStartedAt=${this.sceneStartedAt}`);
         this.emit('scene_change', {
           currentScene: this.currentScene,
           privacyEnabled: this.privacyEnabled,
           changeData: message.change_data,
-          timestamp: message.timestamp
+          timestamp: message.timestamp,
+          sceneStartedAt: this.sceneStartedAt
         });
         break;
         
@@ -324,7 +334,8 @@ class ControllerWebSocketClient extends EventEmitter {
   getSceneState() {
     return {
       currentScene: this.currentScene,
-      privacyEnabled: this.privacyEnabled
+      privacyEnabled: this.privacyEnabled,
+      sceneStartedAt: this.sceneStartedAt
     };
   }
 }

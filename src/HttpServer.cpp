@@ -2,6 +2,7 @@
 #include "InputSourceManager.h"
 #include <iostream>
 #include <sstream>
+#include <iomanip>
 #include <cstring>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -13,6 +14,8 @@
 #include <thread>
 #include <sys/types.h>
 #include <netdb.h>
+#include <chrono>
+#include <time.h>
 
 HttpServer::HttpServer(uint16_t port)
     : port_(port),
@@ -126,11 +129,51 @@ void HttpServer::setGetCurrentSceneCallback(GetCurrentSceneCallback callback) {
     std::cout << "[HttpServer][startup-debug] setGetCurrentSceneCallback called - callback is " << (get_current_scene_callback_ ? "SET" : "NULL") << std::endl;
 }
 
+void HttpServer::setGetSceneTimestampCallback(GetSceneTimestampCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    get_scene_timestamp_callback_ = std::move(callback);
+    std::cout << "[HttpServer] setGetSceneTimestampCallback called - callback is " << (get_scene_timestamp_callback_ ? "SET" : "NULL") << std::endl;
+}
+
 void HttpServer::notifySceneChange(const std::string& scene, const std::string& controllerUrl) {
     // Send HTTP POST in a background thread to avoid blocking
-    std::thread([scene, controllerUrl]() {
+    // Capture scene timestamp callback by reference
+    std::thread([this, scene, controllerUrl]() {
         try {
             std::cout << "[HttpServer] Notifying controller of scene change: " << scene << std::endl;
+            
+            // Get scene timestamp
+            int64_t timestamp_ms = 0;
+            {
+                std::lock_guard<std::mutex> lock(callback_mutex_);
+                if (get_scene_timestamp_callback_) {
+                    timestamp_ms = get_scene_timestamp_callback_();
+                }
+            }
+            
+            // Convert timestamp to ISO8601 format
+            std::string iso_timestamp;
+            if (timestamp_ms > 0) {
+                auto tp = std::chrono::system_clock::time_point(std::chrono::milliseconds(timestamp_ms));
+                std::time_t time = std::chrono::system_clock::to_time_t(tp);
+                std::tm tm;
+                gmtime_r(&time, &tm);
+                char buffer[32];
+                std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &tm);
+                int millis = timestamp_ms % 1000;
+                std::ostringstream oss;
+                oss << buffer << "." << std::setfill('0') << std::setw(3) << millis << "Z";
+                iso_timestamp = oss.str();
+            } else {
+                // Fallback to current time if timestamp not available
+                auto now = std::chrono::system_clock::now();
+                std::time_t time = std::chrono::system_clock::to_time_t(now);
+                std::tm tm;
+                gmtime_r(&time, &tm);
+                char buffer[32];
+                std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S.000Z", &tm);
+                iso_timestamp = buffer;
+            }
             
             // Parse controller URL to get host and port
             std::string host;
@@ -188,14 +231,20 @@ void HttpServer::notifySceneChange(const std::string& scene, const std::string& 
                 return;
             }
             
-            // Build HTTP POST request
-            std::string path = "/scene/" + scene;
+            // Build JSON body
+            std::ostringstream body_stream;
+            body_stream << "{\"scene\": \"" << scene << "\", \"timestamp\": \"" << iso_timestamp << "\"}";
+            std::string body = body_stream.str();
+            
+            // Build HTTP POST request with JSON body
             std::ostringstream request;
-            request << "POST " << path << " HTTP/1.1\r\n"
+            request << "POST /scene HTTP/1.1\r\n"
                     << "Host: " << host << "\r\n"
-                    << "Content-Length: 0\r\n"
+                    << "Content-Type: application/json\r\n"
+                    << "Content-Length: " << body.length() << "\r\n"
                     << "Connection: close\r\n"
-                    << "\r\n";
+                    << "\r\n"
+                    << body;
             
             std::string request_str = request.str();
             
@@ -536,11 +585,42 @@ std::string HttpServer::handleRequest(const std::string& method, const std::stri
                 std::cout << "[HttpServer][startup-debug] Calling get_current_scene_callback_" << std::endl;
                 std::string current_scene = get_current_scene_callback_();
                 std::cout << "[HttpServer][startup-debug] get_current_scene_callback_ returned: " << current_scene << std::endl;
-                response_body << "{\"scene\": \"" << current_scene << "\"}";
+                
+                // Get scene timestamp if available
+                int64_t timestamp_ms = 0;
+                if (get_scene_timestamp_callback_) {
+                    timestamp_ms = get_scene_timestamp_callback_();
+                }
+                
+                // Convert timestamp to ISO8601 format
+                std::string iso_timestamp;
+                if (timestamp_ms > 0) {
+                    auto tp = std::chrono::system_clock::time_point(std::chrono::milliseconds(timestamp_ms));
+                    std::time_t time = std::chrono::system_clock::to_time_t(tp);
+                    std::tm tm;
+                    gmtime_r(&time, &tm);
+                    char buffer[32];
+                    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &tm);
+                    int millis = timestamp_ms % 1000;
+                    std::ostringstream oss;
+                    oss << buffer << "." << std::setfill('0') << std::setw(3) << millis << "Z";
+                    iso_timestamp = oss.str();
+                } else {
+                    // Fallback to current time if timestamp not available
+                    auto now = std::chrono::system_clock::now();
+                    std::time_t time = std::chrono::system_clock::to_time_t(now);
+                    std::tm tm;
+                    gmtime_r(&time, &tm);
+                    char buffer[32];
+                    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S.000Z", &tm);
+                    iso_timestamp = buffer;
+                }
+                
+                response_body << "{\"scene\": \"" << current_scene << "\", \"scene_started_at\": \"" << iso_timestamp << "\"}";
             } else {
-                // No callback set - return unknown
+                // No callback set - return unknown  
                 std::cout << "[HttpServer][startup-debug] WARNING: get_current_scene_callback_ is NULL, returning unknown" << std::endl;
-                response_body << "{\"scene\": \"unknown\"}";
+                response_body << "{\"scene\": \"unknown\", \"scene_started_at\": null}";
             }
         }
         
