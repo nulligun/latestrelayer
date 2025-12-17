@@ -8,6 +8,7 @@
 #   - Audio: Stereo AAC at 48 kHz (silent)
 #   - Duration: 30 seconds
 #   - Visual: Black background with yellow "BRB..." text centered
+#   - H.264 Profile: Main profile, Level 3.1 (browser-compatible)
 #
 
 set -e
@@ -62,7 +63,7 @@ if [ -z "$FONTFILE" ]; then
     echo "Warning: No suitable font found, generating video without text overlay"
     ffmpeg -f lavfi -i color=c=black:s=1280x720:r=30 \
       -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
-      -c:v libx264 -b:v 3M -maxrate 3M -bufsize 6M -r 30 -pix_fmt yuv420p \
+      -c:v libx264 -profile:v main -level 3.1 -b:v 3M -maxrate 3M -bufsize 6M -r 30 -pix_fmt yuv420p \
       -c:a aac -ac 2 -ar 48000 \
       -t 30 \
       -y \
@@ -72,7 +73,7 @@ else
     ffmpeg -f lavfi -i color=c=black:s=1280x720:r=30 \
       -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
       -vf "drawtext=fontfile='$FONTFILE':text='BRB...':fontcolor=yellow:fontsize=72:x=(w-text_w)/2:y=(h-text_h)/2" \
-      -c:v libx264 -b:v 3M -maxrate 3M -bufsize 6M -r 30 -pix_fmt yuv420p \
+      -c:v libx264 -profile:v main -level 3.1 -b:v 3M -maxrate 3M -bufsize 6M -r 30 -pix_fmt yuv420p \
       -c:a aac -ac 2 -ar 48000 \
       -t 30 \
       -y \

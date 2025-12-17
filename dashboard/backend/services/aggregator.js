@@ -47,12 +47,6 @@ class AggregatorService {
     // Fallback config path
     this.fallbackConfigPath = '/app/shared/fallback_config.json';
     
-    // Stream status tracking - now using controller state via WebSocket
-    this.streamStatus = {
-      currentScene: 'unknown',
-      stateChangeTimestamp: Date.now()
-    };
-    
     // Track kick streaming status for logging changes
     this.lastKickStatus = false;
     
@@ -193,6 +187,7 @@ class AggregatorService {
       const sceneState = this.getSceneState();
       const currentScene = sceneState.currentScene;
       const privacyEnabled = sceneState.privacyEnabled;
+      const sceneStartedAt = sceneState.sceneStartedAt;
       
       // Extract containers and error state
       let containers = containersResult.containers || [];
@@ -233,16 +228,18 @@ class AggregatorService {
         console.log('[aggregator] Kick streaming detected as STOPPED');
       }
       this.lastKickStatus = kickStreamingEnabled;
-
-      // Track scene changes and update timestamp
-      if (currentScene !== this.streamStatus.currentScene) {
-        this.streamStatus.currentScene = currentScene;
-        this.streamStatus.stateChangeTimestamp = Date.now();
-        console.log(`[aggregator] Scene changed: ${currentScene}`);
-      }
       
-      // Calculate duration in current scene (seconds)
-      const sceneDurationSeconds = Math.floor((Date.now() - this.streamStatus.stateChangeTimestamp) / 1000);
+      // Calculate duration in current scene from server-provided timestamp
+      let sceneDurationSeconds = 0;
+      if (sceneStartedAt) {
+        try {
+          const startTime = new Date(sceneStartedAt).getTime();
+          const now = Date.now();
+          sceneDurationSeconds = Math.floor((now - startTime) / 1000);
+        } catch (err) {
+          console.error('[aggregator] Error parsing sceneStartedAt:', err);
+        }
+      }
 
       // Determine if multiplexer is online by checking container status
       const multiplexerContainer = containers.find(c => c.name === 'multiplexer');
@@ -278,6 +275,7 @@ class AggregatorService {
           privacyEnabled: privacyEnabled
         },
         sceneDurationSeconds,
+        sceneStartedAt,
         cameraConfig: {
           srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
         },
@@ -304,12 +302,13 @@ class AggregatorService {
         currentScene: 'unknown',
         streamStatus: {
           isOnline: false,
-          durationSeconds,
+          durationSeconds: 0,
           srtConnected: false,
           srtBitrateKbps: 0,
           privacyEnabled: false
         },
-        sceneDurationSeconds: durationSeconds,
+        sceneDurationSeconds: 0,
+        sceneStartedAt: null,
         cameraConfig: {
           srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
         },

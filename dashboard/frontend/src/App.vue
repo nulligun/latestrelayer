@@ -214,6 +214,9 @@ export default {
     // Upload progress tracking for StreamControls
     const uploadProgress = ref(null);
     
+    // Scene duration timer
+    let sceneDurationInterval = null;
+    
     const data = ref({
       timestamp: null,
       containers: [],
@@ -236,6 +239,7 @@ export default {
         durationSeconds: 0
       },
       sceneDurationSeconds: 0,
+      sceneStartedAt: null, // ISO8601 timestamp from server
       cameraConfig: null,
       switcherHealth: {
         status: 'unavailable',
@@ -352,6 +356,11 @@ export default {
         // Handle dedicated scene change messages
         console.log(`[app] Scene change received: ${message.currentScene}`);
         data.value.currentScene = message.currentScene;
+        // Update sceneStartedAt from the message
+        if (message.sceneStartedAt !== undefined) {
+          data.value.sceneStartedAt = message.sceneStartedAt;
+          console.log(`[app] Updated sceneStartedAt: ${data.value.sceneStartedAt}`);
+        }
         if (message.privacyEnabled !== undefined) {
           data.value.switcherHealth.privacy_enabled = message.privacyEnabled;
         }
@@ -525,6 +534,21 @@ export default {
       timeUpdateInterval = setInterval(() => {
         currentTime.value = Date.now();
       }, 60 * 1000);
+      
+      // Update scene duration every second
+      sceneDurationInterval = setInterval(() => {
+        if (data.value.sceneStartedAt) {
+          try {
+            const startTime = new Date(data.value.sceneStartedAt).getTime();
+            const now = Date.now();
+            data.value.sceneDurationSeconds = Math.floor((now - startTime) / 1000);
+          } catch (err) {
+            console.error('[app] Error calculating scene duration:', err);
+          }
+        } else {
+          data.value.sceneDurationSeconds = 0;
+        }
+      }, 1000);
     });
 
     onUnmounted(() => {
@@ -538,6 +562,9 @@ export default {
       }
       if (timeUpdateInterval) {
         clearInterval(timeUpdateInterval);
+      }
+      if (sceneDurationInterval) {
+        clearInterval(sceneDurationInterval);
       }
     });
 

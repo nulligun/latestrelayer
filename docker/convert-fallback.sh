@@ -30,8 +30,11 @@ echo ""
 # Re-encode with constrained bitrate for smooth TCP streaming
 # GOP size of 30 means keyframe every 1 second at 30fps
 # Using CBR (Constant Bitrate) instead of CRF for consistent streaming
+# Using Main profile level 3.1 for browser compatibility and to match camera encoding
 ffmpeg -i "$INPUT" \
   -c:v libx264 \
+  -profile:v main \
+  -level 3.1 \
   -preset fast \
   -b:v 3M \
   -maxrate 3M \
