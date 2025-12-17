@@ -50,11 +50,12 @@ while true; do
     echo "ffmpeg -y -nostdin -loglevel debug -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 2 -i 'rtmp://nginx-rtmp/publish/drone' -c copy -f mpegts -mpegts_flags +resend_headers \"${PIPE_PATH}\""
     ffmpeg -y -nostdin \
         -loglevel debug \
-        -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 2 \
+        -fflags +nobuffer+genpts \
         -i 'rtmp://nginx-rtmp/publish/drone' \
         -c copy \
         -f mpegts \
         -mpegts_flags +resend_headers \
+        -flush_packets 1 \
         "${PIPE_PATH}" &
 
     FFMPEG_PID=$!

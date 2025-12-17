@@ -32,7 +32,7 @@ ffmpeg -re \
   -c:v libx264 -tune zerolatency -preset veryfast -pix_fmt yuv420p \
   -g 30 -keyint_min 30 \
   -c:a aac -b:a 128k \
-  -f mpegts "srt://ffmpeg-srt-input:1937?mode=caller" &
+  -f mpegts "srt://ffmpeg-srt-input:1937?mode=caller&transtype=live&latency=200000&connect_timeout=5000&timeout=5000000&pkt_size=1316" &
 
 FFMPEG_PID=$!
 echo "[Wrapper] FFmpeg started with PID $FFMPEG_PID"

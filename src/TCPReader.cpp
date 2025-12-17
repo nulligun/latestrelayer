@@ -205,6 +205,9 @@ void TCPReader::backgroundThreadFunc() {
         audio_sync_ready_ = false;
         first_packet_received_ = false;
         
+        // Reset health metrics for new connection
+        health_metrics_.reset();
+        
         // Process TCP stream
         processTCPStream();
         

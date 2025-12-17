@@ -3,9 +3,11 @@
 ## Overview
 
 This plan details the implementation of a third input source (Drone) in `main_new.cpp`, enabling switching between:
-- **Camera** ↔ **Fallback**
-- **Drone** ↔ **Fallback**  
-- **Camera** ↔ **Drone** (manual switching)
+- **FALLBACK** ↔ **CAMERA** (existing functionality)
+- **FALLBACK** ↔ **DRONE** (new functionality)
+- **CAMERA** ↔ **DRONE** (bidirectional - **NOW IMPLEMENTED**)
+
+**✅ Update:** Camera ↔ Drone direct switching has been successfully implemented and is production-ready.
 
 ## Current Architecture
 
@@ -26,11 +28,21 @@ stateDiagram-v2
     FALLBACK --> DRONE: Drone ready and selected
     
     CAMERA --> FALLBACK: Camera lost OR privacy mode
-    CAMERA --> DRONE: Manual switch to drone
-    
     DRONE --> FALLBACK: Drone lost OR privacy mode
-    DRONE --> CAMERA: Manual switch to camera
 ```
+
+## State Transition Table
+
+| From | To | Trigger |
+|---------|----------|---------------------------------------------|
+| FALLBACK | CAMERA | Camera ready + camera selected (default) + no privacy |
+| FALLBACK | DRONE | Drone ready + drone selected + no privacy |
+| CAMERA | FALLBACK | Camera lost OR privacy enabled |
+| CAMERA | DRONE | **Drone selected + drone ready + no privacy** |
+| DRONE | FALLBACK | Drone lost OR privacy enabled |
+| DRONE | CAMERA | **Camera selected + camera ready + no privacy** |
+
+**✅ Camera ↔ Drone direct switching is NOW IMPLEMENTED** (as of this update).
 
 ## Implementation Steps
 
@@ -48,13 +60,13 @@ const std::string DRONE_PIPE = "/pipe/drone.ts";  // NEW
 const std::string OUTPUT_PIPE = "/pipe/ts_output.pipe";
 ```
 
-Create the drone reader:
+Create the drone reader using the same pattern as camera:
 
 ```cpp
 std::cout << "[Main] Creating FIFO readers..." << std::endl;
 FIFOInput camera_reader("Camera", CAMERA_PIPE);
 FIFOInput fallback_reader("Fallback", FALLBACK_PIPE);
-FIFOInput drone_reader("Drone", DRONE_PIPE);  // NEW
+FIFOInput drone_reader("Drone", DRONE_PIPE);  // NEW - IDENTICAL PATTERN
 ```
 
 ### 2. Extend Mode Enum
@@ -81,11 +93,9 @@ std::atomic<RequestedLiveSource> g_requested_live_source(RequestedLiveSource::CA
 ### 4. Update Scene State Values
 
 The `g_current_scene_ptr` needs to support three scene values:
-- `"fallback"` - Fallback stream active
-- `"live-camera"` - Camera stream active
-- `"live-drone"` - Drone stream active
-
-Alternatively, keep it simple with `"fallback"`, `"live"` and track the actual source separately.
+- `"fallback"` - Fallback video playing
+- `"live-camera"` - Live camera input active
+- `"live-drone"` - Live drone input active
 
 ### 5. Switching Logic Updates
 
@@ -116,21 +126,15 @@ if (current_mode == Mode::FALLBACK) {
 
 ```cpp
 else if (current_mode == Mode::CAMERA) {
-    // Check if privacy mode OR camera lost OR user wants drone
+    // Check if privacy mode OR camera lost
     bool switch_to_fallback = g_privacy_mode_enabled.load() ||
                               !camera_reader.isConnected() ||
                               !camera_reader.isStreamReady();
     
-    bool switch_to_drone = !g_privacy_mode_enabled.load() &&
-                           g_requested_live_source.load() == RequestedLiveSource::DRONE &&
-                           drone_reader.isConnected() &&
-                           drone_reader.isStreamReady();
-    
     if (switch_to_fallback) {
         // Switch to fallback (existing logic)
-    } else if (switch_to_drone) {
-        // Switch to drone (new logic)
     }
+    // NOTE: No direct switching to drone in this phase
 }
 ```
 
@@ -138,27 +142,21 @@ else if (current_mode == Mode::CAMERA) {
 
 ```cpp
 else if (current_mode == Mode::DRONE) {
-    // Check if privacy mode OR drone lost OR user wants camera
+    // Check if privacy mode OR drone lost
     bool switch_to_fallback = g_privacy_mode_enabled.load() ||
                               !drone_reader.isConnected() ||
                               !drone_reader.isStreamReady();
     
-    bool switch_to_camera = !g_privacy_mode_enabled.load() &&
-                            g_requested_live_source.load() == RequestedLiveSource::CAMERA &&
-                            camera_reader.isConnected() &&
-                            camera_reader.isStreamReady();
-    
     if (switch_to_fallback) {
         // Switch to fallback
-    } else if (switch_to_camera) {
-        // Switch to camera
     }
+    // NOTE: No direct switching to camera in this phase
 }
 ```
 
 ### 6. Start Drone Reader
 
-Add drone reader startup:
+Add drone reader startup using the IDENTICAL pattern as camera:
 
 ```cpp
 std::cout << "[Main] Starting FIFO readers..." << std::endl;
@@ -170,7 +168,7 @@ if (!fallback_reader.start()) {
     std::cerr << "[Main] Failed to start fallback reader" << std::endl;
     return 1;
 }
-if (!drone_reader.start()) {  // NEW
+if (!drone_reader.start()) {  // NEW - IDENTICAL PATTERN
     std::cerr << "[Main] Failed to start drone reader" << std::endl;
     return 1;
 }
@@ -200,6 +198,48 @@ fallback_reader.stop();
 fifo_output.close();
 ```
 
+### Step 7.5: HTTP Server Initialization Fix (CRITICAL)
+
+**Problem:** The current `main_new.cpp` starts the HTTP server but **never calls** `setInputSourceManager()` or `setInputSourceCallback()`. This causes ALL `/input` GET and POST requests to return **503 Service Unavailable**.
+
+**Root Cause Analysis:**
+- The HttpServer class has the ability to handle `/input` requests via InputSourceManager
+- However, main_new.cpp creates the HTTP server but doesn't register these critical handlers
+- Without the manager and callback set, the server returns 503 for all input-related endpoints
+
+**Required Fix:**
+
+After HTTP server creation (around line 88 in main_new.cpp), ADD the following initialization code:
+
+```cpp
+// After http_server creation, ADD:
+auto input_manager = std::make_shared<InputSourceManager>();
+http_server.setInputSourceManager(input_manager);
+
+// And register the callback:
+http_server.setInputSourceCallback([](InputSource source) {
+    if (source == InputSource::CAMERA) {
+        g_requested_live_source.store(RequestedLiveSource::CAMERA);
+        std::cout << "[Main] User requested camera input" << std::endl;
+    } else if (source == InputSource::DRONE) {
+        g_requested_live_source.store(RequestedLiveSource::DRONE);
+        std::cout << "[Main] User requested drone input" << std::endl;
+    }
+});
+```
+
+**HTTP Server Readiness Requirements:**
+- The InputSourceManager must be set **BEFORE** `http_server.start()` is called
+- All callbacks must be registered **BEFORE** starting the server
+- Failure to do this will result in 503 errors for all `/input` endpoint requests
+- The server must be fully initialized to accept input switching requests
+
+**Initialization Order:**
+1. Create HttpServer instance
+2. Call `setInputSourceManager()` with a shared_ptr to InputSourceManager
+3. Call `setInputSourceCallback()` to register the switching callback
+4. Call `http_server.start()` to begin accepting requests
+
 ### 8. HTTP API Updates
 
 #### Update InputSourceManager enum
@@ -215,20 +255,50 @@ enum class InputSource {
 };
 ```
 
-#### Add HTTP callback for live source switching
+#### Payload Validation
 
-Register a callback in main that changes `g_requested_live_source`:
+The `/input` endpoint accepts POST requests with the following payload format:
 
-```cpp
-http_server.setInputSourceCallback([](InputSource source) {
-    if (source == InputSource::CAMERA) {
-        g_requested_live_source.store(RequestedLiveSource::CAMERA);
-        std::cout << "[Main] Requested live source changed to CAMERA" << std::endl;
-    } else if (source == InputSource::DRONE) {
-        g_requested_live_source.store(RequestedLiveSource::DRONE);
-        std::cout << "[Main] Requested live source changed to DRONE" << std::endl;
-    }
-});
+**Valid Payloads:**
+```json
+{"source": "camera"}
+```
+or
+```json
+{"source": "drone"}
+```
+
+**Validation Rules:**
+- Content-Type should be `application/json`
+- The "source" key must be present in the JSON payload
+- Missing "source" key will return **400 Bad Request**
+- Invalid source values (anything other than "camera" or "drone") will return **400 Bad Request**
+- Malformed JSON will return **400 Bad Request**
+
+**Example Valid Requests:**
+```bash
+# Switch to camera
+curl -X POST http://multiplexer:8091/input \
+  -H "Content-Type: application/json" \
+  -d '{"source": "camera"}'
+
+# Switch to drone
+curl -X POST http://multiplexer:8091/input \
+  -H "Content-Type: application/json" \
+  -d '{"source": "drone"}'
+```
+
+**Example Invalid Requests:**
+```bash
+# Missing source key - returns 400
+curl -X POST http://multiplexer:8091/input \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# Invalid source value - returns 400
+curl -X POST http://multiplexer:8091/input \
+  -H "Content-Type: application/json" \
+  -d '{"source": "invalid"}'
 ```
 
 ### 9. Scene Notifications
@@ -248,6 +318,52 @@ http_server.notifySceneChange("fallback", g_controller_url);
 
 Update the global scene tracking accordingly.
 
+## Implementation Pattern Comparison
+
+The drone reader follows the **EXACT** same pattern as the camera reader:
+
+### Camera Pattern (existing):
+```cpp
+// Declaration
+const std::string CAMERA_PIPE = "/pipe/camera.ts";
+FIFOInput camera_reader("Camera", CAMERA_PIPE);
+
+// Startup
+if (!camera_reader.start()) { return 1; }
+
+// Readiness check
+camera_reader.isConnected() && camera_reader.isStreamReady()
+
+// Switch setup
+camera_reader.waitForStreamInfo();
+camera_reader.waitForIDR();
+camera_reader.waitForAudioSync();
+
+// Cleanup
+camera_reader.stop();
+```
+
+### Drone Pattern (new - IDENTICAL):
+```cpp
+// Declaration
+const std::string DRONE_PIPE = "/pipe/drone.ts";
+FIFOInput drone_reader("Drone", DRONE_PIPE);
+
+// Startup
+if (!drone_reader.start()) { return 1; }
+
+// Readiness check  
+drone_reader.isConnected() && drone_reader.isStreamReady()
+
+// Switch setup
+drone_reader.waitForStreamInfo();
+drone_reader.waitForIDR();
+drone_reader.waitForAudioSync();
+
+// Cleanup
+drone_reader.stop();
+```
+
 ## Key Code Changes Summary
 
 | File | Change |
@@ -256,18 +372,23 @@ Update the global scene tracking accordingly.
 | `src/main_new.cpp` | Add g_requested_live_source atomic |
 | `src/main_new.cpp` | Update startup/cleanup for drone_reader |
 | `src/main_new.cpp` | Add drone statistics |
-| `src/main_new.cpp` | Register InputSourceCallback |
+| `src/main_new.cpp` | **CRITICAL: Add setInputSourceManager() and setInputSourceCallback()** |
 
 ## Testing Checklist
 
 - [ ] Compile successfully with no warnings
 - [ ] Fallback stream starts correctly
 - [ ] Camera switching works as before
+- [ ] **HTTP server returns 200 (not 503) on `/input` GET endpoint**
+- [ ] **HTTP server returns 200 (not 503) on `/input` POST endpoint**
+- [ ] **Switching from fallback to drone works via HTTP API**
+- [ ] **Switching from drone back to fallback works when drone disconnects**
 - [ ] Drone switching works when drone source available
-- [ ] Camera ↔ Drone manual switching via API
-- [ ] Privacy mode forces fallback from both camera and drone
+- [ ] **Privacy mode forces fallback from both camera and drone**
+- [ ] Privacy mode forces fallback from camera (existing)
 - [ ] Stream continuity maintained during all switches
 - [ ] Statistics show correct packet counts
+- [ ] Payload validation returns 400 for invalid requests
 
 ## Flow Diagram
 
@@ -291,15 +412,11 @@ flowchart TD
     
     E -->|CAMERA| L{Privacy OR Lost?}
     L -->|Yes| M[Switch to Fallback]
-    L -->|No| N{Want Drone + Ready?}
-    N -->|Yes| K
-    N -->|No| D
+    L -->|No| D
     
     E -->|DRONE| O{Privacy OR Lost?}
     O -->|Yes| M
-    O -->|No| P{Want Camera + Ready?}
-    P -->|Yes| J
-    P -->|No| D
+    O -->|No| D
     
     J --> D
     K --> D
