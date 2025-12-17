@@ -189,9 +189,11 @@ export default {
       const scene = props.currentScene.toUpperCase();
       const privacyEnabled = props.switcherHealth?.privacy_enabled || false;
       
-      // New scene values from multiplexer: LIVE, FALLBACK, unknown
-      if (scene === 'LIVE') {
+      // New scene values from multiplexer: LIVE, LIVE-CAMERA, LIVE-DRONE, FALLBACK, unknown
+      if (scene === 'LIVE' || scene === 'LIVE-CAMERA') {
         return 'Camera';
+      } else if (scene === 'LIVE-DRONE') {
+        return 'Drone';
       } else if (scene === 'FALLBACK') {
         return privacyEnabled ? 'PRIVACY' : 'Fallback';
       } else if (scene === 'UNKNOWN') {
