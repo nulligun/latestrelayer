@@ -55,11 +55,13 @@ while true; do
     echo "ffmpeg -y -nostdin -loglevel debug -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 2 -i \"srt://0.0.0.0:1937?mode=listener&latency=${SRT_LATENCY_US}&transtype=live&payload_size=1316\" -c copy -f mpegts -mpegts_flags +resend_headers \"${PIPE_PATH}\""
     ffmpeg -y -nostdin \
         -loglevel debug \
-        -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 2 \
+        -stats \
+        -fflags +nobuffer+genpts \
         -i "srt://0.0.0.0:1937?mode=listener&latency=${SRT_LATENCY_US}&transtype=live&payload_size=1316" \
         -c copy \
         -f mpegts \
         -mpegts_flags +resend_headers \
+        -flush_packets 1 \
         "${PIPE_PATH}" &
 
     FFMPEG_PID=$!

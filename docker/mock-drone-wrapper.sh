@@ -24,21 +24,22 @@ sleep 5
 # Start ffmpeg in background
 echo "[Wrapper] Starting mock drone stream to rtmp://nginx-rtmp:1935/publish/drone..."
 
-ffmpeg -re \
+ffmpeg -y -nostdin -re \
+  -fflags +genpts -start_at_zero \
   -f lavfi -i "testsrc2=size=1280x720:rate=30" \
   -f lavfi -i "sine=frequency=880:sample_rate=48000" \
-  -filter_complex "[0:v]drawtext=text='DRONE':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=72:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=50[vout];[1:a]aformat=channel_layouts=stereo[aout]" \
-  -map "[vout]" -map "[aout]" \
-  -c:v libx264 \
-  -tune zerolatency \
-  -preset veryfast \
-  -pix_fmt yuv420p \
-  -g 30 -keyint_min 30 \
-  -b:v 3000k \
-  -maxrate 3000k \
-  -bufsize 6000k \
-  -x264-params nal-hrd=cbr \
-  -c:a aac -b:a 128k \
+  -filter_complex "[0:v]drawtext=text='DRONE':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=72:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=50[vout]" \
+  -map "[vout]" -map 1:a \
+  -vsync cfr -r 30 \
+  -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p \
+  -g 60 -keyint_min 60 -sc_threshold 0 \
+  -b:v 3000k -minrate 3000k -maxrate 3000k -bufsize 3000k \
+  -x264-params "nal-hrd=cbr:force-cfr=1" \
+  -c:a aac -b:a 128k -ar 48000 -ac 2 \
+  -af "aresample=async=1:first_pts=0" \
+  -muxdelay 0 -muxpreload 0 \
+  -flvflags no_duration_filesize \
+  -rtmp_live live -rtmp_buffer 0 \
   -f flv "rtmp://nginx-rtmp:1935/publish/drone" &
 
 FFMPEG_PID=$!

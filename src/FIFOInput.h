@@ -12,6 +12,7 @@
 #include <chrono>
 #include <deque>
 #include <tsduck.h>
+#include "StreamHealthMetrics.h"
 
 // Stream information extracted from TS stream
 struct StreamInfo {
@@ -97,6 +98,20 @@ public:
     bool isConnected() const { return connected_.load(); }
     bool isStreamReady() const { return pids_ready_.load() && idr_ready_.load(); }
     
+    // Health checking methods
+    bool isHealthy() const { return connected_.load() && health_metrics_.isHealthy(); }
+    bool isDataFresh(int64_t maxAgeMs = 0) const {
+        if (maxAgeMs > 0) {
+            return health_metrics_.getMsSinceLastData() < maxAgeMs;
+        }
+        return health_metrics_.isDataFresh();
+    }
+    int64_t getMsSinceLastData() const { return health_metrics_.getMsSinceLastData(); }
+    uint64_t getCurrentBitrateBps() const { return health_metrics_.getCurrentBitrateBps(); }
+    void configureHealthThresholds(const StreamHealthConfig& config) {
+        health_metrics_.configure(config);
+    }
+    
     // Statistics
     uint64_t getPacketsReceived() const { return total_packets_received_.load(); }
     
@@ -155,6 +170,9 @@ private:
     std::atomic<uint64_t> total_packets_received_;
     std::chrono::steady_clock::time_point last_progress_report_;
     std::chrono::steady_clock::time_point connection_start_time_;
+    
+    // Health monitoring
+    StreamHealthMetrics health_metrics_;
     
     // Constants
     static constexpr int PIPE_RECONNECT_DELAY_MS = 2000;

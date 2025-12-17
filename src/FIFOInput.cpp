@@ -196,6 +196,9 @@ void FIFOInput::backgroundThreadFunc() {
         audio_sync_ready_ = false;
         first_packet_received_ = false;
         
+        // Reset health metrics for new connection
+        health_metrics_.reset();
+        
         // Process FIFO stream
         processFIFOStream();
         
@@ -292,6 +295,9 @@ void FIFOInput::processFIFOStream() {
             std::cout << "[" << name_ << "] FIFO EOF (writer disconnected)" << std::endl;
             break;
         }
+        
+        // Record data received for health monitoring
+        health_metrics_.recordDataReceived(n);
         
         // Feed data to reassembler
         reassembler.addData(fifo_buffer, n);

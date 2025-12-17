@@ -37,9 +37,35 @@ input_source_file: "/app/shared/input_source.json"
 # Stream Switching Configuration
 # =============================================================================
 
+# DEPRECATED: Replaced by stream health monitoring (see below)
 # Maximum gap allowed before switching to fallback (milliseconds)
 # If live TS stalls for more than this duration, switch to fallback
 max_live_gap_ms: 2000
+
+# =============================================================================
+# Stream Health Monitoring
+# =============================================================================
+
+# Maximum time without receiving data before considering stream unhealthy (ms)
+# Applies to camera, drone, and fallback inputs
+# If no data received within this window, multiplexer will switch to fallback
+# Env var: MAX_DATA_AGE_MS (default: 3000)
+max_data_age_ms: 3000
+
+# Minimum bitrate threshold for healthy stream (bytes per second)
+# Set to 0 to disable bitrate checking (only check data age)
+# Recommended values:
+#   - 50000 (50 KB/s ~400 Kbps) for low-bandwidth streams
+#   - 100000 (100 KB/s ~800 Kbps) for SD streams
+#   - 200000 (200 KB/s ~1.6 Mbps) for HD streams
+# Env var: MIN_BITRATE_BPS (default: 0 = disabled)
+min_bitrate_bps: 0
+
+# Window size for bitrate calculation in seconds
+# Larger window = smoother average but slower to detect drops
+# Smaller window = more responsive but may trigger on brief dips
+# Env var: BITRATE_WINDOW_SECONDS (default: 3)
+bitrate_window_seconds: 3
 
 # Minimum consecutive live packets required before switching from fallback to live
 # Env var: MIN_CONSECUTIVE_FOR_SWITCH (default: 10)
