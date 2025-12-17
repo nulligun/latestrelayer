@@ -239,15 +239,15 @@ class ScenePrivacyManager:
                     print(f"[startup-debug] Multiplexer responded with scene: {scene}", flush=True)
                     
                     # Map multiplexer scene format to controller format
-                    if scene == 'live':
+                    if scene in ['live', 'live-camera', 'live-drone']:
                         mapped_scene = 'LIVE'
                     elif scene == 'fallback':
                         mapped_scene = 'FALLBACK'
                     else:
                         mapped_scene = 'unknown'
                     
-                    # Update scene if it changed
-                    self.set_scene(mapped_scene)
+                    # Update scene if a changed
+                    self.set_scene(scene)
                     
             except urllib.error.URLError as e:
                 print(f"[startup-debug] URLError querying multiplexer: {e}", flush=True)
@@ -1168,7 +1168,7 @@ class WebSocketServer:
         # Schedule broadcast in the event loop using stored reference
         try:
             if self.loop is not None:
-                print(f"[scene_change_debug] Scheduling WebSocket broadcast for type={change_type} using stored loop", flush=True)
+                print(f"[scene_change_debug] Scheduling WebSocket broadcast for type={change_type}, using stored loop", flush=True)
                 asyncio.run_coroutine_threadsafe(
                     self._broadcast_scene_privacy_change(change_type, data),
                     self.loop
@@ -1213,7 +1213,7 @@ class WebSocketServer:
         
         print(f"[ws] Broadcasted {change_type} to {len(self.clients) - len(disconnected)} client(s)", flush=True)
         print(f"[scene_change_debug] Broadcast complete", flush=True)
-        
+    
     async def register_client(self, websocket):
         """Register a new WebSocket client."""
         self.clients.add(websocket)
@@ -1617,19 +1617,27 @@ class Handler(BaseHTTPRequestHandler):
         
         # Scene notification from multiplexer: POST /scene/live or /scene/fallback
         if len(path_parts) == 2 and path_parts[0] == "scene":
-            scene = path_parts[1].upper()
-            if scene in ["LIVE", "FALLBACK"]:
-                print(f"[http] Scene notification from multiplexer: {scene}")
-                print(f"[scene_change_debug] HTTP received POST /scene/{scene}", flush=True)
-                changed = scene_privacy_manager.set_scene(scene)
-                print(f"[scene_change_debug] set_scene returned changed={changed}", flush=True)
-                self.send_json({
-                    "status": "ok",
-                    "scene": scene,
-                    "changed": changed
-                })
+            scene = path_parts[1].lower()  # Get scene in lowercase: live-camera, live-drone, fallback
+            
+            # Map to controller format
+            if scene in ['live', 'live-camera', 'live-drone']:
+                mapped_scene = 'LIVE'
+            elif scene == 'fallback':
+                mapped_scene = 'FALLBACK'
             else:
                 self.send_json({"error": f"Invalid scene: {scene}"}, 400)
+                return
+            
+            print(f"[http] Scene notification from multiplexer: {scene} -> {mapped_scene}")
+            print(f"[scene_change_debug] HTTP received POST /scene/{scene}, mapping to {mapped_scene}", flush=True)
+            changed = scene_privacy_manager.set_scene(mapped_scene)
+            print(f"[scene_change_debug] set_scene returned changed={changed}", flush=True)
+            self.send_json({
+                "status": "ok",
+                "scene": mapped_scene,
+                "original_scene": scene,
+                "changed": changed
+            })
             return
         
         # Privacy mode control: POST /privacy/enable or /privacy/disable
