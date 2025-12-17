@@ -76,14 +76,74 @@ export default {
         hls = new Hls({
           enableWorker: true,
           lowLatencyMode: true,
-          backBufferLength: 30
+          backBufferLength: 30,
+          debug: true  // Enable HLS.js debug logging
         });
 
         hls.loadSource(props.hlsUrl);
         hls.attachMedia(videoElement.value);
 
+        // Enhanced debugging: Log all HLS events for diagnosis
+        hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
+          console.log('[VideoPreview] Level loaded:', {
+            level: data.level,
+            details: data.details,
+            totalduration: data.details?.totalduration,
+            fragments: data.details?.fragments?.length,
+            type: data.details?.type
+          });
+          // Log codec info from the level
+          if (hls.levels && hls.levels[data.level]) {
+            const level = hls.levels[data.level];
+            console.log('[VideoPreview] Level codec info:', {
+              videoCodec: level.videoCodec,
+              audioCodec: level.audioCodec,
+              width: level.width,
+              height: level.height,
+              bitrate: level.bitrate,
+              attrs: level.attrs
+            });
+          }
+        });
+
+        hls.on(Hls.Events.FRAG_LOADED, (event, data) => {
+          console.log('[VideoPreview] Fragment loaded:', {
+            sn: data.frag.sn,
+            cc: data.frag.cc,  // Continuity counter - changes on discontinuity
+            duration: data.frag.duration,
+            start: data.frag.start,
+            level: data.frag.level
+          });
+        });
+
+        hls.on(Hls.Events.FRAG_PARSING_INIT_SEGMENT, (event, data) => {
+          console.log('[VideoPreview] Init segment parsed:', {
+            videoCodec: data.videoCodec,
+            audioCodec: data.audioCodec,
+            tracks: data.tracks
+          });
+        });
+
+        hls.on(Hls.Events.BUFFER_CODECS, (event, data) => {
+          console.log('[VideoPreview] Buffer codecs:', {
+            video: data.video,
+            audio: data.audio
+          });
+        });
+
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           console.log('[VideoPreview] HLS manifest parsed, starting playback');
+          // Log available levels/qualities
+          if (hls.levels) {
+            console.log('[VideoPreview] Available levels:', hls.levels.map((level, i) => ({
+              index: i,
+              width: level.width,
+              height: level.height,
+              videoCodec: level.videoCodec,
+              audioCodec: level.audioCodec,
+              bitrate: level.bitrate
+            })));
+          }
           isLoading.value = false;
           error.value = null;
           isPlayPending.value = true;
@@ -106,19 +166,65 @@ export default {
         });
 
         hls.on(Hls.Events.ERROR, (event, data) => {
-          console.error('[VideoPreview] HLS error:', data);
+          // Enhanced error logging with all available details
+          console.error('[VideoPreview] HLS error:', {
+            type: data.type,
+            details: data.details,
+            fatal: data.fatal,
+            reason: data.reason,
+            frag: data.frag ? {
+              sn: data.frag.sn,
+              cc: data.frag.cc,
+              level: data.frag.level,
+              url: data.frag.url
+            } : null,
+            level: data.level,
+            url: data.url,
+            response: data.response ? {
+              code: data.response.code,
+              text: data.response.text
+            } : null,
+            error: data.error,
+            event: data.event
+          });
+          
+          // If it's a media error, log additional video element state
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            const video = videoElement.value;
+            if (video) {
+              console.error('[VideoPreview] Video element state during media error:', {
+                readyState: video.readyState,
+                networkState: video.networkState,
+                error: video.error ? {
+                  code: video.error.code,
+                  message: video.error.message,
+                  // MediaError codes: 1=ABORTED, 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED
+                  codeExplained: ['', 'MEDIA_ERR_ABORTED', 'MEDIA_ERR_NETWORK', 'MEDIA_ERR_DECODE', 'MEDIA_ERR_SRC_NOT_SUPPORTED'][video.error.code]
+                } : null,
+                currentTime: video.currentTime,
+                buffered: video.buffered.length > 0 ? {
+                  start: video.buffered.start(0),
+                  end: video.buffered.end(video.buffered.length - 1)
+                } : 'empty'
+              });
+            }
+          }
+
           if (data.fatal) {
             isLoading.value = false;
             switch (data.type) {
               case Hls.ErrorTypes.NETWORK_ERROR:
-                error.value = 'Stream not available';
+                error.value = `Stream not available (${data.details})`;
+                console.error('[VideoPreview] Fatal network error - possible causes: stream not running, CORS issue, or segment fetch failed');
                 break;
               case Hls.ErrorTypes.MEDIA_ERROR:
-                error.value = 'Media error';
+                error.value = `Media error: ${data.details}`;
+                console.error('[VideoPreview] Fatal media error - attempting recovery. Possible causes: codec mismatch, corrupted segment, or unsupported codec profile');
                 hls.recoverMediaError();
                 break;
               default:
-                error.value = 'Stream error';
+                error.value = `Stream error: ${data.details}`;
+                console.error('[VideoPreview] Fatal unknown error - destroying HLS instance');
                 destroyHls();
                 break;
             }
@@ -196,14 +302,34 @@ export default {
     };
 
     const handleVideoError = (e) => {
-      console.error('[VideoPreview] Video error:', e);
+      // Enhanced video element error logging
+      console.error('[VideoPreview] Video element error event:', e);
+      const video = videoElement.value;
+      if (video && video.error) {
+        const mediaErrorCodes = ['', 'MEDIA_ERR_ABORTED', 'MEDIA_ERR_NETWORK', 'MEDIA_ERR_DECODE', 'MEDIA_ERR_SRC_NOT_SUPPORTED'];
+        console.error('[VideoPreview] Video MediaError details:', {
+          code: video.error.code,
+          codeExplained: mediaErrorCodes[video.error.code] || 'UNKNOWN',
+          message: video.error.message || '(no message)',
+          readyState: video.readyState,
+          networkState: video.networkState,
+          currentSrc: video.currentSrc,
+          buffered: video.buffered.length > 0 ? `${video.buffered.start(0)}-${video.buffered.end(video.buffered.length - 1)}` : 'empty'
+        });
+      }
       // Don't reset state if a play operation is pending - the AbortError handler will manage cleanup
       if (isPlayPending.value) {
         console.log('[VideoPreview] Video error during pending play operation - deferring to play Promise handler');
         return;
       }
       if (!error.value) {
-        error.value = 'Video playback error';
+        const video = videoElement.value;
+        if (video && video.error) {
+          const mediaErrorCodes = ['', 'MEDIA_ERR_ABORTED', 'MEDIA_ERR_NETWORK', 'MEDIA_ERR_DECODE', 'MEDIA_ERR_SRC_NOT_SUPPORTED'];
+          error.value = `Video error: ${mediaErrorCodes[video.error.code] || 'UNKNOWN'} - ${video.error.message || 'no details'}`;
+        } else {
+          error.value = 'Video playback error';
+        }
       }
       isLoading.value = false;
       isPlaying.value = false;
