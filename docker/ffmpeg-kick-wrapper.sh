@@ -74,18 +74,18 @@ echo "[Wrapper] Kick URL: $KICK_URL"
 echo "[Wrapper] Stream Key: $MASKED_KEY"
 echo "[Wrapper] Full output: ${KICK_URL}****"
 
-# RTMP source from nginx-rtmp
-RTMP_SOURCE="rtmp://nginx-rtmp:1935/live/stream"
+# RTMP source from srs
+RTMP_SOURCE="rtmp://srs:1935/live/stream"
 echo "[Wrapper] RTMP Source: $RTMP_SOURCE"
 
-# Wait for nginx-rtmp to be ready and have a stream
-echo "[Wrapper] Waiting for nginx-rtmp stream to be available..."
+# Wait for srs to be ready and have a stream
+echo "[Wrapper] Waiting for srs stream to be available..."
 MAX_WAIT=60
 WAITED=0
 while [ $WAITED -lt $MAX_WAIT ]; do
-    # Check if there's an active stream on nginx-rtmp
-    if curl -s "http://nginx-rtmp:8080/stat" 2>/dev/null | grep -q "<name>stream</name>"; then
-        echo "[Wrapper] Stream detected on nginx-rtmp"
+    # Check if there's an active stream on srs
+    if curl -s "http://srs:8080/stat" 2>/dev/null | grep -q "<name>stream</name>"; then
+        echo "[Wrapper] Stream detected on srs"
         break
     fi
     echo "[Wrapper] Waiting for stream... ($WAITED/$MAX_WAIT seconds)"

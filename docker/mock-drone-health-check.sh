@@ -1,6 +1,6 @@
 #!/bin/bash
 # Health check script for mock-drone container
-# Verifies that RTMP traffic is being sent to nginx-rtmp on port 1935
+# Verifies that RTMP traffic is being sent to srs on port 1935
 
 set -e
 

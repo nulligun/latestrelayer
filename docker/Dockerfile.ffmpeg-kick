@@ -1,5 +1,5 @@
 # FFmpeg Kick Streaming Container
-# Reads from nginx-rtmp and pushes to Kick via RTMPS
+# Reads from srs and pushes to Kick via RTMPS
 FROM jrottenberg/ffmpeg:4.4-ubuntu
 
 # Install network debugging tools for health check

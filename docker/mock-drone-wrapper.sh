@@ -17,12 +17,12 @@ cleanup() {
 # Trap SIGTERM and SIGINT
 trap cleanup SIGTERM SIGINT
 
-# Wait for nginx-rtmp to be ready
-echo "[Wrapper] Waiting for nginx-rtmp to be ready..."
+# Wait for srs to be ready
+echo "[Wrapper] Waiting for srs to be ready..."
 sleep 5
 
 # Start ffmpeg in background
-echo "[Wrapper] Starting mock drone stream to rtmp://nginx-rtmp:1935/publish/drone...
+echo "[Wrapper] Starting mock drone stream to rtmp://srs:1935/publish/drone...
 
 ffmpeg -y -nostdin -re \
   -fflags +genpts -start_at_zero \
@@ -40,7 +40,7 @@ ffmpeg -y -nostdin -re \
   -muxdelay 0 -muxpreload 0 \
   -flvflags no_duration_filesize \
   -rtmp_live live -rtmp_buffer 0 \
-  -f flv "rtmp://nginx-rtmp:1935/publish/drone" &
+  -f flv "rtmp://srs:1935/publish/drone" &
 
 FFMPEG_PID=$!
 echo "[Wrapper] FFmpeg started with PID $FFMPEG_PID"
