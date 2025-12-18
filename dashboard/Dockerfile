@@ -71,7 +71,7 @@ EXPOSE 3000
 ENV PORT=3000
 ENV CONTROLLER_API=http://controller:8089
 ENV MUXER_API=http://muxer:8088
-ENV NGINX_STATS=http://nginx-rtmp:8080/stat
+ENV NGINX_STATS=http://srs:1985/api/v1/streams/
 ENV POLLING_INTERVAL=2000
 
 # Health check

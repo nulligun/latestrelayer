@@ -76,7 +76,7 @@ services:
       - PORT=3000
       - CONTROLLER_API=http://controller:8089
       - MUXER_API=http://multiplexer:8091
-      - NGINX_STATS=http://nginx-rtmp:8080/stat
+      - NGINX_STATS=http://srs:1985/api/v1/streams/
       - POLLING_INTERVAL=${DASHBOARD_POLLING_INTERVAL:-2000}
       - SRT_PORT=${SRT_PORT:-1937}
       - SRT_DOMAIN=${SRT_DOMAIN:-localhost}
@@ -132,29 +132,27 @@ services:
   # Tier 2: Streaming Infrastructure (requires controller)
   # ============================================================================
 
-  nginx-rtmp:
-    stop_grace_period: 2s
+  srs:
     build:
-      context: .
-      dockerfile: nginx-rtmp/Dockerfile
-    container_name: nginx-rtmp-server
+      context: ./srs
+      dockerfile: Dockerfile
+    container_name: srs-server
+    stop_grace_period: 2s
     depends_on:
       controller:
         condition: service_healthy
     volumes:
-      - ./nginx.conf.template:/etc/nginx/nginx.conf.template:ro
-      - ./nginx-start.sh:/usr/local/bin/nginx-start.sh:ro
-    environment:
-      - HLS_FRAGMENT_SIZE=${HLS_FRAGMENT_SIZE:-3}
+      - ./srs/srs.conf:/usr/local/srs/conf/srs.conf:ro
+      - srs-hls-volume:/usr/local/srs/objs/nginx/html/live
     ports:
       - "1935:1935"    # RTMP
       - "8080:8080"    # HTTP/HLS
+      - "1985:1985"    # HTTP API
     networks:
       - tsnet
     restart: unless-stopped
-    entrypoint: ["/bin/bash", "/usr/local/bin/nginx-start.sh"]
     healthcheck:
-      test: ["CMD", "/usr/local/bin/health-check.sh"]
+      test: ["CMD", "curl", "-f", "http://localhost:1985/api/v1/versions"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -166,7 +164,7 @@ services:
         max-file: "3"
 
   # ============================================================================
-  # Tier 3: Multiplexer (requires nginx-rtmp and controller)
+  # Tier 3: Multiplexer (requires srs and controller)
   # ============================================================================
 
   multiplexer:
@@ -176,7 +174,7 @@ services:
       dockerfile: docker/Dockerfile.multiplexer
     container_name: ts-multiplexer
     depends_on:
-      nginx-rtmp:
+      srs:
         condition: service_healthy
       controller:
         condition: service_healthy
@@ -224,14 +222,14 @@ services:
       dockerfile: docker/Dockerfile.ffmpeg-rtmp-output
     container_name: ${COMPOSE_PROJECT_NAME:-latestrelayer}-ffmpeg-rtmp-output
     depends_on:
-      nginx-rtmp:
+      srs:
         condition: service_healthy
       multiplexer:
         condition: service_started  # Wait for multiplexer to create the pipe
     volumes:
       - ts-pipe-volume:/pipe  # Shared named pipe volume
     environment:
-      - RTMP_URL=${RTMP_URL:-rtmp://nginx-rtmp/live/stream}
+      - RTMP_URL=${RTMP_URL:-rtmp://srs/live/stream}
     networks:
       - tsnet
     restart: unless-stopped
@@ -291,7 +289,7 @@ services:
       dockerfile: docker/Dockerfile.ffmpeg-rtmp-input
     container_name: ffmpeg-rtmp-input
     depends_on:
-      nginx-rtmp:
+      srs:
         condition: service_healthy
       pipe-init:
         condition: service_completed_successfully
@@ -360,7 +358,7 @@ services:
     profiles:
       - manual
     depends_on:
-      nginx-rtmp:
+      srs:
         condition: service_healthy
     volumes:
       - ${SHARED_FOLDER}:/app/shared:ro
@@ -416,7 +414,7 @@ services:
     profiles:
       - manual
     depends_on:
-      nginx-rtmp:
+      srs:
         condition: service_healthy
     networks:
       - tsnet
@@ -448,4 +446,6 @@ networks:
 
 volumes:
   ts-pipe-volume:
+    driver: local
+  srs-hls-volume:
     driver: local

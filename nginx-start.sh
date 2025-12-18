@@ -16,15 +16,25 @@ echo "[nginx-rtmp]   RTMP port: 1935"
 echo "[nginx-rtmp]   HTTP/HLS port: 8080"
 echo "[nginx-rtmp]   Statistics: http://localhost:8080/stat"
 echo "[nginx-rtmp]   HLS streams: http://localhost:8080/hls/"
+echo "[nginx-rtmp]   HTTP-FLV: http://localhost:8080/live?app=live&stream=<name>"
 echo "========================================="
 
 # Generate nginx.conf from template using envsubst
 if [ -f /etc/nginx/nginx.conf.template ]; then
     echo "[nginx-rtmp] Generating nginx.conf from template..."
-    envsubst '${HLS_FRAGMENT_SIZE}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
-    echo "[nginx-rtmp] nginx.conf generated successfully"
+    envsubst '${HLS_FRAGMENT_SIZE}' < /etc/nginx/nginx.conf.template > /usr/local/nginx/conf/nginx.conf
+    echo "[nginx-rtmp] nginx.conf generated successfully at /usr/local/nginx/conf/nginx.conf"
 else
     echo "[nginx-rtmp] Warning: nginx.conf.template not found, using existing nginx.conf"
+fi
+
+# Test nginx configuration
+echo "[nginx-rtmp] Testing nginx configuration..."
+if nginx -t; then
+    echo "[nginx-rtmp] Configuration test passed"
+else
+    echo "[nginx-rtmp] Configuration test failed!"
+    exit 1
 fi
 
 # Function for fast shutdown
@@ -52,6 +62,7 @@ NGINX_PID=$!
 echo "[nginx-rtmp] nginx started with PID: $NGINX_PID"
 echo "[nginx-rtmp] Ready to accept RTMP connections on port 1935"
 echo "[nginx-rtmp] Ready to serve HLS on port 8080"
+echo "[nginx-rtmp] Ready to serve HTTP-FLV on port 8080"
 echo ""
 
 # Wait for nginx process

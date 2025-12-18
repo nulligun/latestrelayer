@@ -20,13 +20,13 @@ cleanup() {
 # Trap SIGTERM and SIGINT
 trap cleanup SIGTERM SIGINT
 
-# Wait for nginx-rtmp to be ready
-echo "[Wrapper] Waiting for nginx-rtmp to be ready..."
-until nc -z nginx-rtmp 1935; do
-    echo "[Wrapper] nginx-rtmp not ready, waiting..."
+# Wait for srs to be ready
+echo "[Wrapper] Waiting for srs to be ready..."
+until nc -z srs 1935; do
+    echo "[Wrapper] srs not ready, waiting..."
     sleep 2
 done
-echo "[Wrapper] nginx-rtmp is ready"
+echo "[Wrapper] srs is ready"
 
 # Wait for named pipe to be created by multiplexer
 PIPE_PATH="/pipe/ts_output.pipe"
@@ -44,8 +44,8 @@ done
 echo "[Wrapper] Named pipe ready!"
 ls -l "$PIPE_PATH"
 
-# RTMP URL (default to nginx-rtmp live stream)
-RTMP_URL=${RTMP_URL:-rtmp://nginx-rtmp/live/stream}
+# RTMP URL (default to srs live stream)
+RTMP_URL=${RTMP_URL:-rtmp://srs/live/stream}
 
 echo "[Wrapper] Configuration:"
 echo "  Input: Named pipe at $PIPE_PATH"

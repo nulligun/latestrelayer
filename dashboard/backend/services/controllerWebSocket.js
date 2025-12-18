@@ -166,9 +166,15 @@ class ControllerWebSocketClient extends EventEmitter {
         if (message.privacy_enabled !== undefined) {
           this.privacyEnabled = message.privacy_enabled;
         }
-        // Update sceneStartedAt from the timestamp in the message
-        if (message.timestamp !== undefined) {
+        // Update sceneStartedAt from the timestamp_iso in change_data (from multiplexer)
+        // This is the actual scene start time, not when the controller received the message
+        if (message.change_data?.timestamp_iso !== undefined) {
+          this.sceneStartedAt = message.change_data.timestamp_iso;
+          console.log(`[scene_change_debug] Using multiplexer timestamp: ${this.sceneStartedAt}`);
+        } else if (message.timestamp !== undefined) {
+          // Fallback to controller timestamp if multiplexer timestamp not available
           this.sceneStartedAt = message.timestamp;
+          console.log(`[scene_change_debug] Using controller timestamp (fallback): ${this.sceneStartedAt}`);
         }
         console.log(`[scene_change_debug] Emitting scene_change event with currentScene=${this.currentScene}, sceneStartedAt=${this.sceneStartedAt}`);
         this.emit('scene_change', {

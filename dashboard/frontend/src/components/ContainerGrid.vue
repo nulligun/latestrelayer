@@ -141,15 +141,6 @@ export default {
         const status = container.status;
         const health = container.health;
 
-        // Debug logging for all containers
-        console.log(`[ContainerGrid] getStatusDetail for ${container.name}:`, {
-          status,
-          health,
-          startedAt: container.startedAt,
-          finishedAt: container.finishedAt,
-          currentTime: currentTime.value
-        });
-
         // For exited containers - only use timestamp if valid
         if (status === 'exited') {
           if (container.finishedAt && container.finishedAt !== null) {

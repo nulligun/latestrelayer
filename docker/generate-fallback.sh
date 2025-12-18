@@ -64,6 +64,7 @@ if [ -z "$FONTFILE" ]; then
     ffmpeg -f lavfi -i color=c=black:s=1280x720:r=30 \
       -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
       -c:v libx264 -profile:v main -level 3.1 -b:v 3M -maxrate 3M -bufsize 6M -r 30 -pix_fmt yuv420p \
+      -g 90 -keyint_min 90 -sc_threshold 0 \
       -c:a aac -ac 2 -ar 48000 \
       -t 30 \
       -y \
@@ -74,6 +75,7 @@ else
       -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
       -vf "drawtext=fontfile='$FONTFILE':text='BRB...':fontcolor=yellow:fontsize=72:x=(w-text_w)/2:y=(h-text_h)/2" \
       -c:v libx264 -profile:v main -level 3.1 -b:v 3M -maxrate 3M -bufsize 6M -r 30 -pix_fmt yuv420p \
+      -g 90 -keyint_min 90 -sc_threshold 0 \
       -c:a aac -ac 2 -ar 48000 \
       -t 30 \
       -y \
