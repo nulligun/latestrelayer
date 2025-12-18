@@ -49,6 +49,7 @@ const controllerWs = new ControllerWebSocketClient(CONTROLLER_API);
 const aggregator = new AggregatorService({
   controllerUrl: CONTROLLER_API,
   compositorUrl: NGINX_STATS,
+  multiplexerUrl: MUXER_API,
   pollingInterval: POLLING_INTERVAL,
   srtPort: SRT_PORT,
   srtDomain: SRT_DOMAIN,
@@ -1174,6 +1175,16 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('[main][startup-debug] About to call controllerWs.connect()...');
   controllerWs.connect();
   console.log('[main][startup-debug] controllerWs.connect() called - connection in progress');
+  
+  // Start aggregator polling to fetch input metrics and other data
+  console.log('[main] Starting aggregator polling...');
+  aggregator.startPolling((data) => {
+    // Wrap aggregated data with message type for frontend
+    broadcast({
+      type: 'aggregated_data',
+      ...data
+    });
+  });
   
   // Start system metrics polling
   startMetricsPolling();

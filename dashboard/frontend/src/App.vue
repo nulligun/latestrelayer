@@ -47,6 +47,7 @@
         :rtmpStats="data.rtmpStats"
         :switcherHealth="data.switcherHealth"
         :streamStatus="data.streamStatus"
+        :inputMetrics="data.inputMetrics"
       />
 
       <!-- Full Interface -->
@@ -78,6 +79,9 @@
         <div class="dashboard-grid">
           <SystemMetrics
             :metrics="data.systemMetrics"
+          />
+          <InputMetrics
+            :metrics="data.inputMetrics"
           />
           <StreamStats
             :stats="data.rtmpStats"
@@ -130,6 +134,7 @@
 import { ref, computed, onMounted, onUnmounted, provide, watch } from 'vue';
 import { WebSocketService } from './services/websocket.js';
 import SystemMetrics from './components/SystemMetrics.vue';
+import InputMetrics from './components/InputMetrics.vue';
 import StreamStats from './components/StreamStats.vue';
 import StreamControls from './components/StreamControls.vue';
 import KickSettings from './components/KickSettings.vue';
@@ -141,6 +146,7 @@ export default {
   name: 'App',
   components: {
     SystemMetrics,
+    InputMetrics,
     StreamStats,
     StreamControls,
     KickSettings,
@@ -253,6 +259,11 @@ export default {
         imagePath: '/app/shared/offline.png',
         videoPath: '/app/shared/offline.mp4',
         browserUrl: 'https://example.com'
+      },
+      inputMetrics: {
+        fallback: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+        camera: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+        drone: { connected: false, bitrate_kbps: 0, data_age_ms: -1 }
       }
     });
 
@@ -351,6 +362,38 @@ export default {
         // Handle system metrics updates
         if (message.systemMetrics) {
           data.value.systemMetrics = message.systemMetrics;
+        }
+      } else if (message.type === 'aggregated_data') {
+        // Handle aggregated data from aggregator service (includes inputMetrics)
+        if (message.inputMetrics) {
+          data.value.inputMetrics = message.inputMetrics;
+        }
+        if (message.systemMetrics) {
+          data.value.systemMetrics = message.systemMetrics;
+        }
+        if (message.fallbackConfig) {
+          data.value.fallbackConfig = message.fallbackConfig;
+        }
+        if (message.cameraConfig) {
+          data.value.cameraConfig = message.cameraConfig;
+        }
+        if (message.streamStatus) {
+          data.value.streamStatus = message.streamStatus;
+        }
+        if (message.switcherHealth) {
+          data.value.switcherHealth = message.switcherHealth;
+        }
+        if (message.sceneDurationSeconds !== undefined) {
+          data.value.sceneDurationSeconds = message.sceneDurationSeconds;
+        }
+        if (message.sceneStartedAt !== undefined) {
+          data.value.sceneStartedAt = message.sceneStartedAt;
+        }
+        if (message.currentScene !== undefined) {
+          data.value.currentScene = message.currentScene;
+        }
+        if (message.containersFetchError !== undefined) {
+          data.value.containersFetchError = message.containersFetchError;
         }
       } else if (message.type === 'scene_change') {
         // Handle dedicated scene change messages
