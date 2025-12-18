@@ -135,6 +135,12 @@ void HttpServer::setGetSceneTimestampCallback(GetSceneTimestampCallback callback
     std::cout << "[HttpServer] setGetSceneTimestampCallback called - callback is " << (get_scene_timestamp_callback_ ? "SET" : "NULL") << std::endl;
 }
 
+void HttpServer::setGetInputMetricsCallback(GetInputMetricsCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    get_input_metrics_callback_ = std::move(callback);
+    std::cout << "[HttpServer] setGetInputMetricsCallback called - callback is " << (get_input_metrics_callback_ ? "SET" : "NULL") << std::endl;
+}
+
 void HttpServer::notifySceneChange(const std::string& scene, const std::string& controllerUrl) {
     // Send HTTP POST in a background thread to avoid blocking
     // Capture scene timestamp callback by reference
@@ -679,6 +685,68 @@ std::string HttpServer::handleRequest(const std::string& method, const std::stri
         return response.str();
     }
     
+    // Handle GET /input-metrics
+    if (method == "GET" && path == "/input-metrics") {
+        std::cout << "[HttpServer] GET /input-metrics request received" << std::endl;
+        std::ostringstream response_body;
+        
+        // Query input metrics from callback
+        {
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            if (get_input_metrics_callback_) {
+                AllInputMetrics metrics = get_input_metrics_callback_();
+                
+                std::cout << "[HttpServer] Input metrics retrieved:" << std::endl;
+                std::cout << "  Fallback: connected=" << metrics.fallback.connected 
+                          << ", bitrate=" << (metrics.fallback.bitrate_bps / 1024) << " Kbps"
+                          << ", data_age=" << metrics.fallback.data_age_ms << " ms" << std::endl;
+                std::cout << "  Camera: connected=" << metrics.camera.connected 
+                          << ", bitrate=" << (metrics.camera.bitrate_bps / 1024) << " Kbps"
+                          << ", data_age=" << metrics.camera.data_age_ms << " ms" << std::endl;
+                std::cout << "  Drone: connected=" << metrics.drone.connected 
+                          << ", bitrate=" << (metrics.drone.bitrate_bps / 1024) << " Kbps"
+                          << ", data_age=" << metrics.drone.data_age_ms << " ms" << std::endl;
+                
+                // Build JSON response with metrics for all three inputs
+                response_body << "{"
+                              << "\"fallback\": {"
+                              << "\"connected\": " << (metrics.fallback.connected ? "true" : "false") << ", "
+                              << "\"bitrate_kbps\": " << (metrics.fallback.bitrate_bps / 1024) << ", "
+                              << "\"data_age_ms\": " << metrics.fallback.data_age_ms
+                              << "}, "
+                              << "\"camera\": {"
+                              << "\"connected\": " << (metrics.camera.connected ? "true" : "false") << ", "
+                              << "\"bitrate_kbps\": " << (metrics.camera.bitrate_bps / 1024) << ", "
+                              << "\"data_age_ms\": " << metrics.camera.data_age_ms
+                              << "}, "
+                              << "\"drone\": {"
+                              << "\"connected\": " << (metrics.drone.connected ? "true" : "false") << ", "
+                              << "\"bitrate_kbps\": " << (metrics.drone.bitrate_bps / 1024) << ", "
+                              << "\"data_age_ms\": " << metrics.drone.data_age_ms
+                              << "}"
+                              << "}";
+            } else {
+                std::cout << "[HttpServer] WARNING: get_input_metrics_callback_ is NULL" << std::endl;
+                // No callback set - return zeros
+                response_body << "{"
+                              << "\"fallback\": {\"connected\": false, \"bitrate_kbps\": 0, \"data_age_ms\": -1}, "
+                              << "\"camera\": {\"connected\": false, \"bitrate_kbps\": 0, \"data_age_ms\": -1}, "
+                              << "\"drone\": {\"connected\": false, \"bitrate_kbps\": 0, \"data_age_ms\": -1}"
+                              << "}";
+            }
+        }
+        
+        std::string body = response_body.str();
+        std::cout << "[HttpServer] Sending response: " << body << std::endl;
+        std::ostringstream response;
+        response << "HTTP/1.1 200 OK\r\n"
+                 << "Content-Type: application/json\r\n"
+                 << "Content-Length: " << body.length() << "\r\n"
+                 << "\r\n"
+                 << body;
+        return response.str();
+    }
+
     // 404 for other paths
     std::string response_body = "{\"error\": \"Not found\"}";
     std::ostringstream response;

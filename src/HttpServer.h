@@ -34,6 +34,19 @@ public:
     using GetCurrentSceneCallback = std::function<std::string()>;
     using GetSceneTimestampCallback = std::function<int64_t()>;
     
+    // Callback to get input metrics for all sources
+    struct InputMetrics {
+        bool connected;
+        int64_t data_age_ms;
+        uint64_t bitrate_bps;
+    };
+    struct AllInputMetrics {
+        InputMetrics fallback;
+        InputMetrics camera;
+        InputMetrics drone;
+    };
+    using GetInputMetricsCallback = std::function<AllInputMetrics()>;
+    
     explicit HttpServer(uint16_t port);
     ~HttpServer();
     
@@ -65,6 +78,9 @@ public:
     // Register callback for getting scene change timestamp
     void setGetSceneTimestampCallback(GetSceneTimestampCallback callback);
     
+    // Register callback for getting input metrics
+    void setGetInputMetricsCallback(GetInputMetricsCallback callback);
+    
     // Notify controller of scene change
     void notifySceneChange(const std::string& scene, const std::string& controllerUrl);
     
@@ -92,5 +108,6 @@ private:
     InputSourceCallback input_source_callback_;
     GetCurrentSceneCallback get_current_scene_callback_;
     GetSceneTimestampCallback get_scene_timestamp_callback_;
+    GetInputMetricsCallback get_input_metrics_callback_;
     std::shared_ptr<InputSourceManager> input_source_manager_;
 };

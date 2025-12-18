@@ -87,6 +87,7 @@ export default {
 
     const containerDescriptions = {
       'multiplexer': 'Uncompressed domain splicer',
+      'pipe-init': 'Create named pipes',
       'ffmpeg-kick': 'Stream to kick',
       'dashboard': 'This control panel',
       'ffmpeg-fallback': 'A looping video of the BRB screen',

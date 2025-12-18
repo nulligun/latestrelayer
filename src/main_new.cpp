@@ -177,6 +177,28 @@ int main(int argc, char* argv[]) {
         }
     });
     
+    // Register input metrics callback
+    http_server.setGetInputMetricsCallback([&camera_reader, &fallback_reader, &drone_reader]() -> HttpServer::AllInputMetrics {
+        HttpServer::AllInputMetrics metrics;
+        
+        // Fallback metrics
+        metrics.fallback.connected = fallback_reader.isConnected();
+        metrics.fallback.data_age_ms = fallback_reader.getMsSinceLastData();
+        metrics.fallback.bitrate_bps = fallback_reader.getCurrentBitrateBps();
+        
+        // Camera metrics
+        metrics.camera.connected = camera_reader.isConnected();
+        metrics.camera.data_age_ms = camera_reader.getMsSinceLastData();
+        metrics.camera.bitrate_bps = camera_reader.getCurrentBitrateBps();
+        
+        // Drone metrics
+        metrics.drone.connected = drone_reader.isConnected();
+        metrics.drone.data_age_ms = drone_reader.getMsSinceLastData();
+        metrics.drone.bitrate_bps = drone_reader.getCurrentBitrateBps();
+        
+        return metrics;
+    });
+    
     if (!http_server.start()) {
         std::cerr << "[Main] Failed to start HTTP server" << std::endl;
         return 1;
@@ -737,8 +759,21 @@ int main(int argc, char* argv[]) {
         
         // Periodic logging
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - last_log).count() >= 10) {
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - last_log).count() >= 5) {
             std::cout << "[Main] Packets processed: " << packets_processed << std::endl;
+            
+            // Log health metrics for all inputs
+            std::cout << "[Main] Input Health Metrics:" << std::endl;
+            std::cout << "  Fallback: connected=" << fallback_reader.isConnected() 
+                      << ", bitrate=" << (fallback_reader.getCurrentBitrateBps() / 1024) << " Kbps"
+                      << ", data_age=" << fallback_reader.getMsSinceLastData() << " ms" << std::endl;
+            std::cout << "  Camera: connected=" << camera_reader.isConnected() 
+                      << ", bitrate=" << (camera_reader.getCurrentBitrateBps() / 1024) << " Kbps"
+                      << ", data_age=" << camera_reader.getMsSinceLastData() << " ms" << std::endl;
+            std::cout << "  Drone: connected=" << drone_reader.isConnected() 
+                      << ", bitrate=" << (drone_reader.getCurrentBitrateBps() / 1024) << " Kbps"
+                      << ", data_age=" << drone_reader.getMsSinceLastData() << " ms" << std::endl;
+            
             last_log = now;
         }
     }

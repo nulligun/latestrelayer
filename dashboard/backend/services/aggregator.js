@@ -34,6 +34,7 @@ class AggregatorService {
   constructor(config) {
     this.controllerService = new ControllerService(config.controllerUrl);
     this.compositorUrl = config.compositorUrl;
+    this.multiplexerUrl = config.multiplexerUrl || 'http://multiplexer:8091';
     this.pollingInterval = config.pollingInterval || 2000;
     this.clients = new Set();
     
@@ -100,6 +101,66 @@ class AggregatorService {
         activeContainer: null
       };
     }
+  }
+
+  /**
+   * Get input metrics from multiplexer
+   */
+  async getInputMetrics() {
+    return new Promise((resolve) => {
+      // Parse multiplexer URL
+      const url = new URL(this.multiplexerUrl);
+      console.log('[aggregator] Fetching input metrics from:', this.multiplexerUrl + '/input-metrics');
+      
+      const options = {
+        hostname: url.hostname,
+        port: url.port || 8091,
+        path: '/input-metrics',
+        method: 'GET',
+        timeout: 2000,
+        agent: this.httpAgent
+      };
+
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const metrics = JSON.parse(data);
+            console.log('[aggregator] Input metrics received:', JSON.stringify(metrics));
+            resolve(metrics);
+          } catch (error) {
+            console.error('[aggregator] Error parsing input metrics:', error.message);
+            resolve({
+              fallback: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+              camera: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+              drone: { connected: false, bitrate_kbps: 0, data_age_ms: -1 }
+            });
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        console.error('[aggregator] Error fetching input metrics:', error.message);
+        resolve({
+          fallback: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+          camera: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+          drone: { connected: false, bitrate_kbps: 0, data_age_ms: -1 }
+        });
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        console.error('[aggregator] Timeout fetching input metrics');
+        resolve({
+          fallback: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+          camera: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+          drone: { connected: false, bitrate_kbps: 0, data_age_ms: -1 }
+        });
+      });
+
+      req.end();
+    });
   }
 
   /**
@@ -177,10 +238,11 @@ class AggregatorService {
     const timestamp = new Date().toISOString();
 
     try {
-      const [containersResult, systemMetrics, fallbackConfig] = await Promise.all([
+      const [containersResult, systemMetrics, fallbackConfig, inputMetrics] = await Promise.all([
         this.controllerService.listContainers(),
         metricsService.getSystemMetrics(),
-        this.getFallbackConfig()
+        this.getFallbackConfig(),
+        this.getInputMetrics()
       ]);
       
       // Get scene and privacy state from controller WebSocket
@@ -279,7 +341,8 @@ class AggregatorService {
         cameraConfig: {
           srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
         },
-        fallbackConfig: reconciledFallbackConfig
+        fallbackConfig: reconciledFallbackConfig,
+        inputMetrics
       };
     } catch (error) {
       console.error('[aggregator] Error aggregating data:', error.message);
@@ -317,6 +380,11 @@ class AggregatorService {
           imagePath: '/app/shared/offline.png',
           videoPath: '/app/shared/offline.mp4',
           browserUrl: 'https://example.com'
+        },
+        inputMetrics: {
+          fallback: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+          camera: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+          drone: { connected: false, bitrate_kbps: 0, data_age_ms: -1 }
         },
         error: error.message
       };

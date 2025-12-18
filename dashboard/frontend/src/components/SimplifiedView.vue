@@ -32,7 +32,7 @@
       </div>
       <div class="scene-value">{{ displayScene }}</div>
       <div v-if="sceneDurationSeconds > 0 && displayScene !== 'Unknown'" class="scene-duration">
-        {{ formatDuration(sceneDurationSeconds) }}
+        {{ formatDuration(sceneDurationSeconds) }} | {{ currentInputBitrate }} Kbps | Data age: {{ currentInputDataAge }}
       </div>
     </div>
 
@@ -122,6 +122,14 @@ export default {
     streamStatus: {
       type: Object,
       default: () => ({})
+    },
+    inputMetrics: {
+      type: Object,
+      default: () => ({
+        fallback: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+        camera: { connected: false, bitrate_kbps: 0, data_age_ms: -1 },
+        drone: { connected: false, bitrate_kbps: 0, data_age_ms: -1 }
+      })
     }
   },
   setup(props) {
@@ -211,6 +219,42 @@ export default {
       
       // Return original scene name for any unknown scenes
       return props.currentScene;
+    });
+
+    // Computed: Current input bitrate based on active scene
+    const currentInputBitrate = computed(() => {
+      const scene = props.currentScene?.toUpperCase();
+      
+      // Determine which input is active based on scene
+      if (scene === 'LIVE' || scene === 'LIVE-CAMERA' || scene === 'SRT') {
+        return props.inputMetrics?.camera?.bitrate_kbps?.toFixed(0) || '0';
+      } else if (scene === 'LIVE-DRONE') {
+        return props.inputMetrics?.drone?.bitrate_kbps?.toFixed(0) || '0';
+      } else if (scene === 'FALLBACK' || scene === 'VIDEO' || scene === 'BLACK') {
+        return props.inputMetrics?.fallback?.bitrate_kbps?.toFixed(0) || '0';
+      }
+      
+      return '0';
+    });
+
+    // Computed: Current input data age based on active scene
+    const currentInputDataAge = computed(() => {
+      const scene = props.currentScene?.toUpperCase();
+      let ageMs = -1;
+      
+      // Determine which input is active based on scene
+      if (scene === 'LIVE' || scene === 'LIVE-CAMERA' || scene === 'SRT') {
+        ageMs = props.inputMetrics?.camera?.data_age_ms ?? -1;
+      } else if (scene === 'LIVE-DRONE') {
+        ageMs = props.inputMetrics?.drone?.data_age_ms ?? -1;
+      } else if (scene === 'FALLBACK' || scene === 'VIDEO' || scene === 'BLACK') {
+        ageMs = props.inputMetrics?.fallback?.data_age_ms ?? -1;
+      }
+      
+      // Format the age
+      if (ageMs < 0) return 'N/A';
+      if (ageMs < 1000) return `${ageMs}ms`;
+      return `${(ageMs / 1000).toFixed(1)}s`;
     });
 
     // Computed: Is stream online (same as isKickLive for backwards compatibility)
@@ -446,7 +490,9 @@ export default {
       kickChannelUrl,
       hlsUrl,
       activeInput,
-      displayActiveInput
+      displayActiveInput,
+      currentInputBitrate,
+      currentInputDataAge
     };
   }
 };
