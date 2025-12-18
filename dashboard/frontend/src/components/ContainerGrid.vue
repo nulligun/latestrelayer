@@ -93,7 +93,7 @@ export default {
       'ffmpeg-rtmp-output': 'Relay multiplexer output to rtmp server',
       'mock-camera': 'Camera test feed',
       'mock-drone': 'Drone test feed',
-      'nginx-rtmp': 'RTMP Relay server',
+      'srs': 'RTMP Relay server',
       'ffmpeg-srt-input': 'SRT input',
       'ffmpeg-rtmp-input': 'RTMP input',
       'controller': 'API for container management',

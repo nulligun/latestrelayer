@@ -20,8 +20,8 @@ cleanup() {
 # Trap SIGTERM and SIGINT
 trap cleanup SIGTERM SIGINT
 
-# Wait for nginx-rtmp to be ready
-echo "[Wrapper] Waiting for nginx-rtmp to be ready..."
+# Wait for srs to be ready
+echo "[Wrapper] Waiting for srs to be ready..."
 sleep 5
 
 # Named pipe path
@@ -44,14 +44,14 @@ ls -l "$PIPE_PATH"
 # Infinite restart loop
 while true; do
     # Start ffmpeg in background
-    # Pulls from nginx-rtmp drone publish endpoint and outputs to named pipe
+    # Pulls from srs drone publish endpoint and outputs to named pipe
     echo "[Wrapper] Starting ffmpeg RTMP→pipe bridge..."
     echo "[Wrapper] Full command:"
-    echo "ffmpeg -y -nostdin -loglevel debug -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 2 -i 'rtmp://nginx-rtmp/publish/drone' -c copy -f mpegts -mpegts_flags +resend_headers \"${PIPE_PATH}\""
+    echo "ffmpeg -y -nostdin -loglevel debug -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 2 -i 'rtmp://srs/publish/drone' -c copy -f mpegts -mpegts_flags +resend_headers \"${PIPE_PATH}\""
     ffmpeg -y -nostdin \
         -loglevel debug \
         -fflags +nobuffer+genpts \
-        -i 'rtmp://nginx-rtmp/publish/drone' \
+        -i 'rtmp://srs/publish/drone' \
         -c copy \
         -f mpegts \
         -mpegts_flags +resend_headers \

@@ -18,7 +18,7 @@ fallback_tcp_port: 10001
 
 # RTMP output URL (internal Docker network address)
 # External playback: rtmp://localhost:1935/live/stream (RTMP) or http://localhost:8080/hls/stream.m3u8 (HLS)
-rtmp_url: "rtmp://nginx-rtmp/live/stream"
+rtmp_url: "rtmp://srs/live/stream"
 
 # =============================================================================
 # Input Source Configuration
@@ -26,7 +26,7 @@ rtmp_url: "rtmp://nginx-rtmp/live/stream"
 
 # Drone RTMP input URL
 # The multiplexer can pull from this RTMP URL when drone input is selected
-drone_rtmp_url: "rtmp://nginx-rtmp:1935/publish/drone"
+drone_rtmp_url: "rtmp://srs:1935/publish/drone"
 
 # Input source state file path
 # This file persists which input source (camera/drone) is active

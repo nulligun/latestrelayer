@@ -8,7 +8,7 @@
  * - FIFOInput for fallback input (/pipe/fallback.ts)
  * - StreamSplicer for timestamp rebasing and splice logic
  * - FIFOOutput to ffmpeg-rtmp-output (/pipe/ts_output.pipe)
- * - FFmpeg publishes to nginx-rtmp
+ * - FFmpeg publishes to srs
  *
  * Switching logic:
  * - Start with fallback stream
