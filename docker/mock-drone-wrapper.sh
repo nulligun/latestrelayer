@@ -22,7 +22,7 @@ echo "[Wrapper] Waiting for nginx-rtmp to be ready..."
 sleep 5
 
 # Start ffmpeg in background
-echo "[Wrapper] Starting mock drone stream to rtmp://nginx-rtmp:1935/publish/drone..."
+echo "[Wrapper] Starting mock drone stream to rtmp://nginx-rtmp:1935/publish/drone...
 
 ffmpeg -y -nostdin -re \
   -fflags +genpts -start_at_zero \
@@ -32,7 +32,7 @@ ffmpeg -y -nostdin -re \
   -map "[vout]" -map 1:a \
   -vsync cfr -r 30 \
   -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p \
-  -g 60 -keyint_min 60 -sc_threshold 0 \
+  -g 90 -keyint_min 90 -sc_threshold 0 \
   -b:v 3000k -minrate 3000k -maxrate 3000k -bufsize 3000k \
   -x264-params "nal-hrd=cbr:force-cfr=1" \
   -c:a aac -b:a 128k -ar 48000 -ac 2 \

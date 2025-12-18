@@ -20,6 +20,13 @@
         <p class="loading-text">Loading stream...</p>
       </div>
       
+      <!-- Recovery indicator -->
+      <div v-if="isRecovering" class="recovery-overlay">
+        <div class="loading-spinner"></div>
+        <p class="recovery-text">Recovering stream...</p>
+        <p class="recovery-subtext">Attempt {{ recoveryAttempts }} of {{ maxRecoveryAttempts }}</p>
+      </div>
+      
       <!-- Error overlay -->
       <div v-if="error && !isPlaying" class="error-overlay">
         <div class="error-icon">⚠</div>
@@ -54,7 +61,7 @@ export default {
   props: {
     hlsUrl: {
       type: String,
-      default: '/api/hls/stream.m3u8'
+      default: '/live/stream.m3u8'
     }
   },
   setup(props) {
@@ -64,19 +71,32 @@ export default {
     const isPlayPending = ref(false);
     const isMuted = ref(true);
     const error = ref(null);
+    const isRecovering = ref(false);
+    const recoveryAttempts = ref(0);
+    const maxRecoveryAttempts = ref(3);
     let hls = null;
+    let mediaErrorRecoveryCount = 0;
 
     const initHls = () => {
       if (!videoElement.value) return;
 
       // Clean up existing HLS instance
       destroyHls();
+      
+      // Reset recovery counter on fresh init
+      mediaErrorRecoveryCount = 0;
 
       if (Hls.isSupported()) {
         hls = new Hls({
           enableWorker: true,
           lowLatencyMode: true,
           backBufferLength: 30,
+          maxBufferHole: 0.5,           // Tolerate small gaps in buffer
+          maxMaxBufferLength: 30,
+          fragLoadingMaxRetry: 6,       // More fragment retries
+          manifestLoadingMaxRetry: 4,
+          levelLoadingMaxRetry: 4,
+          appendErrorMaxRetry: 3,       // Retry buffer appends
           debug: true  // Enable HLS.js debug logging
         });
 
@@ -210,21 +230,45 @@ export default {
             }
           }
 
+          // Handle non-fatal fragment errors - skip corrupted segments
+          if (!data.fatal && data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            if (data.details === Hls.ErrorDetails.FRAG_PARSING_ERROR || 
+                data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR) {
+              console.warn('[VideoPreview] Non-fatal fragment error - HLS.js will skip and continue');
+              return;
+            }
+          }
+
           if (data.fatal) {
-            isLoading.value = false;
             switch (data.type) {
               case Hls.ErrorTypes.NETWORK_ERROR:
-                error.value = `Stream not available (${data.details})`;
                 console.error('[VideoPreview] Fatal network error - possible causes: stream not running, CORS issue, or segment fetch failed');
+                // Try to recover from network errors
+                if (mediaErrorRecoveryCount < maxRecoveryAttempts.value) {
+                  mediaErrorRecoveryCount++;
+                  isRecovering.value = true;
+                  console.log(`[VideoPreview] Attempting network recovery (${mediaErrorRecoveryCount}/${maxRecoveryAttempts.value})`);
+                  setTimeout(() => {
+                    if (hls) {
+                      hls.startLoad();
+                      isRecovering.value = false;
+                    }
+                  }, 1000);
+                } else {
+                  isLoading.value = false;
+                  error.value = `Stream not available (${data.details})`;
+                }
                 break;
+                
               case Hls.ErrorTypes.MEDIA_ERROR:
-                error.value = `Media error: ${data.details}`;
-                console.error('[VideoPreview] Fatal media error - attempting recovery. Possible causes: codec mismatch, corrupted segment, or unsupported codec profile');
-                hls.recoverMediaError();
+                console.error('[VideoPreview] Fatal media error - attempting progressive recovery');
+                handleMediaErrorRecovery(data);
                 break;
+                
               default:
                 error.value = `Stream error: ${data.details}`;
                 console.error('[VideoPreview] Fatal unknown error - destroying HLS instance');
+                isLoading.value = false;
                 destroyHls();
                 break;
             }
@@ -260,11 +304,60 @@ export default {
       }
     };
 
+    const handleMediaErrorRecovery = (data) => {
+      if (mediaErrorRecoveryCount >= maxRecoveryAttempts.value) {
+        console.error('[VideoPreview] Max recovery attempts reached - giving up');
+        isLoading.value = false;
+        isRecovering.value = false;
+        error.value = `Media error: ${data.details} (recovery failed)`;
+        return;
+      }
+
+      mediaErrorRecoveryCount++;
+      recoveryAttempts.value = mediaErrorRecoveryCount;
+      isRecovering.value = true;
+      
+      console.log(`[VideoPreview] Media error recovery attempt ${mediaErrorRecoveryCount}/${maxRecoveryAttempts.value}`);
+
+      // Progressive recovery strategy
+      if (mediaErrorRecoveryCount === 1) {
+        // First attempt: Simple media error recovery
+        console.log('[VideoPreview] Recovery strategy 1: recoverMediaError()');
+        setTimeout(() => {
+          if (hls) {
+            hls.recoverMediaError();
+            isRecovering.value = false;
+          }
+        }, 500);
+      } else if (mediaErrorRecoveryCount === 2) {
+        // Second attempt: Swap audio codec and recover
+        console.log('[VideoPreview] Recovery strategy 2: swapAudioCodec() + recoverMediaError()');
+        setTimeout(() => {
+          if (hls) {
+            hls.swapAudioCodec();
+            hls.recoverMediaError();
+            isRecovering.value = false;
+          }
+        }, 500);
+      } else {
+        // Third attempt: Full reinitialize
+        console.log('[VideoPreview] Recovery strategy 3: Full HLS reinitialization');
+        setTimeout(() => {
+          isRecovering.value = false;
+          isLoading.value = true;
+          initHls();
+        }, 1000);
+      }
+    };
+
     const destroyHls = () => {
       if (hls) {
         hls.destroy();
         hls = null;
       }
+      mediaErrorRecoveryCount = 0;
+      recoveryAttempts.value = 0;
+      isRecovering.value = false;
     };
 
     const togglePlayback = () => {
@@ -280,6 +373,7 @@ export default {
         // Start playback
         isLoading.value = true;
         error.value = null;
+        recoveryAttempts.value = 0;
         initHls();
       }
     };
@@ -294,6 +388,8 @@ export default {
     const retryPlayback = () => {
       error.value = null;
       isLoading.value = true;
+      recoveryAttempts.value = 0;
+      mediaErrorRecoveryCount = 0;
       initHls();
     };
 
@@ -346,6 +442,9 @@ export default {
       isPlayPending,
       isMuted,
       error,
+      isRecovering,
+      recoveryAttempts,
+      maxRecoveryAttempts,
       togglePlayback,
       toggleMute,
       retryPlayback,
@@ -410,6 +509,7 @@ export default {
 
 .poster-overlay,
 .loading-overlay,
+.recovery-overlay,
 .error-overlay {
   position: absolute;
   top: 0;
@@ -462,6 +562,23 @@ export default {
 .loading-text {
   color: #94a3b8;
   font-size: 1rem;
+  margin: 0;
+}
+
+.recovery-overlay {
+  background: rgba(15, 23, 42, 0.95);
+}
+
+.recovery-text {
+  color: #f59e0b;
+  font-size: 1rem;
+  margin: 0 0 8px 0;
+  font-weight: 600;
+}
+
+.recovery-subtext {
+  color: #94a3b8;
+  font-size: 0.85rem;
   margin: 0;
 }
 

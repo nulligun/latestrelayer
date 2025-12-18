@@ -27,12 +27,25 @@ echo "[Wrapper] Starting mock camera stream..."
 ffmpeg -re \
   -f lavfi -i "testsrc2=size=1280x720:rate=30" \
   -f lavfi -i "sine=frequency=440:sample_rate=48000" \
-  -filter_complex "[0:v]drawtext=text='CAMERA':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=72:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=50[vout];[1:a]aformat=channel_layouts=stereo[aout]" \
+  -filter_complex "\
+[0:v]drawtext=text='CAMERA':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=72:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=50,format=yuv420p[vout];\
+[1:a]aformat=channel_layouts=stereo:sample_rates=48000[aout]" \
   -map "[vout]" -map "[aout]" \
-  -c:v libx264 -tune zerolatency -preset veryfast -pix_fmt yuv420p \
-  -g 30 -keyint_min 30 \
-  -c:a aac -b:a 128k \
-  -f mpegts "srt://ffmpeg-srt-input:1937?mode=caller&transtype=live&latency=200000&connect_timeout=5000&timeout=5000000&pkt_size=1316" &
+  -c:v libx264 \
+  -profile:v main -level 3.1 \
+  -preset fast \
+  -r 30 \
+  -b:v 3M -maxrate 3M -bufsize 6M \
+  -g 90 -keyint_min 90 -sc_threshold 0 \
+  -x264-params "nal-hrd=cbr:force-cfr=1:repeat-headers=1" \
+  -c:a aac -ac 2 -ar 48000 -b:a 128k \
+  -f mpegts \
+  -mpegts_flags +resend_headers \
+  -mpegts_service_id 1 \
+  -mpegts_pmt_start_pid 256 \
+  -mpegts_start_pid 257 \
+  -muxrate 5000000 \
+  "srt://ffmpeg-srt-input:1937?mode=caller&transtype=live&latency=200000&connect_timeout=5000&timeout=5000000&pkt_size=1316" &
 
 FFMPEG_PID=$!
 echo "[Wrapper] FFmpeg started with PID $FFMPEG_PID"

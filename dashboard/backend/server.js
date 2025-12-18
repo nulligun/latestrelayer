@@ -19,13 +19,13 @@ const execPromise = promisify(exec);
 // Configuration from environment variables
 const PORT = process.env.PORT || 3000;
 const CONTROLLER_API = process.env.CONTROLLER_API || 'http://controller:8089';
-const NGINX_STATS = process.env.NGINX_STATS || 'http://nginx-rtmp:8080/stat';
+const NGINX_STATS = process.env.NGINX_STATS || 'http://srs:1985/api/v1/streams/';
 const POLLING_INTERVAL = parseInt(process.env.POLLING_INTERVAL || '2000');
 const SRT_PORT = process.env.SRT_PORT || '1937';
 const SRT_DOMAIN = process.env.SRT_DOMAIN || 'localhost';
 const RTMP_PORT = process.env.RTMP_PORT || '1935';
 const KICK_CHANNEL = process.env.KICK_CHANNEL || '';
-const NGINX_RTMP_HLS = process.env.NGINX_RTMP_HLS || 'http://nginx-rtmp:8080';
+const NGINX_RTMP_HLS = process.env.NGINX_RTMP_HLS || 'http://srs:8080';
 const MUXER_API = process.env.MUXER_API || 'http://multiplexer:8091';
 const SHARED_DIR = '/app/shared';
 const FALLBACK_CONFIG_PATH = path.join(SHARED_DIR, 'fallback_config.json');
@@ -314,7 +314,8 @@ controllerWs.on('scene_change', (data) => {
     currentScene: data.currentScene,
     privacyEnabled: data.privacyEnabled,
     changeData: data.changeData,
-    timestamp: data.timestamp
+    timestamp: data.timestamp,
+    sceneStartedAt: data.sceneStartedAt
   });
   console.log(`[scene_change_debug] Broadcast complete for scene_change`);
 });
@@ -375,10 +376,10 @@ app.get('/api/config', async (req, res) => {
   }
 });
 
-// HLS Proxy - forwards requests to nginx-rtmp server
+// HLS Proxy - forwards requests to SRS server
 app.get('/api/hls/*', async (req, res) => {
   const hlsPath = req.params[0];
-  const targetUrl = `${NGINX_RTMP_HLS}/hls/${hlsPath}`;
+  const targetUrl = `${NGINX_RTMP_HLS}/live/${hlsPath}`;
   
   try {
     const controller = new AbortController();
