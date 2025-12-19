@@ -320,7 +320,7 @@ class AggregatorService {
         })),
         containersFetchError,
         systemMetrics,
-        compositorHealth: {
+        switcherHealth: {
           status: isOnline ? 'healthy' : 'unavailable',
           current_scene: currentScene,
           srt_connected: currentScene === 'LIVE',  // Infer SRT connection from scene
@@ -356,7 +356,7 @@ class AggregatorService {
         timestamp,
         containers: [],
         systemMetrics: { cpu: 0, memory: 0, load: [0] },
-        compositorHealth: {
+        switcherHealth: {
           status: 'error',
           current_scene: 'unknown',
           srt_connected: false,

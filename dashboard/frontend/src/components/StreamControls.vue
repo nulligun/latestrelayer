@@ -815,24 +815,24 @@ export default {
         
         console.log(`[StreamControls] Kick stream ${this.pendingKickAction} successful`);
         
-        // If starting, set pending state and 10-second timeout
+        // If starting, set pending state and wait for container state update
         if (isStarting) {
           this.kickStartPending = true;
-          console.log('[StreamControls] Waiting for container to start (10s timeout)...');
+          console.log('[StreamControls] Waiting for container to start...');
           
           // Clear any existing timeout
           if (this.kickStartTimeoutId) {
             clearTimeout(this.kickStartTimeoutId);
           }
           
-          // Set 10-second timeout
+          // Set 5-second timeout to clear pending state if no update received
           this.kickStartTimeoutId = setTimeout(() => {
             if (this.kickStartPending) {
-              console.warn('[StreamControls] Kick container start timeout - reverting toggle');
+              console.log('[StreamControls] Timeout waiting for container state update, clearing pending state');
               this.kickStartPending = false;
               this.kickStartTimeoutId = null;
             }
-          }, 10000);
+          }, 5000);
         }
       } catch (error) {
         console.error('[StreamControls] Kick toggle error:', error);
