@@ -188,7 +188,8 @@ export default {
     const statusWarnings = computed(() => {
       const warnings = [];
       
-      if (!data.value.streamStatus?.kickStreamingEnabled) {
+      // Check kick_streaming_enabled from switcherHealth (same as toggle button)
+      if (!data.value.switcherHealth?.kick_streaming_enabled) {
         warnings.push('NOT LIVE ON KICK!');
       }
       
@@ -204,7 +205,8 @@ export default {
     const statusSuccess = computed(() => {
       const successes = [];
       
-      if (data.value.streamStatus?.kickStreamingEnabled) {
+      // Check kick_streaming_enabled from switcherHealth (same as toggle button)
+      if (data.value.switcherHealth?.kick_streaming_enabled) {
         successes.push("WE'RE LIVE ON KICK!");
       }
       
