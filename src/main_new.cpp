@@ -570,7 +570,7 @@ int main(int argc, char* argv[]) {
                     auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
                     g_scene_change_time_ms.store(ms_since_epoch);
                     
-                    std::cout << "[Main] Switched back to FALLBACK mode" << std::endl;
+                    std::cout << "[Main] Switched to FALLBACK mode" << std::endl;
                     std::cout << "[Main] Camera packets received: " << camera_reader.getPacketsReceived() << std::endl;
                     http_server.notifySceneChange("fallback", g_controller_url);
                 }
@@ -589,6 +589,9 @@ int main(int argc, char* argv[]) {
                 std::cout << "[Main] Switched to FALLBACK mode" << std::endl;
                 std::cout << "[Main] Camera packets received: " << camera_reader.getPacketsReceived() << std::endl;
                 http_server.notifySceneChange("fallback", g_controller_url);
+                
+                current_mode = Mode::FALLBACK;
+                active_reader = &fallback_reader;
             }
             // NEW: Check if user wants DRONE and drone is available (direct switch from CAMERA to DRONE)
             else if (g_requested_live_source.load() == RequestedLiveSource::DRONE &&
@@ -746,6 +749,9 @@ int main(int argc, char* argv[]) {
                 std::cout << "[Main] Switched to FALLBACK mode" << std::endl;
                 std::cout << "[Main] Camera packets received: " << camera_reader.getPacketsReceived() << std::endl;
                 http_server.notifySceneChange("fallback", g_controller_url);
+
+                current_mode = Mode::FALLBACK;
+                active_reader = &fallback_reader;
             }
         }
         

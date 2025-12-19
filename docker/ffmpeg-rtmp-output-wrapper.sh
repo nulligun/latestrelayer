@@ -62,15 +62,12 @@ while true; do
     ffmpeg -nostdin \
         -loglevel debug \
         -stats \
-        -fflags +discardcorrupt+genpts \
+        -fflags +discardcorrupt+genpts+igndts \
         -f mpegts \
         -analyzeduration 0 \
         -probesize 32768 \
         -i "${PIPE_PATH}" \
         -c copy \
-        -muxdelay 0 -muxpreload 0 \
-        -max_interleave_delta 0 \
-        -max_muxing_queue_size 4096 \
         -flvflags no_duration_filesize \
         -rtmp_live live \
         -f flv \
