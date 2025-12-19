@@ -98,7 +98,7 @@ class UploadProcessor extends EventEmitter {
         '-muxrate', '5000000',
         '-t', '30',
         tsOutputPath
-      ], 30); // 30 seconds of output
+      ], 30, 60); // 30 seconds actual, display as 60
 
       this.currentJob.progress = 100;
       this.currentJob.message = 'Image processing completed';
@@ -163,7 +163,7 @@ class UploadProcessor extends EventEmitter {
       await this._runFfmpegWithProgress([
         '-y',
         '-i', sourcePath,
-        '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black',
+        '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720,(ow-iw)/2:(oh-ih)/2:black',
         '-c:v', 'libx264',
         '-preset', 'fast',
         '-b:v', '3M',
@@ -182,7 +182,7 @@ class UploadProcessor extends EventEmitter {
         '-mpegts_start_pid', '257',
         '-muxrate', '5000000',
         tsOutputPath
-      ], duration);
+      ], duration, duration * 2);
 
       this.currentJob.progress = 100;
       this.currentJob.message = 'Video processing completed';
@@ -280,8 +280,12 @@ class UploadProcessor extends EventEmitter {
    * Run ffmpeg with progress monitoring
    * @param {Array} args - ffmpeg arguments
    * @param {number} totalDuration - Expected output duration in seconds
+   * @param {number} displayDuration - Duration to display in progress message (optional, defaults to totalDuration)
    */
-  async _runFfmpegWithProgress(args, totalDuration) {
+  async _runFfmpegWithProgress(args, totalDuration, displayDuration = null) {
+    // Use displayDuration for message if provided, otherwise use totalDuration
+    const durationForDisplay = displayDuration !== null ? displayDuration : totalDuration;
+    
     return new Promise((resolve, reject) => {
       // Add progress output to pipe
       const ffmpegArgs = ['-progress', 'pipe:1', ...args];
@@ -303,7 +307,7 @@ class UploadProcessor extends EventEmitter {
               
               if (this.currentJob && progressPercent > this.currentJob.progress) {
                 this.currentJob.progress = Math.round(progressPercent);
-                this.currentJob.message = `Converting... ${Math.round(currentTime)}s / ${Math.round(totalDuration)}s`;
+                this.currentJob.message = `Converting... ${Math.round(currentTime)}s / ${Math.round(durationForDisplay)}s`;
                 this._emitProgress();
               }
             }
@@ -316,7 +320,7 @@ class UploadProcessor extends EventEmitter {
               
               if (this.currentJob && progressPercent > this.currentJob.progress) {
                 this.currentJob.progress = Math.round(progressPercent);
-                this.currentJob.message = `Converting... ${Math.round(currentTime)}s / ${Math.round(totalDuration)}s`;
+                this.currentJob.message = `Converting... ${Math.round(currentTime)}s / ${Math.round(durationForDisplay)}s`;
                 this._emitProgress();
               }
             }

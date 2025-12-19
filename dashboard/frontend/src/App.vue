@@ -242,7 +242,8 @@ export default {
       sourceAvailability: null,
       streamStatus: {
         isOnline: false,
-        durationSeconds: 0
+        durationSeconds: 0,
+        kickStreamingEnabled: false
       },
       sceneDurationSeconds: 0,
       sceneStartedAt: null, // ISO8601 timestamp from server
@@ -503,6 +504,16 @@ export default {
       // Update containers
       data.value.containers = processedContainers;
       data.value.timestamp = message.timestamp;
+      
+      // Update Kick streaming status based on ffmpeg-kick container state
+      const kickContainer = processedContainers.find(c => c.name === 'ffmpeg-kick');
+      if (kickContainer && data.value.streamStatus) {
+        const kickStreamingEnabled = kickContainer.running || false;
+        if (data.value.streamStatus.kickStreamingEnabled !== kickStreamingEnabled) {
+          console.log(`[app] Kick streaming status changed: ${kickStreamingEnabled}`);
+          data.value.streamStatus.kickStreamingEnabled = kickStreamingEnabled;
+        }
+      }
       
       // Keep existing data for other fields (they're not sent via WebSocket anymore)
       // System metrics and other data can be fetched on-demand if needed
