@@ -57,19 +57,22 @@ while true; do
     # Read from named pipe, receive MPEG-TS, publish to RTMP
     echo "[Wrapper] Starting ffmpeg RTMP output..."
     echo "[Wrapper] Full command:"
-    echo "ffmpeg -nostdin -loglevel debug -stats -fflags +discardcorrupt+genpts -err_detect explode -f mpegts -analyzeduration 10000000 -probesize 10000000 -i '${PIPE_PATH}' -c copy -f flv '${RTMP_URL}'"
+    echo "ffmpeg -nostdin -loglevel debug -stats -fflags +nobuffer+discardcorrupt+genpts+igndts -flags low_delay -f mpegts -analyzeduration 0 -probesize 32768 -max_delay 0 -i '${PIPE_PATH}' -c copy -flvflags no_duration_filesize -rtmp_live live -rtmp_buffer 0 -f flv '${RTMP_URL}'"
 
     ffmpeg -nostdin \
         -loglevel debug \
         -stats \
-        -fflags +discardcorrupt+genpts+igndts \
+        -fflags +nobuffer+discardcorrupt+genpts+igndts \
+        -flags low_delay \
         -f mpegts \
         -analyzeduration 0 \
         -probesize 32768 \
+        -max_delay 0 \
         -i "${PIPE_PATH}" \
         -c copy \
         -flvflags no_duration_filesize \
         -rtmp_live live \
+        -rtmp_buffer 0 \
         -f flv \
         "${RTMP_URL}" &
 

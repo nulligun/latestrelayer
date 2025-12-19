@@ -68,8 +68,8 @@ min_bitrate_bps: 0
 bitrate_window_seconds: 3
 
 # Minimum consecutive live packets required before switching from fallback to live
-# Env var: MIN_CONSECUTIVE_FOR_SWITCH (default: 10)
-min_consecutive_for_switch: 10
+# Env var: MIN_CONSECUTIVE_FOR_SWITCH (default: 5)
+min_consecutive_for_switch: 5
 
 # =============================================================================
 # Buffer and Latency Settings
@@ -85,13 +85,15 @@ udp_rcvbuf_size: 262144
 
 # TS packet queue size - maximum packets per stream queue
 # Each packet is 188 bytes, so queue memory = size * 188 bytes
-# Env var: TS_QUEUE_SIZE (default: 5000)
-ts_queue_size: 5000
+# Reduced from 5000 to 500 for ultra-low latency (~94KB buffer)
+# Env var: TS_QUEUE_SIZE (default: 500)
+ts_queue_size: 500
 
 # RTMP output pacing delay in microseconds between packets
 # Controls how fast packets are sent to FFmpeg
-# Env var: RTMP_PACING_US (default: 10)
-rtmp_pacing_us: 10
+# Set to 0 for no artificial delay (ultra-low latency)
+# Env var: RTMP_PACING_US (default: 0)
+rtmp_pacing_us: 0
 
 # =============================================================================
 # IDR Frame Wait Timeouts

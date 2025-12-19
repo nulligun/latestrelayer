@@ -24,9 +24,9 @@ trap cleanup SIGTERM SIGINT
 echo "[Wrapper] Waiting for multiplexer to be ready..."
 sleep 3
 
-# Get SRT latency from environment variable (default: 200ms)
+# Get SRT latency from environment variable (default: 80ms for low latency)
 # SRT latency is specified in microseconds in the URL
-SRT_LATENCY_MS=${SRT_LATENCY_MS:-200}
+SRT_LATENCY_MS=${SRT_LATENCY_MS:-80}
 SRT_LATENCY_US=$((SRT_LATENCY_MS * 1000))
 echo "[Wrapper] Using SRT latency: ${SRT_LATENCY_MS}ms (${SRT_LATENCY_US}µs)"
 
@@ -52,16 +52,21 @@ while true; do
     # Start ffmpeg in background
     echo "[Wrapper] Starting ffmpeg SRT live stream (named pipe output)..."
     echo "[Wrapper] Full command:"
-    echo "ffmpeg -y -nostdin -loglevel debug -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 2 -i \"srt://0.0.0.0:1937?mode=listener&latency=${SRT_LATENCY_US}&transtype=live&payload_size=1316\" -c copy -f mpegts -mpegts_flags +resend_headers \"${PIPE_PATH}\""
+    echo "ffmpeg -y -nostdin -loglevel debug -fflags +nobuffer+flush_packets+genpts -flags low_delay -probesize 32768 -analyzeduration 0 -i \"srt://0.0.0.0:1937?mode=listener&latency=${SRT_LATENCY_US}&transtype=live&rcvbuf=1000000&payload_size=1316\" -c copy -f mpegts -mpegts_flags +resend_headers -flush_packets 1 -max_delay 0 -max_interleave_delta 0 \"${PIPE_PATH}\""
     ffmpeg -y -nostdin \
         -loglevel debug \
         -stats \
-        -fflags +nobuffer+genpts \
-        -i "srt://0.0.0.0:1937?mode=listener&latency=${SRT_LATENCY_US}&transtype=live&payload_size=1316" \
+        -fflags +nobuffer+flush_packets+genpts \
+        -flags low_delay \
+        -probesize 32768 \
+        -analyzeduration 0 \
+        -i "srt://0.0.0.0:1937?mode=listener&latency=${SRT_LATENCY_US}&transtype=live&rcvbuf=1000000&payload_size=1316" \
         -c copy \
         -f mpegts \
         -mpegts_flags +resend_headers \
         -flush_packets 1 \
+        -max_delay 0 \
+        -max_interleave_delta 0 \
         "${PIPE_PATH}" &
 
     FFMPEG_PID=$!
