@@ -74,21 +74,21 @@ echo "[Wrapper] Kick URL: $KICK_URL"
 echo "[Wrapper] Stream Key: $MASKED_KEY"
 echo "[Wrapper] Full output: ${KICK_URL}****"
 
-# RTMP source from srs
-RTMP_SOURCE="rtmp://srs:1935/live/stream"
-echo "[Wrapper] RTMP Source: $RTMP_SOURCE"
+# HTTP-FLV source from SRS (supports reconnection)
+HTTP_FLV_SOURCE="http://srs:8080/live/stream.flv"
+echo "[Wrapper] HTTP-FLV Source: $HTTP_FLV_SOURCE"
 
 # Wait for srs to be ready and have a stream
 echo "[Wrapper] Waiting for srs stream to be available..."
 MAX_WAIT=60
 WAITED=0
 while [ $WAITED -lt $MAX_WAIT ]; do
-    # Check if there's an active stream on srs
-    if curl -s "http://srs:8080/stat" 2>/dev/null | grep -q "<name>stream</name>"; then
-        echo "[Wrapper] Stream detected on srs"
+    # Check if SRS API is responding
+    if curl -s -o /dev/null -w "%{http_code}" "http://srs:1985/api/v1/streams/" 2>/dev/null | grep -q "200"; then
+        echo "[Wrapper] SRS API is ready"
         break
     fi
-    echo "[Wrapper] Waiting for stream... ($WAITED/$MAX_WAIT seconds)"
+    echo "[Wrapper] Waiting for SRS API... ($WAITED/$MAX_WAIT seconds)"
     sleep 2
     WAITED=$((WAITED + 2))
 done
@@ -97,25 +97,41 @@ if [ $WAITED -ge $MAX_WAIT ]; then
     echo "[Wrapper] WARNING: No stream detected after ${MAX_WAIT}s, starting anyway..."
 fi
 
-# Start ffmpeg with buffering and pass-through
-# -rtmp_buffer: Server-side buffer in milliseconds (3000ms = 3 seconds)
-# -probesize: How much data to analyze for stream info
-# -analyzeduration: How long to analyze stream
-# -fflags +genpts+igndts: Generate presentation timestamps, ignore decode timestamps
-# -c copy: Pass-through (no re-encoding)
-echo "[Wrapper] Starting ffmpeg stream to Kick..."
+# Start ffmpeg with low-latency and auto-reconnect
+# Input reconnect options (work with HTTP):
+#   -reconnect 1: Enable reconnection on input
+#   -reconnect_streamed 1: Reconnect even after streaming started  
+#   -reconnect_at_eof 1: Reconnect at end of stream
+#   -reconnect_delay_max 2: Max 2s between attempts (fast recovery)
+#   -reconnect_on_network_error 1: Handle network failures
+#
+# Low-latency options:
+#   -probesize 32k: Minimal probe (known format)
+#   -analyzeduration 500000: 0.5s analysis (was 10s!)
+#   -fflags +nobuffer+genpts+igndts: No buffering, fix timestamps
+#   -flags low_delay: Low-delay decoding mode
+#
+# Output options:
+#   -flush_packets 1: Immediate output flush (critical for latency)
+echo "[Wrapper] Starting ffmpeg stream to Kick (HTTP-FLV input, auto-reconnect)..."
 echo "[Wrapper] Full command:"
-echo "ffmpeg -nostdin -loglevel info -rtmp_buffer 3000 -probesize 10M -analyzeduration 10M -fflags +genpts+igndts -i \"$RTMP_SOURCE\" -c copy -f flv -flvflags no_duration_filesize \"$KICK_OUTPUT\""
+echo "ffmpeg -nostdin -loglevel info -reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 1 -reconnect_delay_max 2 -reconnect_on_network_error 1 -probesize 32k -analyzeduration 500000 -fflags +nobuffer+genpts+igndts -flags low_delay -i \"$HTTP_FLV_SOURCE\" -c copy -f flv -flvflags no_duration_filesize -flush_packets 1 \"$KICK_OUTPUT\""
 ffmpeg -nostdin \
     -loglevel info \
-    -rtmp_buffer 3000 \
-    -probesize 10M \
-    -analyzeduration 10M \
-    -fflags +genpts+igndts \
-    -i "$RTMP_SOURCE" \
+    -reconnect 1 \
+    -reconnect_streamed 1 \
+    -reconnect_at_eof 1 \
+    -reconnect_delay_max 2 \
+    -reconnect_on_network_error 1 \
+    -probesize 32k \
+    -analyzeduration 500000 \
+    -fflags +nobuffer+genpts+igndts \
+    -flags low_delay \
+    -i "$HTTP_FLV_SOURCE" \
     -c copy \
     -f flv \
     -flvflags no_duration_filesize \
+    -flush_packets 1 \
     "$KICK_OUTPUT" &
 
 FFMPEG_PID=$!
