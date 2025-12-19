@@ -339,7 +339,9 @@ class AggregatorService {
         sceneDurationSeconds,
         sceneStartedAt,
         cameraConfig: {
-          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
+          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`,
+          previewUrl: `rtmp://${this.srtDomain}:1935/live/stream`,
+          droneUrl: `rtmp://${this.srtDomain}:1935/publish/drone`
         },
         fallbackConfig: reconciledFallbackConfig,
         inputMetrics
@@ -373,7 +375,9 @@ class AggregatorService {
         sceneDurationSeconds: 0,
         sceneStartedAt: null,
         cameraConfig: {
-          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`
+          srtUrl: `srt://${this.srtDomain}:${this.srtPort}`,
+          previewUrl: `rtmp://${this.srtDomain}:1935/live/stream`,
+          droneUrl: `rtmp://${this.srtDomain}:1935/publish/drone`
         },
         fallbackConfig: {
           source: 'BLACK',
