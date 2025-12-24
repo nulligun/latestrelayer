@@ -1,6 +1,6 @@
 # MPEG-TS Stream Splicer
 
-A lightweight MPEG-TS splicer with automatic failover. Works in the **uncompressed domain** (no transcoding), so it runs on extremely low-end hardware—think **$5/month VPS** for an always-online streaming server with failover.
+A lightweight MPEG-TS splicer with automatic failover. Works in the **uncompressed domain** (no transcoding), so it runs on extremely low-end hardware—think **$5/month VPS** for an always-online streaming server with failover. Your own personal IRL Streaming Server for $5 a month. Staying online during an IRL stream has never been this cheap.
 
 ## Why This Exists
 
