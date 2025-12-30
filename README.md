@@ -70,4 +70,4 @@ SRT Input → [Splicer] → RTMP Output (via SRS)
 
 ## License
 
-MIT
+MIT - This project is open source and free to use, modify, and distribute for any purpose. Do whatever you want with it.
