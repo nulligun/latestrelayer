@@ -8,10 +8,11 @@
 
 ## Priorities (If Development Resumes)
 
-### 1. Fix MPEGTS Compile Time
-- Remove all non-essential components from the MPEGTS build
-- Streamline the compilation process
-- Focus only on core functionality needed for stream relaying
+### 1. Replace Custom Splicing with MediaMTX Always-Online
+- Remove the custom MPEGTS splicing pipeline entirely
+- Adopt [MediaMTX's always-online feature](https://github.com/bluenviron/mediamtx/pull/5335) for professional-grade stream splicing
+- Leverage MediaMTX to handle source failover and fallback natively, eliminating the need for our C++ multiplexer and MPEGTS tooling
+- Remove MPEGTS-related build targets, Dockerfiles, and scripts that are no longer needed
 
 ### 2. Frame Grab API Endpoint
 - Add a new API endpoint to return frame grabs from recent I-frames
@@ -37,9 +38,9 @@
 
 ## Long Term Goals
 
-### Production-Quality MPEG-TS Splicing
-- Achieve broadcast-grade MPEG-TS splicing quality
-- Seamless stream switching with no visual artifacts
+### Professional-Grade Stream Splicing via MediaMTX
+- Leverage MediaMTX's [always-online feature](https://github.com/bluenviron/mediamtx/pull/5335) for broadcast-quality source switching
+- Seamless stream switching with no visual artifacts, handled natively by MediaMTX
 - Think: ad injection quality that forces ad-blockers into the compressed domain (TiVo-style)
 - Goal is splicing so clean that transitions are undetectable to viewers and adblockers alike 😈
 
